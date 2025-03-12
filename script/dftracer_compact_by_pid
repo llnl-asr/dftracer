@@ -98,7 +98,7 @@ for f in $trace_files; do
     echo "Error: Filename $f is missing fields to extract process ID."
     continue
   fi
-  pid=${parts[2]}
+  pid=${parts[-2]}
   if ! [[ $pid =~ ^[0-9]+$ ]]; then
     echo "Error: Component parts[2] of $f is not a numeric PID: $pid"
     continue
@@ -138,5 +138,8 @@ if [ $compressed -eq 1 ]; then
   echo "Compressing files..."
   gzip "${output_prefix}"-*.pfw
 fi
+
+total_files=$(find "${output_dir}" -type f | wc -l)
+echo "Done. Total files created: $total_files"
 
 cd $working_dir
