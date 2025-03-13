@@ -5,8 +5,8 @@ version: 1.0.8
 doi: 10.5281/zenodo.13917384
 abstract: A multi-level dataflow tracer designed for capturing I/O calls from AI-driven workflows.
 license: MIT
-url: https://github.com/hariharan-devarajan/dftracer
-repository-code: https://github.com/hariharan-devarajan/dftracer
+url: https://github.com/LLNL/dftracer
+repository-code: https://github.com/LLNL/dftracer
 contact:
   - name: Hariharan Devarajan
     email: mani.hariharan@gmail.com
