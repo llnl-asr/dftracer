@@ -51,7 +51,7 @@ From source
 
 .. code-block:: Bash
 
-    git clone git@github.com:hariharan-devarajan/dftracer.git
+    git clone git@github.com:LLNL/dftracer.git
     cd dftracer
     # You can skip this for installing the dev branch.
     # for latest stable version use master branch.
