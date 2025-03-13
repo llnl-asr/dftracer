@@ -173,7 +173,7 @@ setup(
     description="I/O profiler for deep learning python apps. Specifically for dlio_benchmark.",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/hariharan-devarajan/dftracer",
+    url="https://github.com/LLNL/dftracer",
     author="Hariharan Devarajan (Hari)",
     classifiers=[  # Optional
         # How mature is this project? Common values are
@@ -199,8 +199,8 @@ setup(
     requires=["pybind11", "setuptools"],
     keywords="profiler, deep learning, I/O, benchmark, NPZ, pytorch benchmark, tensorflow benchmark",
     project_urls={  # Optional
-        "Bug Reports": "https://github.com/hariharan-devarajan/dftracer/issues",
-        "Source": "https://github.com/hariharan-devarajan/dftracer",
+        "Bug Reports": "https://github.com/LLNL/dftracer/issues",
+        "Source": "https://github.com/LLNL/dftracer",
     },
     packages=(
         find_namespace_packages(include=["dftracer", "dftracer_dbg", "dfanalyzer"])
