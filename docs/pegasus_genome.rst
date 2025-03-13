@@ -28,7 +28,7 @@ Source the Python Virtual Environmnet that has DFTracer.
 
 .. code-block:: bash
 
-    pip install git+https://github.com/hariharan-devarajan/dftracer.git
+    pip install git+https://github.com/LLNL/dftracer.git
 
 Step 2: Get the 1000genome-workflow
 -----------------------------------
