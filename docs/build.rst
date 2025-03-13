@@ -64,7 +64,7 @@ From Github
 .. code-block:: Bash
 
   DFT_VERSION=v1.0.4
-  pip install git+https://github.com/hariharan-devarajan/dftracer.git@${DFT_VERSION}
+  pip install git+https://github.com/LLNL/dftracer.git@${DFT_VERSION}
 
 .. attention::
 
@@ -123,7 +123,7 @@ Build DFTracer with CMake
 
 Download the latest DFTracer release from the Releases_ page or clone the develop
 branch ('develop') from the DFTracer repository
-`https://github.com/hariharan-devarajan/dftracer <https://github.com/hariharan-devarajan/dftracer>`_.
+`https://github.com/LLNL/dftracer <https://github.com/LLNL/dftracer>`_.
 
 ---------------
 Build Variables
@@ -166,7 +166,7 @@ These dependencies can be either installed using spack or through cmake from res
 
 .. explicit external hyperlink targets
 
-.. _Releases: https://github.com/hariharan-devarajan/dftracer/releases
+.. _Releases: https://github.com/LLNL/dftracer/releases
 .. _Spack: https://github.com/spack/spack
 .. _Spack's shell support: https://spack.readthedocs.io/en/latest/getting_started.html#add-spack-to-the-shell
 .. _packages.yaml: https://spack.readthedocs.io/en/latest/build_settings.html#external-packages
