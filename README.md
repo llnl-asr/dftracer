@@ -1,6 +1,6 @@
 # DFTracer
 
-[![Build and Test](https://github.com/hariharan-devarajan/dftracer/actions/workflows/ci.yml/badge.svg)](https://github.com/hariharan-devarajan/dftracer/actions/workflows/ci.yml)
+[![Build and Test](https://github.com/LLNL/dftracer/actions/workflows/ci.yml/badge.svg)](https://github.com/LLNL/dftracer/actions/workflows/ci.yml)
 [![Documentation Status](https://readthedocs.org/projects/dftracer/badge/?version=latest)](https://dftracer.readthedocs.io/en/latest/?badge=latest)
 ![PyPI - Version](https://img.shields.io/pypi/v/pydftracer?label=PyPI)
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/pydftracer?label=Wheel)
@@ -49,14 +49,14 @@ pip install pydftracer[dfanalyzer]
 
 ```bash
 DFTRACER_VERSION=develop
-pip install git+https://github.com/hariharan-devarajan/dftracer.git@${DFTRACER_VERSION}
-pip install git+https://github.com/hariharan-devarajan/dftracer.git@${DFTRACER_VERSION}#egg=pydftracer[dfanalyzer]
+pip install git+https://github.com/LLNL/dftracer.git@${DFTRACER_VERSION}
+pip install git+https://github.com/LLNL/dftracer.git@${DFTRACER_VERSION}#egg=pydftracer[dfanalyzer]
 ```
 
 ### From Source
 
 ```bash
-git clone git@github.com:hariharan-devarajan/dftracer.git
+git clone git@github.com:LLNL/dftracer.git
 cd dftracer
 # You can skip this for installing the dev branch.
 # for latest stable version use master branch.
@@ -155,7 +155,7 @@ The original SC'24 paper describes the design and implementation of the DFTracer
     type = {Github},
     title = {Github {DFTracer}},
     shorttitle = {{DFTracer}},
-    url = {https://github.com/hariharan-devarajan/dftracer.git},
+    url = {https://github.com/LLNL/dftracer.git},
     urldate = {2024-07-31},
     journal = {DFTracer: A multi-level dataflow tracer for capture I/O calls from worklows.},
     author = {Devarajan, Hariharan and Pottier, Loic and Velusamy, Kaushik and Zheng, Huihuo and Yildirim, Izzet and Kogiou, Olga and Yu, Weikuan and Kougkas, Anthony and Sun, Xian-He and Yeom, Jae Seung and Mohror, Kathryn},
