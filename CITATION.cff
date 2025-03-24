@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: If you use this software, please cite the software and the paper.
 title: "DFTracer: An Analysis-Friendly Data Flow Tracer for AI-Driven Workflows"
-version: 1.0.8
+version: 1.0.9
 doi: 10.5281/zenodo.13917384
 abstract: A multi-level dataflow tracer designed for capturing I/O calls from AI-driven workflows.
 license: MIT
