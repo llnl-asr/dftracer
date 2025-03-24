@@ -173,7 +173,7 @@ setup(
         'version_scheme': 'post-release',
         "write_to": "dftracer/_version.py",
     },
-    setup_requires=["setuptools>=64", "setuptools-scm>=8"],
+    setup_requires=["pybind11","setuptools>=64", "setuptools-scm>=8"],
     description="Multi-level I/O tracer.",
     long_description=long_description,
     long_description_content_type="text/markdown",
