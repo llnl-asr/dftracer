@@ -156,13 +156,10 @@ class dft_fn(object):
     def flush(self):
         if DFTRACER_ENABLE and self._enable:
             self._t2 = dftracer.get_instance().get_time()            
-            if len(self._arguments) > 0:
-                dftracer.get_instance().log_event(name=self._name, cat=self._cat, start_time=self._t1,
-                                                     duration=self._t2 - self._t1,
-                                                     string_args=self._arguments)
-            else:
-                dftracer.get_instance().log_event(name=self._name, cat=self._cat, start_time=self._t1,
-                                                     duration=self._t2 - self._t1)
+            args = self._arguments if len(self._arguments) > 0 else None
+            dftracer.get_instance().log_event(name=self._name, cat=self._cat, start_time=self._t1,
+                                              duration=self._t2 - self._t1,
+                                              string_args=args)
             dftracer.get_instance().exit_event()
             self._flush = True
         return self
@@ -180,60 +177,63 @@ class dft_fn(object):
             if not self._flush:
                 self.flush()
 
-    def log(self, func):
-        if DFTRACER_ENABLE and self._enable:
-            arg_names = inspect.getfullargspec(func)[0]
-            self._arguments = {}
+    def log(self, f_py=None, name=None):
 
-        @wraps(func)
-        def wrapper(*args, **kwargs):
+        # CC BY-SA 4.0 https://stackoverflow.com/a/60832711
+        def _decorator(func):
+            _name = name if name else func.__qualname__
             if DFTRACER_ENABLE and self._enable:
-                if len(arg_names) > 0:
-                    if "self" == arg_names[0]:
-                        if hasattr(args[0], "epoch"):
-                            self._arguments["epoch"] = str(args[0].epoch)
-                        if hasattr(args[0], "step"):
-                            self._arguments["step"] = str(args[0].step)
-                        if hasattr(args[0], "image_size"):
-                            self._arguments["image_size"] = str(args[0].image_size)
-                        if hasattr(args[0], "image_idx"):
-                            self._arguments["image_idx"] = str(args[0].image_idx)
-                    full_args = dict(zip(arg_names[1:], args[1:]))
-                    full_args.update(kwargs)
-                    full_args.update(get_default_args(func))
+                arg_names = inspect.getfullargspec(func)[0]
+                self._arguments = {}
+            
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                if DFTRACER_ENABLE and self._enable:
+                    if len(arg_names) > 0:
+                        if "self" == arg_names[0]:
+                            if hasattr(args[0], "epoch"):
+                                self._arguments["epoch"] = str(args[0].epoch)
+                            if hasattr(args[0], "step"):
+                                self._arguments["step"] = str(args[0].step)
+                            if hasattr(args[0], "image_size"):
+                                self._arguments["image_size"] = str(args[0].image_size)
+                            if hasattr(args[0], "image_idx"):
+                                self._arguments["image_idx"] = str(args[0].image_idx)
+                        full_args = dict(zip(arg_names[1:], args[1:]))
+                        full_args.update(kwargs)
+                        full_args.update(get_default_args(func))
+            
+                        for name, value in full_args.items():
+                            if name == "epoch":
+                                self._arguments["epoch"] = str(value)
+                            elif name == "image_idx":
+                                self._arguments["image_idx"] = str(value)
+                            elif name == "image_size":
+                                self._arguments["image_size"] = str(value)
+                            elif name == "step":
+                                self._arguments["image_size"] = str(value)
+            
+                    start = dftracer.get_instance().get_time()
+                    dftracer.get_instance().enter_event()
+                x = func(*args, **kwargs)
+                if DFTRACER_ENABLE and self._enable:
+                    end = dftracer.get_instance().get_time()
+                    args = self._arguments if len(self._arguments) > 0 else None
+                    dftracer.get_instance().log_event(name=_name, cat=self._cat, start_time=start,
+                                                      duration=end - start,
+                                                      string_args=args)
+                    dftracer.get_instance().exit_event()
+                return x
+            
+            return wrapper
 
-                    for name, value in full_args.items():
-                        if name == "epoch":
-                            self._arguments["epoch"] = str(value)
-                        elif name == "image_idx":
-                            self._arguments["image_idx"] = str(value)
-                        elif name == "image_size":
-                            self._arguments["image_size"] = str(value)
-                        elif name == "step":
-                            self._arguments["image_size"] = str(value)
-
-                start = dftracer.get_instance().get_time()
-                dftracer.get_instance().enter_event()
-            x = func(*args, **kwargs)
-            if DFTRACER_ENABLE and self._enable:
-                end = dftracer.get_instance().get_time()
-                if len(self._arguments) > 0:
-                    dftracer.get_instance().log_event(name=func.__qualname__, cat=self._cat, start_time=start,
-                                                         duration=end - start,
-                                                         string_args=self._arguments)
-                else:
-                    dftracer.get_instance().log_event(name=func.__qualname__, cat=self._cat, start_time=start,
-                                                         duration=end - start)
-                dftracer.get_instance().exit_event()
-            return x
-
-        return wrapper
+        return _decorator(f_py) if callable(f_py) else _decorator
 
     def log_metadata(self, key, value):
         if DFTRACER_ENABLE and self._enable:
             dftracer.get_instance().log_metadata_event(key=key, value=value)
             
-    def iter(self, func, name="loop", iter_name="step"):
+    def iter(self, func, name="loop", iter_name="step", include_yield=True, include_iter=True):
         if DFTRACER_ENABLE and self._enable:
             iter_val = 1
             _name = f"{name}.iter"
@@ -249,84 +249,84 @@ class dft_fn(object):
             if DFTRACER_ENABLE and self._enable:
                 t1 = dftracer.get_instance().get_time()
                 self._arguments[iter_name] = str(iter_val)
-                if len(self._arguments) > 0:
+                args = self._arguments if len(self._arguments) > 0 else None
+
+                if include_iter:
                     dftracer.get_instance().enter_event()
                     dftracer.get_instance().log_event(name=_name, cat=self._cat, start_time=start,
-                                                         duration=end - start,
-                                                         string_args=self._arguments)
+                                                      duration=end - start,
+                                                      string_args=args)
                     dftracer.get_instance().exit_event()
+
+                if include_yield:
                     dftracer.get_instance().enter_event()
                     dftracer.get_instance().log_event(name=kernal_name, cat=self._cat, start_time=t0,
-                                                         duration=t1 - t0,
-                                                         string_args=self._arguments)
-                    dftracer.get_instance().exit_event()
-                else:
-                    dftracer.get_instance().enter_event()
-                    dftracer.get_instance().log_event(name=_name, cat=self._cat, start_time=start,
-                                                         duration=end - start)
-                    dftracer.get_instance().exit_event()
-                    dftracer.get_instance().enter_event()
-                    dftracer.get_instance().log_event(name=kernal_name, cat=self._cat, start_time=t0,
-                                                         duration=t1 - t0)
+                                                      duration=t1 - t0,
+                                                      string_args=args)
                     dftracer.get_instance().exit_event()
                 
                 iter_val += 1
                 start = dftracer.get_instance().get_time()
 
-    def log_init(self, init):
-        if DFTRACER_ENABLE and self._enable:
-            arg_names = inspect.getfullargspec(init)[0]
-            self._arguments = {}
+    def log_init(self, f_py=None, name=None):
 
-        @wraps(init)
-        def new_init(*args, **kwargs):
+        # CC BY-SA 4.0 https://stackoverflow.com/a/60832711
+        def _decorator(init):
+            _name = name if name else init.__qualname__
             if DFTRACER_ENABLE and self._enable:
-                arg_values = dict(zip(arg_names[1:], args))
-                arg_values.update(kwargs)
-                arg_values.update(get_default_args(init))
-                if "epoch" in arg_values:
-                    self._arguments["epoch"] = str(arg_values["epoch"])
-                elif "image_idx" in arg_values:
-                    self._arguments["image_idx"] = str(arg_values["image_idx"])
-                elif "image_size" in arg_values:
-                    self._arguments["image_size"] = str(arg_values["image_size"])
-                elif "step" in arg_values:
-                    self._arguments["step"] = str(arg_values["step"])
-                #self._arguments = {k: str(v).replace("\n", "") for k, v in arg_values.items()} # enforce string for all values
-                start = dftracer.get_instance().get_time()
-                dftracer.get_instance().enter_event()
-            init(*args, **kwargs)
-            if DFTRACER_ENABLE and self._enable:
-                end = dftracer.get_instance().get_time()
+                arg_names = inspect.getfullargspec(init)[0]
+                self._arguments = {}
+            
+            @wraps(init)
+            def new_init(*args, **kwargs):
+                if DFTRACER_ENABLE and self._enable:
+                    arg_values = dict(zip(arg_names[1:], args))
+                    arg_values.update(kwargs)
+                    arg_values.update(get_default_args(init))
+                    if "epoch" in arg_values:
+                        self._arguments["epoch"] = str(arg_values["epoch"])
+                    elif "image_idx" in arg_values:
+                        self._arguments["image_idx"] = str(arg_values["image_idx"])
+                    elif "image_size" in arg_values:
+                        self._arguments["image_size"] = str(arg_values["image_size"])
+                    elif "step" in arg_values:
+                        self._arguments["step"] = str(arg_values["step"])
+                    #self._arguments = {k: str(v).replace("\n", "") for k, v in arg_values.items()} # enforce string for all values
+                    start = dftracer.get_instance().get_time()
+                    dftracer.get_instance().enter_event()
+                init(*args, **kwargs)
+                if DFTRACER_ENABLE and self._enable:
+                    end = dftracer.get_instance().get_time()
+                    args = self._arguments if len(self._arguments) > 0 else None
+                    dftracer.get_instance().log_event(name=_name, cat=self._cat, start_time=start,
+                                                      duration=end - start,
+                                                      string_args=args)
+                    dftracer.get_instance().exit_event()
+            return new_init
 
-                if len(self._arguments) > 0:
-                    dftracer.get_instance().log_event(name=init.__qualname__, cat=self._cat, start_time=start,
-                                                         duration=end - start,
-                                                         string_args=self._arguments)
-                else:
-                    dftracer.get_instance().log_event(name=init.__qualname__, cat=self._cat, start_time=start,
-                                                         duration=end - start)
-                dftracer.get_instance().exit_event()
-        return new_init
+        return _decorator(f_py) if callable(f_py) else _decorator
 
-    def log_static(self, func):
+    def log_static(self, f_py=None, name=None):
 
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            if DFTRACER_ENABLE and self._enable:
-                start = dftracer.get_instance().get_time()
-                dftracer.get_instance().enter_event()
-            x = func(*args, **kwargs)
-            if DFTRACER_ENABLE and self._enable:
-                end = dftracer.get_instance().get_time()
-                if len(self._arguments) > 0:
-                    dftracer.get_instance().log_event(name=func.__qualname__, cat=self._cat, start_time=start,
-                                                         duration=end - start,
-                                                         string_args=self._arguments)
-                else:
-                    dftracer.get_instance().log_event(name=func.__qualname__, cat=self._cat, start_time=start,
-                                                         duration=end - start)
-                dftracer.get_instance().exit_event()
-            return x
+        # CC BY-SA 4.0 https://stackoverflow.com/a/60832711
+        def _decorator(func):
+            _name = name if name else func.__qualname__
 
-        return wrapper
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                if DFTRACER_ENABLE and self._enable:
+                    start = dftracer.get_instance().get_time()
+                    dftracer.get_instance().enter_event()
+                x = func(*args, **kwargs)
+                if DFTRACER_ENABLE and self._enable:
+                    end = dftracer.get_instance().get_time()
+                    args = self._arguments if len(self._arguments) > 0 else None
+                    dftracer.get_instance().log_event(name=_name, cat=self._cat, start_time=start,
+                                                      duration=end - start,
+                                                      string_args=args)
+                    dftracer.get_instance().exit_event()
+                return x
+            
+            return wrapper
+
+        return _decorator(f_py) if callable(f_py) else _decorator
