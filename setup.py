@@ -18,9 +18,10 @@ PLAT_TO_CMAKE = {
 }
 
 
+
+
 def myversion_func(version: ScmVersion) -> str:
     from setuptools_scm.version import only_version
-
     return version.format_next_version(only_version, fmt="{tag}.dev{distance}")
 
 
@@ -77,9 +78,7 @@ class CMakeBuild(build_ext):
 
         # Using this requires trailing slash for auto-detection & inclusion of
         # auxiliary "native" libs
-        build_type = os.environ.get(
-            "DFTRACER_BUILD_TYPE", "Release"
-        )  # Setting this to release causes memory issues with GCC-13.
+        build_type = os.environ.get("DFTRACER_BUILD_TYPE", "Release") # Setting this to release causes memory issues with GCC-13.
         cmake_args += [f"-DCMAKE_BUILD_TYPE={build_type}"]
         enable_ftracing = os.environ.get("DFTRACER_ENABLE_FTRACING", "OFF")
         cmake_args += [f"-DDFTRACER_ENABLE_FTRACING={enable_ftracing}"]
@@ -178,9 +177,7 @@ setup(
     name="pydftracer",
     use_scm_version={"version_scheme": myversion_func},
     packages=(
-        find_namespace_packages(
-            include=["dftracer", "dftracer.dbg", "dftracer.logger", "dfanalyzer"]
-        )
+        find_namespace_packages(include=["dftracer", "dftracer.dbg", "dftracer.logger", "dfanalyzer"])
     ),
     ext_modules=[
         CMakeExtension("dftracer.pydftracer"),
