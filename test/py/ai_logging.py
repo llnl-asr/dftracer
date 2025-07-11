@@ -4,8 +4,7 @@ from time import sleep
 
 import numpy as np
 
-from dftracer.logger import dftracer
-from dftracer.logger.ai import ai
+from dftracer.logger import dftracer, ai
 
 
 class IOHandler:
@@ -20,9 +19,7 @@ class IOHandler:
 
 def get_args():
     parser = argparse.ArgumentParser(
-        prog="DFTracer testing",
-        description="What the program does",
-        epilog="Text at the bottom of help",
+        prog="DFTracer AI Logging testing",
     )
     parser.add_argument(
         "--log_dir",
@@ -35,6 +32,13 @@ def get_args():
         default="./data",
         type=str,
         help="The directory to save and load data",
+    )
+    parser.add_argument(
+        "--disable-ai-cat",
+        choices=["all", "dataloader", "device", "compute", "comm"],
+        default=None,
+        type=str,
+        help="Disable AI category",
     )
     parser.add_argument("--num_files", default=1, type=int, help="Number of files")
     parser.add_argument(
@@ -76,27 +80,44 @@ def forward(data):
 @ai.compute.backward
 def backward():
     sleep(0.1)
-    with ai.comm.all_reduce:
+    with ai.comm.all_reduce(enable=False):
         sleep(0.1)
 
+@ai.compute
+def compute(data):
+    _ = forward(data)
+    backward()
+    return _
 
+
+@ai
 def main():
     args = get_args()
     io = IOHandler()
+
+    if args.disable_ai_cat == "all":
+        ai.disable()
+    elif args.disable_ai_cat == "dataloader":
+        ai.dataloader.disable()
+    elif args.disable_ai_cat == "device":
+        ai.device.disable()
+    elif args.disable_ai_cat == "compute":
+        ai.compute.disable()
+    elif args.disable_ai_cat == "comm":
+        ai.comm.disable()
 
     os.makedirs(f"{args.log_dir}/npz", exist_ok=True)
     os.makedirs(f"{args.data_dir}/npz", exist_ok=True)
     data = np.ones((args.record_size, 1), dtype=np.uint8)
     data_gen(args, io, data)
 
-    df_logger = dftracer.initialize_log(f"{args.log_dir}_npz.pfw", None, -1)
+    df_logger = dftracer.initialize_log(logfile=None, data_dir=None, process_id=-1)
     for epoch in ai.pipeline.epoch.iter(range(args.niter)):
         for step, data in ai.dataloader.fetch.iter(
             enumerate(read_data(args, io, epoch))
         ):
             _ = transfer(data)
-            _ = forward(data)
-            backward()
+            _ = compute(data)
             ai.dataloader.fetch.update(step=step, epoch=epoch)
     df_logger.finalize()
 
