@@ -1,14 +1,15 @@
-from time import sleep
 import argparse
 import os
+from time import sleep
+
+import numpy as np
 
 from dftracer.logger import dftracer
 from dftracer.logger.ai import ai
 
-import numpy as np
-
 
 class IOHandler:
+    @ai.data.item
     def read(self, filename):
         return np.load(filename)
 
@@ -51,7 +52,7 @@ def get_args():
 
 def data_gen(args, io: IOHandler, data):
     for i in range(args.num_files):
-        io.write(f"{args.data_dir}/{i}-of-{args.num_files}.npz", data)
+        io.write(f"{args.data_dir}/npz/{i}-of-{args.num_files}.npz", data)
 
 
 @ai.dataloader.fetch
@@ -62,25 +63,21 @@ def read_data(args, io: IOHandler, epoch):
 
 @ai.device.transfer
 def transfer(data):
-    sleep(2)
+    sleep(0.1)
+    return data
 
 
-def f2():
-    with ai.device.transfer(enable=False):
-        sleep(2)
+@ai.compute.forward
+def forward(data):
+    sleep(0.1)
+    return 0.0
 
 
-def f3():
-    for i in ai.dataloader.fetch(range(5)):
-        print(f"F3 {i}")
-        sleep(2)
-
-
-def f4():
-    for i in ai.dataloader.fetch(range(5)).iter(
-        include_block=False, include_iter=False, iter_name="f4"
-    ):
-        print(f"F4 {i}")
+@ai.compute.backward
+def backward():
+    sleep(0.1)
+    with ai.comm.all_reduce:
+        sleep(0.1)
 
 
 def main():
@@ -93,8 +90,13 @@ def main():
     data_gen(args, io, data)
 
     df_logger = dftracer.initialize_log(f"{args.log_dir}_npz.pfw", None, -1)
-    for epoch in ai.pipeline.epoch(range(args.niter)):
-        for step in ai.dataloader.fetch(read_data(args, io, epoch)):
+    for epoch in ai.pipeline.epoch.iter(range(args.niter)):
+        for step, data in ai.dataloader.fetch.iter(
+            enumerate(read_data(args, io, epoch))
+        ):
+            _ = transfer(data)
+            _ = forward(data)
+            backward()
             ai.dataloader.fetch.update(step=step, epoch=epoch)
     df_logger.finalize()
 
