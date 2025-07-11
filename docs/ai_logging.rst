@@ -41,40 +41,104 @@ This means you can use these categories (along with its children) in your codeba
 
 The table below provides a breakdown of the conventions and how they can be applied in your code:
 
-.. table:: DFTracer AI/DL Conventions
-   :widths: auto
+.. list-table:: AI/DL Logging Conventions
+   :widths: 15 15 30 40
+   :header-rows: 1
 
-   ============ ================ ========================== =============================================================
-   Category     Name             Access Path                Description
-   ============ ================ ========================== =============================================================
-   Compute      Forward          ``ai.compute.forward``     Forward pass of the network
-                Backward         ``ai.compute.backward``    Backward pass / gradient computation
-                Step             ``ai.compute.step``        Optimizer step (parameter update)
-   ------------ ---------------- -------------------------- -------------------------------------------------------------
-   Data         Preprocess       ``ai.data.preprocess``     Dataset-level preprocessing
-                Item             ``ai.data.item``           Per-item transformation or loading
-   ------------ ---------------- -------------------------- -------------------------------------------------------------
-   DataLoader   Fetch            ``ai.dataloader.fetch``    Fetch a batch from DataLoader
-   ------------ ---------------- -------------------------- -------------------------------------------------------------
-   Comm         Send             ``ai.comm.send``           Point-to-point send
-                Receive          ``ai.comm.receive``        Point-to-point receive
-                Barrier          ``ai.comm.barrier``        Synchronization barrier
-                Broadcast        ``ai.comm.bcast``          Broadcast (one-to-many)
-                Reduce           ``ai.comm.reduce``         Reduce (many-to-one)
-                All-Reduce       ``ai.comm.all_reduce``     All-reduce (many-to-many)
-                Gather           ``ai.comm.gather``         Gather (many-to-one)
-                All-Gather       ``ai.comm.all_gather``     All-gather (many-to-many)
-                Scatter          ``ai.comm.scatter``        Scatter (one-to-many)
-                Reduce-Scatter   ``ai.comm.reduce_scatter`` Reduce-scatter (many-to-many)
-                All-to-All       ``ai.comm.all_to_all``     All-to-all (many-to-many)
-   ------------ ---------------- -------------------------- -------------------------------------------------------------
-   Device       Transfer         ``ai.device.transfer``     Host-to-device or device-to-host memory transfer
-   ------------ ---------------- -------------------------- -------------------------------------------------------------
-   Pipeline     Epoch            ``ai.pipeline.epoch``      An entire training or evaluation epoch
-                Train            ``ai.pipeline.train``      Training phase
-                Evaluate         ``ai.pipeline.evaluate``   Evaluation or validation phase
-                Test             ``ai.pipeline.test``       Testing or inference phase
-   ============ ================ ========================== =============================================================
+   * - Category
+     - Name
+     - Access Path
+     - Description
+   * - Compute
+     - Forward
+     - ``ai.compute.forward``
+     - Forward pass of the network
+   * -
+     - Backward
+     - ``ai.compute.backward``
+     - Backward pass / gradient computation
+   * -
+     - Step
+     - ``ai.compute.step``
+     - Optimizer step (parameter update)
+   * - Data
+     - Preprocess
+     - ``ai.data.preprocess``
+     - Dataset-level preprocessing
+   * -
+     - Item
+     - ``ai.data.item``
+     - Per-item transformation or loading
+   * - DataLoader
+     - Fetch
+     - ``ai.dataloader.fetch``
+     - Fetch a batch from DataLoader
+   * - Comm
+     - Send
+     - ``ai.comm.send``
+     - Point-to-point send
+   * -
+     - Receive
+     - ``ai.comm.receive``
+     - Point-to-point receive
+   * -
+     - Barrier
+     - ``ai.comm.barrier``
+     - Synchronization barrier
+   * -
+     - Broadcast
+     - ``ai.comm.bcast``
+     - Broadcast (one-to-many)
+   * -
+     - Reduce
+     - ``ai.comm.reduce``
+     - Reduce (many-to-one)
+   * -
+     - All-Reduce
+     - ``ai.comm.all_reduce``
+     - All-reduce (many-to-many)
+   * -
+     - Gather
+     - ``ai.comm.gather``
+     - Gather (many-to-one)
+   * -
+     - All-Gather
+     - ``ai.comm.all_gather``
+     - All-gather (many-to-many)
+   * -
+     - Scatter
+     - ``ai.comm.scatter``
+     - Scatter (one-to-many)
+   * -
+     - Reduce-Scatter
+     - ``ai.comm.reduce_scatter``
+     - Reduce-scatter (many-to-many)
+   * -
+     - All-to-All
+     - ``ai.comm.all_to_all``
+     - All-to-all (many-to-many)
+   * - Device
+     - Transfer
+     - ``ai.device.transfer``
+     - Host-to-device or device-to-host memory transfer
+   * - Pipeline
+     - Epoch
+     - ``ai.pipeline.epoch``
+     - An entire training or evaluation epoch
+   * -
+     - Train
+     - ``ai.pipeline.train``
+     - Training phase
+   * -
+     - Evaluate
+     - ``ai.pipeline.evaluate``
+     - Evaluation or validation phase
+   * -
+     - Test
+     - ``ai.pipeline.test``
+     - Testing or inference phase
+
+
 
 ----------------------------------------
 Usage
