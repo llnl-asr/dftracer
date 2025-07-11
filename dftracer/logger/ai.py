@@ -1,6 +1,6 @@
 import functools
 import sys
-from typing import Any, Callable, Iterator, Optional, TypeVar, cast
+from typing import Any, Callable, Iterator, Optional, TypeVar, cast, overload
 
 from dftracer.logger.logger import DFTRACER_ENABLE, dft_fn, dftracer
 
@@ -42,16 +42,57 @@ ITER_COUNT_NAME = "count"
 INIT_NAME = "init"
 
 
-class DFTracerAI:
-    def __init__(self, cat: str, name: Optional[str] = None):
+class _DFTracerAI:
+    def __init__(
+        self,
+        cat: str,
+        name: Optional[str] = None,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        enable: bool = True,
+    ):
+        if not name:
+            name = cat
+
         self.profiler = dft_fn(
             cat=cat,
             name=name,
+            epoch=epoch,
+            step=step,
+            image_idx=image_idx,
+            image_size=image_size,
+            enable=enable,
         )
+
+    @overload
+    def __call__(
+        fn: F,
+        *,
+        enable: bool = True,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        args: Optional[dict[str, Any]] = None,
+    ) -> F: ...
+
+    @overload
+    def __call__(
+        *,
+        enable: bool = True,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        args: Optional[dict[str, Any]] = None,
+    ) -> "DFTracerAI": ...
 
     def __call__(
         self,
         fn: Optional[F] = None,
+        *,
         enable: bool = True,
         epoch: Optional[int] = None,
         step: Optional[int] = None,
@@ -85,7 +126,18 @@ class DFTracerAI:
 
             return cast(F, _decorator(fn))
         else:
-            return cast(F, DFTracerAI())
+            return cast(
+                F,
+                DFTracerAI(
+                    cat=self.profiler._cat,
+                    name=self.profiler._name,
+                    epoch=epoch,
+                    step=step,
+                    image_idx=image_idx,
+                    image_size=image_size,
+                    enable=enable,
+                ),
+            )
 
     def __enter__(self):
         self.profiler.__enter__()
@@ -94,6 +146,20 @@ class DFTracerAI:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.profiler.__exit__(exc_type, exc_val, exc_tb)
         return False
+
+    def enable(self):
+        self.profiler._enable = True
+
+    def disable(self):
+        self.profiler._enable = False
+
+    @property
+    def cat(self):
+        return self.profiler._cat
+
+    @property
+    def name(self):
+        return self.profiler._name
 
     def update(self, epoch=None, step=None, image_idx=None, image_size=None, args=None):
         if args is None:
@@ -111,7 +177,7 @@ class DFTracerAI:
                 self.profiler._arguments[key] = str(value)
         return self
 
-    def log_init(self, fn):
+    def init(self, fn):
         return self.profiler.log_init(
             name=f"{self.profiler._name}.{INIT_NAME}", f_py=fn
         )
@@ -176,6 +242,60 @@ class DFTracerAI:
                 start = dftracer.get_instance().get_time()
 
 
+class DFTracerAI(_DFTracerAI):
+    def __init__(
+        self,
+        *,
+        cat: str,
+        name: Optional[str] = None,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        enable: bool = True,
+    ):
+        super().__init__(
+            cat=cat,
+            name=name,
+            epoch=epoch,
+            step=step,
+            image_idx=image_idx,
+            image_size=image_size,
+            enable=enable,
+        )
+        self._children: dict[str, DFTracerAI] = {}
+
+    def create_children(self, names: dict[str, str]):
+        for attr, name in names.items():
+            tracer = DFTracerAI(
+                cat=self.profiler._cat,
+                name=name,
+                epoch=self.profiler._arguments.get("epoch"),
+                step=self.profiler._arguments.get("step"),
+                image_idx=self.profiler._arguments.get("image_idx"),
+                image_size=self.profiler._arguments.get("image_size"),
+                enable=self.profiler._enable,
+            )
+            setattr(self, attr, tracer)
+            self._children[attr] = tracer
+
+    def update(self, **kwargs):
+        super().update(**kwargs)
+        for tracer in self._children.values():
+            tracer.update(**kwargs)
+        return self
+
+    def enable(self):
+        super().enable()
+        for tracer in self._children.values():
+            tracer.enable()
+
+    def disable(self):
+        super().disable()
+        for tracer in self._children.values():
+            tracer.disable()
+
+
 # Enumerations
 
 
@@ -229,61 +349,235 @@ class PipelineEvent(StringEnum):
     TEST = auto()
 
 
-class _Compute:
-    forward = DFTracerAI(cat=ProfileCategory.COMPUTE, name=ComputeEvent.FORWARD)
-    backward = DFTracerAI(cat=ProfileCategory.COMPUTE, name=ComputeEvent.BACKWARD)
-    step = DFTracerAI(cat=ProfileCategory.COMPUTE, name=ComputeEvent.STEP)
+class _Compute(DFTracerAI):
+    forward: DFTracerAI
+    backward: DFTracerAI
+    step: DFTracerAI
+
+    def __init__(
+        self,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        enable: bool = True,
+    ):
+        super().__init__(
+            cat=ProfileCategory.COMPUTE,
+            name=ProfileCategory.COMPUTE,
+            epoch=epoch,
+            step=step,
+            image_idx=image_idx,
+            image_size=image_size,
+            enable=enable,
+        )
+
+        self.create_children(
+            {
+                "forward": ComputeEvent.FORWARD,
+                "backward": ComputeEvent.BACKWARD,
+                "step": ComputeEvent.STEP,
+            }
+        )
 
 
-class _Data:
-    preprocess = DFTracerAI(cat=ProfileCategory.DATA, name=DataEvent.PREPROCESS)
-    item = DFTracerAI(cat=ProfileCategory.DATA, name=DataEvent.ITEM)
+class _Data(DFTracerAI):
+    preprocess: DFTracerAI
+    item: DFTracerAI
+
+    def __init__(
+        self,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        enable: bool = True,
+    ):
+        super().__init__(
+            cat=ProfileCategory.DATA,
+            name=ProfileCategory.DATA,
+            epoch=epoch,
+            step=step,
+            image_idx=image_idx,
+            image_size=image_size,
+            enable=enable,
+        )
+        self.create_children(
+            {
+                "preprocess": DataEvent.PREPROCESS,
+                "item": DataEvent.ITEM,
+            }
+        )
 
 
-class _DataLoader:
-    fetch = DFTracerAI(cat=ProfileCategory.DATALOADER, name=DataLoaderEvent.FETCH)
+class _DataLoader(DFTracerAI):
+    fetch: DFTracerAI
+
+    def __init__(
+        self,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        enable: bool = True,
+    ):
+        super().__init__(
+            cat=ProfileCategory.DATALOADER,
+            name=ProfileCategory.DATALOADER,
+            epoch=epoch,
+            step=step,
+            image_idx=image_idx,
+            image_size=image_size,
+            enable=enable,
+        )
+        self.create_children(
+            {
+                "fetch": DataLoaderEvent.FETCH,
+            }
+        )
 
 
-class _Communication:
-    send = DFTracerAI(cat=ProfileCategory.COMM, name=CommunicationEvent.SEND)
-    receive = DFTracerAI(cat=ProfileCategory.COMM, name=CommunicationEvent.RECEIVE)
-    barrier = DFTracerAI(cat=ProfileCategory.COMM, name=CommunicationEvent.BARRIER)
-    bcast = DFTracerAI(cat=ProfileCategory.COMM, name=CommunicationEvent.BCAST)
-    reduce = DFTracerAI(cat=ProfileCategory.COMM, name=CommunicationEvent.REDUCE)
-    all_reduce = DFTracerAI(
-        cat=ProfileCategory.COMM, name=CommunicationEvent.ALL_REDUCE
-    )
-    gather = DFTracerAI(cat=ProfileCategory.COMM, name=CommunicationEvent.GATHER)
-    all_gather = DFTracerAI(
-        cat=ProfileCategory.COMM, name=CommunicationEvent.ALL_GATHER
-    )
-    scatter = DFTracerAI(cat=ProfileCategory.COMM, name=CommunicationEvent.SCATTER)
-    reduce_scatter = DFTracerAI(
-        cat=ProfileCategory.COMM, name=CommunicationEvent.REDUCE_SCATTER
-    )
-    all_to_all = DFTracerAI(
-        cat=ProfileCategory.COMM, name=CommunicationEvent.ALL_TO_ALL
-    )
+class _Communication(DFTracerAI):
+    send: DFTracerAI
+    receive: DFTracerAI
+    barrier: DFTracerAI
+    bcast: DFTracerAI
+    reduce: DFTracerAI
+    all_reduce: DFTracerAI
+    gather: DFTracerAI
+    all_gather: DFTracerAI
+    scatter: DFTracerAI
+    reduce_scatter: DFTracerAI
+    all_to_all: DFTracerAI
+
+    def __init__(
+        self,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        enable: bool = True,
+    ):
+        super().__init__(
+            cat=ProfileCategory.COMM,
+            name=ProfileCategory.COMM,
+            epoch=epoch,
+            step=step,
+            image_idx=image_idx,
+            image_size=image_size,
+            enable=enable,
+        )
+        self.create_children(
+            {
+                "send": CommunicationEvent.SEND,
+                "receive": CommunicationEvent.RECEIVE,
+                "barrier": CommunicationEvent.BARRIER,
+                "bcast": CommunicationEvent.BCAST,
+                "reduce": CommunicationEvent.REDUCE,
+                "all_reduce": CommunicationEvent.ALL_REDUCE,
+                "gather": CommunicationEvent.GATHER,
+                "all_gather": CommunicationEvent.ALL_GATHER,
+                "scatter": CommunicationEvent.SCATTER,
+                "reduce_scatter": CommunicationEvent.REDUCE_SCATTER,
+                "all_to_all": CommunicationEvent.ALL_TO_ALL,
+            }
+        )
 
 
-class _Device:
-    transfer = DFTracerAI(cat=ProfileCategory.DEVICE, name=DeviceEvent.TRANSFER)
+class _Device(DFTracerAI):
+    transfer: DFTracerAI
+
+    def __init__(
+        self,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        enable: bool = True,
+    ):
+        super().__init__(
+            cat=ProfileCategory.DEVICE,
+            name=ProfileCategory.DEVICE,
+            epoch=epoch,
+            step=step,
+            image_idx=image_idx,
+            image_size=image_size,
+            enable=enable,
+        )
+        self.create_children(
+            {
+                "transfer": DeviceEvent.TRANSFER,
+            }
+        )
 
 
-class _Pipeline:
-    epoch = DFTracerAI(cat=ProfileCategory.PIPELINE, name=PipelineEvent.EPOCH)
-    train = DFTracerAI(cat=ProfileCategory.PIPELINE, name=PipelineEvent.TRAIN)
-    evaluate = DFTracerAI(cat=ProfileCategory.PIPELINE, name=PipelineEvent.EVALUATE)
-    test = DFTracerAI(cat=ProfileCategory.PIPELINE, name=PipelineEvent.TEST)
+class _Pipeline(DFTracerAI):
+    epoch: DFTracerAI
+    train: DFTracerAI
+    evaluate: DFTracerAI
+    test: DFTracerAI
+
+    def __init__(
+        self,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        enable: bool = True,
+    ):
+        super().__init__(
+            cat=ProfileCategory.PIPELINE,
+            name=ProfileCategory.PIPELINE,
+            epoch=epoch,
+            step=step,
+            image_idx=image_idx,
+            image_size=image_size,
+            enable=enable,
+        )
+        self.create_children(
+            {
+                "epoch": PipelineEvent.EPOCH,
+                "train": PipelineEvent.TRAIN,
+                "evaluate": PipelineEvent.EVALUATE,
+                "test": PipelineEvent.TEST,
+            }
+        )
 
 
-class _AI:
-    compute = _Compute()
-    data = _Data()
-    dataloader = _DataLoader()
-    comm = _Communication()
-    device = _Device()
-    pipeline = _Pipeline()
+# fmt: off
+class _AI(DFTracerAI):
+    compute: _Compute
+    data: _Data
+    dataloader: _DataLoader
+    comm: _Communication
+    device: _Device
+    pipeline: _Pipeline
+
+    def __init__(
+        self,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        enable: bool = True,
+    ):
+        super().__init__(cat="root", name="root", epoch=epoch, step=step, image_idx=image_idx, image_size=image_size, enable=enable)
+        self.compute = _Compute(epoch=epoch, step=step, image_idx=image_idx, image_size=image_size, enable=enable)
+        self.data = _Data(epoch=epoch, step=step, image_idx=image_idx, image_size=image_size, enable=enable)
+        self.dataloader = _DataLoader(epoch=epoch, step=step, image_idx=image_idx, image_size=image_size, enable=enable)
+        self.comm = _Communication(epoch=epoch, step=step, image_idx=image_idx, image_size=image_size, enable=enable)
+        self.device = _Device(epoch=epoch, step=step, image_idx=image_idx, image_size=image_size, enable=enable)
+        self.pipeline = _Pipeline(epoch=epoch, step=step, image_idx=image_idx, image_size=image_size, enable=enable)
+
+        self._children = {
+            "compute": self.compute,
+            "data": self.data,
+            "dataloader": self.dataloader,
+            "comm": self.comm,
+            "device": self.device,
+            "pipeline": self.pipeline,
+        }
+# fmt: on
 
 
 ai = _AI()

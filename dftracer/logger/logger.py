@@ -125,17 +125,16 @@ class dft_fn(object):
 
     def __init__(self, cat, name=None, epoch=None, step=None, image_idx=None, image_size=None, enable=True):
         self._enable = enable
-        if DFTRACER_ENABLE and self._enable:
-            if not name:
-                name = inspect.stack()[1].function
-            self._name = name
-            self._cat = cat
-            self._arguments: Dict[str, str] = {}
-            if epoch is not None: self._arguments["epoch"] = str(epoch)
-            if step is not None: self._arguments["step"] = str(step)
-            if image_idx is not None: self._arguments["image_idx"] = str(image_idx)
-            if image_size is not None: self._arguments["image_size"] = str(image_size)
-            self.reset()
+        if not name:
+            name = inspect.stack()[1].function
+        self._name = name
+        self._cat = cat
+        self._arguments: Dict[str, str] = {}
+        if epoch is not None: self._arguments["epoch"] = str(epoch)
+        if step is not None: self._arguments["step"] = str(step)
+        if image_idx is not None: self._arguments["image_idx"] = str(image_idx)
+        if image_size is not None: self._arguments["image_size"] = str(image_size)
+        self.reset()
 
     def __enter__(self):
         if DFTRACER_ENABLE and self._enable:
