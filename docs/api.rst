@@ -302,6 +302,8 @@ Finalization call to clean DFTracer entries (Optional). If users do not call thi
 
     dft_logger.finalize()
 
+.. _dft_fn:
+
 Function decorator style profiling
 ****************************************
 
