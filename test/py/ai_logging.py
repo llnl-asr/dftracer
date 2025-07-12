@@ -56,13 +56,13 @@ def get_args():
 
 def data_gen(args, io: IOHandler, data):
     for i in range(args.num_files):
-        io.write(f"{args.data_dir}/npz/{i}-of-{args.num_files}.npz", data)
+        io.write(f"{args.data_dir}/npz/{i}-of-{args.num_files}.npy", data)
 
 
 @ai.dataloader.fetch
 def read_data(args, io: IOHandler, epoch):
     for i in range(args.num_files):
-        yield io.read(f"{args.data_dir}/npz/{i}-of-{args.num_files}.npz")
+        yield io.read(f"{args.data_dir}/npz/{i}-of-{args.num_files}.npy")
 
 
 @ai.device.transfer
@@ -82,6 +82,7 @@ def backward():
     sleep(0.1)
     with ai.comm.all_reduce(enable=False):
         sleep(0.1)
+
 
 @ai.compute
 def compute(data):
