@@ -1,2 +1,2 @@
-from dftracer.dbg.logger.logger import dftracer, dft_fn
-from dftracer.dbg.logger.ai import ai
+from dftracer.dbg.logger.logger import *
+from dftracer.dbg.logger.ai import *
