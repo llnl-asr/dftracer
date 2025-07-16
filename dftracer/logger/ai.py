@@ -28,18 +28,21 @@ else:
             return name.lower()
 
 
+ITER_COUNT_NAME = "count"
+INIT_NAME = "init"
+BLOCK_NAME = "block"
+ITER_NAME = "iter"
+CTX_SEPARATOR = "."
+
 def get_iter_block_name(name: str):
-    return f"{name}.block" if not name.endswith(".block") else name
+    return f"{name}{CTX_SEPARATOR}{BLOCK_NAME}" if not name.endswith(f"{CTX_SEPARATOR}{BLOCK_NAME}") else name
 
 
 def get_iter_handle_name(name: str):
-    return f"{name}.iter" if not name.endswith(".iter") else name
+    return f"{name}{CTX_SEPARATOR}{ITER_NAME}" if not name.endswith(f"{CTX_SEPARATOR}{ITER_NAME}") else name
 
 
 F = TypeVar("F", bound=Callable[..., Any])
-
-ITER_COUNT_NAME = "count"
-INIT_NAME = "init"
 
 
 class _DFTracerAI:
@@ -141,6 +144,11 @@ class _DFTracerAI:
 
     def __enter__(self):
         self.profiler.__enter__()
+        # Reset flush state to ensure proper event logging on each context manager entry.
+        # The underlying DFTracer logger was designed for one-time use objects, but this
+        # class acts as a singleton. Without this reset, events won't flush after the
+        # first __exit__ call due to DFTracer's internal _flush state management.
+        self.profiler._flush = False
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -161,7 +169,14 @@ class _DFTracerAI:
     def name(self):
         return self.profiler._name
 
-    def update(self, epoch=None, step=None, image_idx=None, image_size=None, args=None):
+    def update(
+        self,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        args: Optional[dict[str, Any]] = None,
+    ):
         if args is None:
             args = {}
         if DFTRACER_ENABLE and self.profiler._enable:
@@ -279,10 +294,29 @@ class DFTracerAI(_DFTracerAI):
             setattr(self, attr, tracer)
             self._children[attr] = tracer
 
-    def update(self, **kwargs):
-        super().update(**kwargs)
+    def update(
+        self,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        args: Optional[dict[str, Any]] = None,
+    ):
+        super().update(
+            epoch=epoch,
+            step=step,
+            image_idx=image_idx,
+            image_size=image_size,
+            args=args,
+        )
         for tracer in self._children.values():
-            tracer.update(**kwargs)
+            tracer.update(
+                epoch=epoch,
+                step=step,
+                image_idx=image_idx,
+                image_size=image_size,
+                args=args,
+            )
         return self
 
     def enable(self):
