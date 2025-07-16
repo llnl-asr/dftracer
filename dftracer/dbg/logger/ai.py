@@ -2,7 +2,7 @@ import functools
 import sys
 from typing import Any, Callable, Iterator, Optional, TypeVar, cast, overload
 
-from dftracer.logger.logger import DFTRACER_ENABLE, dft_fn, dftracer
+from dftracer.dbg.logger.logger import DFTRACER_ENABLE, dft_fn, dftracer
 
 if sys.version_info >= (3, 11):
     from enum import StrEnum as StringEnum, auto
