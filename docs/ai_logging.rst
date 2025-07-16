@@ -372,3 +372,31 @@ Example:
             # Add context to the forward trace
             ai.compute.forward.update(epoch=epoch, step=step)
             forward(model, batch)
+
+
+Hook/Checkpoint Style
+****************************************
+
+Sometimes you need to attach profilers to hooks (e.g., TensorFlow SessionHook) where you can't use decorators or context managers directly.
+
+For these cases, you can manually call the profiler methods:
+
+.. code-block:: python
+
+    class DFTracerProfilingHook(tf.train.SessionRunHook):
+        def begin(self):
+            self._global_step_tensor = training_util._get_or_create_global_step_read()
+            if self._global_step_tensor is None:
+                raise RuntimeError("Global step should be created to use ProfilerHook.")
+            ai.pipeline.epoch.start()
+
+        def end(self, session):
+            ai.pipeline.epoch.stop()
+        
+        def before_run(self, run_context):
+            global_step = run_context.session.run(self._global_step_tensor)
+            ai.update(step=global_step)
+            ai.compute.start()
+
+        def after_run(self, run_context, run_values):
+            ai.compute.stop()

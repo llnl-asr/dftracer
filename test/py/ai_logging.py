@@ -91,10 +91,35 @@ def compute(data):
     return _
 
 
-@ai
+class Hook:
+    def before_step(self, *args, **kwargs):
+        ai.compute.step.start()
+
+    def after_step(self, *args, **kwargs):
+        ai.compute.step.stop()
+
+
+@ai.pipeline.train
+def train(args, hook):
+    io = IOHandler()
+
+    os.makedirs(f"{args.log_dir}/npz", exist_ok=True)
+    os.makedirs(f"{args.data_dir}/npz", exist_ok=True)
+    data = np.ones((args.record_size, 1), dtype=np.uint8)
+    data_gen(args, io, data)
+
+    for epoch in ai.pipeline.epoch.iter(range(args.niter)):
+        for step, data in ai.dataloader.fetch.iter(
+            enumerate(read_data(args, io, epoch))
+        ):
+            hook.before_step()
+            _ = transfer(data)
+            _ = compute(data)
+            hook.after_step()
+            ai.dataloader.fetch.update(step=step, epoch=epoch)
+
 def main():
     args = get_args()
-    io = IOHandler()
 
     if args.disable_ai_cat == "all":
         ai.disable()
@@ -107,19 +132,9 @@ def main():
     elif args.disable_ai_cat == "comm":
         ai.comm.disable()
 
-    os.makedirs(f"{args.log_dir}/npz", exist_ok=True)
-    os.makedirs(f"{args.data_dir}/npz", exist_ok=True)
-    data = np.ones((args.record_size, 1), dtype=np.uint8)
-    data_gen(args, io, data)
-
+    hook = Hook()
     df_logger = dftracer.initialize_log(logfile=None, data_dir=None, process_id=-1)
-    for epoch in ai.pipeline.epoch.iter(range(args.niter)):
-        for step, data in ai.dataloader.fetch.iter(
-            enumerate(read_data(args, io, epoch))
-        ):
-            _ = transfer(data)
-            _ = compute(data)
-            ai.dataloader.fetch.update(step=step, epoch=epoch)
+    train(args, hook)
     df_logger.finalize()
 
 

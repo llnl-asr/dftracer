@@ -154,6 +154,12 @@ class _DFTracerAI:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.profiler.__exit__(exc_type, exc_val, exc_tb)
         return False
+    
+    def start(self):
+        self.__enter__()
+
+    def stop(self):
+        self.__exit__(None, None, None)
 
     def enable(self):
         self.profiler._enable = True
