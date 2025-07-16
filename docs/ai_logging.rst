@@ -377,7 +377,8 @@ Example:
 Hook/Checkpoint Style
 ****************************************
 
-Sometimes you need to attach profilers to hooks (e.g., TensorFlow SessionHook) where you can't use decorators or context managers directly.
+Sometimes you need to attach profilers to hooks (e.g., TensorFlow SessionHook) 
+where you can't use decorators or context managers directly.
 
 For these cases, you can manually call the profiler methods:
 
