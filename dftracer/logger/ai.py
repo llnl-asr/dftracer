@@ -262,6 +262,20 @@ class _DFTracerAI:
                 iter_val += 1
                 start = dftracer.get_instance().get_time()
 
+    def derive(self, name: str):
+        _name = name
+        if self.profiler._name:
+            _name = f"{self.profiler._name}.{name}"
+        return DFTracerAI(
+            cat=self.profiler._cat,
+            name=_name,
+            epoch=self.profiler._arguments.get("epoch"),
+            step=self.profiler._arguments.get("step"),
+            image_idx=self.profiler._arguments.get("image_idx"),
+            image_size=self.profiler._arguments.get("image_size"),
+            enable=self.profiler._enable,
+        )
+
 
 class DFTracerAI(_DFTracerAI):
     def __init__(

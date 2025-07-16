@@ -283,7 +283,7 @@ dynamically change metadata. These updates apply to the entire subtree of that e
         loss = model(x)
         return loss
 
-    for epoch in ai.pipeline.epoch.iter(num_epoch):
+    for epoch in ai.pipeline.epoch.iter(range(num_epoch)):
         for step, batch in ai.dataloader.fetch.iter(enumerate(dataloader)):
             # Update metadata for the current context
             ai.compute.forward.update(epoch=epoch, step=step)
@@ -367,7 +367,7 @@ Example:
         loss = model(x)
         return loss
 
-    for epoch in ai.pipeline.epoch.iter(num_epoch):
+    for epoch in ai.pipeline.epoch.iter(range(num_epoch)):
         for step, batch in ai.dataloader.fetch.iter(enumerate(dataloader)):
             # Add context to the forward trace
             ai.compute.forward.update(epoch=epoch, step=step)
@@ -401,3 +401,35 @@ For these cases, you can manually call the profiler methods:
 
         def after_run(self, run_context, run_values):
             ai.compute.stop()
+
+Derivation
+****************************************
+
+Since sometimes our logging needs to be more dynamic, you can derive new profilers from existing ones. 
+This is useful when you want to create a specialized profiler with the same context as an existing one.
+
+Example:
+
+.. code-block:: python
+
+    class Dataset:
+        def __getitem__(self, idx: int):
+            data = ...
+            with ai.data.preprocess:
+                # do something with data
+                ...
+            return data
+
+    # this will become name="preprocess.collate" with cat="data"
+    @ai.data.preprocess.derive(name="collate")
+    def collate(batch):
+        # Collate the batch
+        return batch
+    
+    # OR (context-manager style)
+
+    profiler_collate = ai.data.preprocess.derive(name="collate")
+
+    def collate_fn(batch):
+        with profiler_collate:
+            return collate(batch)
