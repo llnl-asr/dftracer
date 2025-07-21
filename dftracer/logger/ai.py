@@ -38,12 +38,21 @@ ROOT_CAT = "ai_root"
 START_METADATA_NAME = "start"
 STOP_METADATA_NAME = "end"
 
+
 def get_iter_block_name(name: str):
-    return f"{name}{CTX_SEPARATOR}{BLOCK_NAME}" if not name.endswith(f"{CTX_SEPARATOR}{BLOCK_NAME}") else name
+    return (
+        f"{name}{CTX_SEPARATOR}{BLOCK_NAME}"
+        if not name.endswith(f"{CTX_SEPARATOR}{BLOCK_NAME}")
+        else name
+    )
 
 
 def get_iter_handle_name(name: str):
-    return f"{name}{CTX_SEPARATOR}{ITER_NAME}" if not name.endswith(f"{CTX_SEPARATOR}{ITER_NAME}") else name
+    return (
+        f"{name}{CTX_SEPARATOR}{ITER_NAME}"
+        if not name.endswith(f"{CTX_SEPARATOR}{ITER_NAME}")
+        else name
+    )
 
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -88,7 +97,7 @@ class _DFTracerAI:
     @overload
     def __call__(
         *,
-        enable: bool = True,
+        enable: Optional[bool] = None,
         epoch: Optional[int] = None,
         step: Optional[int] = None,
         image_idx: Optional[int] = None,
@@ -100,7 +109,7 @@ class _DFTracerAI:
         self,
         fn: Optional[F] = None,
         *,
-        enable: bool = True,
+        enable: Optional[bool] = None,
         epoch: Optional[int] = None,
         step: Optional[int] = None,
         image_idx: Optional[int] = None,
@@ -133,6 +142,7 @@ class _DFTracerAI:
 
             return cast(F, _decorator(fn))
         else:
+            is_enabled = self.profiler._enable if enable is None else enable
             return cast(
                 F,
                 DFTracerAI(
@@ -142,7 +152,7 @@ class _DFTracerAI:
                     step=step,
                     image_idx=image_idx,
                     image_size=image_size,
-                    enable=enable,
+                    enable=is_enabled,
                 ),
             )
 
@@ -158,18 +168,24 @@ class _DFTracerAI:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.profiler.__exit__(exc_type, exc_val, exc_tb)
         return False
-    
+
     def start(self, metadata: bool = False):
         if metadata:
             time = dftracer.get_instance().get_time()
-            self.profiler.log_metadata(key=f"{self.profiler._name}{CTX_SEPARATOR}{START_METADATA_NAME}", value=str(time))
+            self.profiler.log_metadata(
+                key=f"{self.profiler._name}{CTX_SEPARATOR}{START_METADATA_NAME}",
+                value=str(time),
+            )
         else:
             self.__enter__()
 
     def stop(self, metadata: bool = False):
         if metadata:
             time = dftracer.get_instance().get_time()
-            self.profiler.log_metadata(key=f"{self.profiler._name}{CTX_SEPARATOR}{STOP_METADATA_NAME}", value=str(time))
+            self.profiler.log_metadata(
+                key=f"{self.profiler._name}{CTX_SEPARATOR}{STOP_METADATA_NAME}",
+                value=str(time),
+            )
         else:
             self.__exit__(None, None, None)
 
@@ -209,11 +225,6 @@ class _DFTracerAI:
             for key, value in args.items():
                 self.profiler._arguments[key] = str(value)
         return self
-
-    def init(self, fn):
-        return self.profiler.log_init(
-            name=f"{self.profiler._name}.{INIT_NAME}", f_py=fn
-        )
 
     def iter(
         self,
@@ -348,10 +359,10 @@ class DFTracerAI(_DFTracerAI):
             tracer.disable()
 
     def derive(self, name: str) -> "DFTracerAI":
-        _name = f"{self.profiler._name}.{name}"
+        _name = f"{self.profiler._name}{CTX_SEPARATOR}{name}"
         if _name in self._children:
             return self._children[_name]
-        
+
         child = DFTracerAI(
             cat=self.profiler._cat,
             name=_name,
@@ -364,6 +375,49 @@ class DFTracerAI(_DFTracerAI):
         self._children[_name] = child
         return child
 
+    def init(
+        self,
+        fn: Optional[F] = None,
+        *,
+        enable: Optional[bool] = None,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size=None,
+        args=None,
+    ) -> "DFTracerAI":
+        _name = f"{self.profiler._name}{CTX_SEPARATOR}{INIT_NAME}"
+        if _name in self._children:
+            return self._children[_name](
+                fn=fn,
+                enable=enable,
+                epoch=epoch,
+                step=step,
+                image_idx=image_idx,
+                image_size=image_size,
+                args=args,
+            )
+
+        child = DFTracerAI(
+            cat=self.profiler._cat,
+            name=_name,
+            epoch=self.profiler._arguments.get("epoch"),
+            step=self.profiler._arguments.get("step"),
+            image_idx=self.profiler._arguments.get("image_idx"),
+            image_size=self.profiler._arguments.get("image_size"),
+            enable=self.profiler._enable,
+        )
+        self._children[_name] = child
+        return child(
+            fn=fn,
+            enable=enable,
+            epoch=epoch,
+            step=step,
+            image_idx=image_idx,
+            image_size=image_size,
+            args=args,
+        )
+
 
 # Enumerations
 
@@ -374,6 +428,7 @@ class ProfileCategory(StringEnum):
     DATALOADER = auto()
     COMM = auto()
     DEVICE = auto()
+    CHECKPOINT = auto()
     PIPELINE = auto()
 
 
@@ -416,6 +471,11 @@ class PipelineEvent(StringEnum):
     TRAIN = auto()
     EVALUATE = auto()
     TEST = auto()
+
+
+class CheckpointEvent(StringEnum):
+    CAPTURE = auto()
+    RESTART = auto()
 
 
 class _Compute(DFTracerAI):
@@ -580,6 +640,35 @@ class _Device(DFTracerAI):
         )
 
 
+class _Checkpoint(DFTracerAI):
+    capture: DFTracerAI
+    restart: DFTracerAI
+
+    def __init__(
+        self,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        image_idx: Optional[int] = None,
+        image_size: Optional[Any] = None,
+        enable: bool = True,
+    ):
+        super().__init__(
+            cat=ProfileCategory.CHECKPOINT,
+            name=ProfileCategory.CHECKPOINT,
+            epoch=epoch,
+            step=step,
+            image_idx=image_idx,
+            image_size=image_size,
+            enable=enable,
+        )
+        self.create_children(
+            {
+                "capture": CheckpointEvent.CAPTURE,
+                "restart": CheckpointEvent.RESTART,
+            }
+        )
+
+
 class _Pipeline(DFTracerAI):
     epoch: DFTracerAI
     train: DFTracerAI
@@ -620,6 +709,7 @@ class _AI(DFTracerAI):
     dataloader: _DataLoader
     comm: _Communication
     device: _Device
+    checkpoint: _Checkpoint
     pipeline: _Pipeline
 
     def __init__(
@@ -636,6 +726,7 @@ class _AI(DFTracerAI):
         self.dataloader = _DataLoader(epoch=epoch, step=step, image_idx=image_idx, image_size=image_size, enable=enable)
         self.comm = _Communication(epoch=epoch, step=step, image_idx=image_idx, image_size=image_size, enable=enable)
         self.device = _Device(epoch=epoch, step=step, image_idx=image_idx, image_size=image_size, enable=enable)
+        self.checkpoint = _Checkpoint(epoch=epoch, step=step, image_idx=image_idx, image_size=image_size, enable=enable)
         self.pipeline = _Pipeline(epoch=epoch, step=step, image_idx=image_idx, image_size=image_size, enable=enable)
 
         self._children = {
@@ -644,6 +735,7 @@ class _AI(DFTracerAI):
             "dataloader": self.dataloader,
             "comm": self.comm,
             "device": self.device,
+            "checkpoint": self.checkpoint,
             "pipeline": self.pipeline,
         }
 # fmt: on
@@ -655,6 +747,7 @@ compute = ai.compute
 data = ai.data
 dataloader = ai.dataloader
 device = ai.device
+checkpoint = ai.checkpoint
 pipeline = ai.pipeline
 
 __all__ = [

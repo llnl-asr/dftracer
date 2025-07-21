@@ -35,7 +35,7 @@ def get_args():
     )
     parser.add_argument(
         "--disable-ai-cat",
-        choices=["all", "dataloader", "device", "compute", "comm"],
+        choices=["all", "dataloader", "device", "compute", "comm", "ckpt"],
         default=None,
         type=str,
         help="Disable AI category",
@@ -97,6 +97,20 @@ def compute(data):
     backward()
     return _
 
+class Checkpoint:
+    @ai.checkpoint.init
+    def __init__(self):
+        sleep(0.1)
+
+    @ai.checkpoint.capture
+    def capture(self, _):
+        sleep(0.1)
+        return _
+    
+    @ai.checkpoint.restart
+    def restart(self, _):
+        sleep(0.1)
+        return _
 
 class Hook:
     def before_step(self, *args, **kwargs):
@@ -114,6 +128,10 @@ def train(args, hook):
     os.makedirs(f"{args.data_dir}/npz", exist_ok=True)
     data = np.ones((args.record_size, 1), dtype=np.uint8)
     data_gen(args, io, data)
+
+    checkpoint = Checkpoint()
+
+    checkpoint.restart({})
 
     if args.epoch_as_metadata:
         for epoch in range(args.niter):
@@ -140,6 +158,8 @@ def train(args, hook):
                 hook.after_step()
                 ai.dataloader.fetch.update(step=step, epoch=epoch)
 
+    checkpoint.capture({})
+
 def main():
     args = get_args()
 
@@ -153,6 +173,8 @@ def main():
         ai.compute.disable()
     elif args.disable_ai_cat == "comm":
         ai.comm.disable()
+    elif args.disable_ai_cat == "ckpt":
+        ai.checkpoint.disable()
 
     hook = Hook()
     df_logger = dftracer.initialize_log(logfile=None, data_dir=None, process_id=-1)

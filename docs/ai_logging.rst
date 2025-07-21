@@ -121,6 +121,14 @@ The table below provides a breakdown of the conventions and how they can be appl
      - Transfer
      - ``ai.device.transfer``
      - Host-to-device or device-to-host memory transfer
+   * - Checkpoint
+     - Capture
+     - ``ai.checkpoint.capture``
+     - Capture a model checkpoint
+   * -
+     - Restart
+     - ``ai.checkpoint.restart``
+     - Restart a model checkpoint
    * - Pipeline
      - Epoch
      - ``ai.pipeline.epoch``
@@ -177,7 +185,7 @@ To use these conventions, you can annotate your code as follows:
 
     @ai.pipeline.train
     def train(model, dataloader, optimizer, device, num_epoch):
-        for epoch in ai.pipeline.epoch.iter(num_epoch):
+        for epoch in ai.pipeline.epoch.iter(range(num_epoch)):
             for batch in ai.dataloader.fetch.iter(dataloader):
                 x, y = transfer_to_gpu(batch, device)
                 compute(model, x, optimizer)
@@ -444,7 +452,7 @@ Example:
     ## including the derived profiler such as `collate`
     ai.data.preprocess.update(epoch=epoch) 
 
-As metadata
+As metadata / streaming style
 ****************************************
 
 By default, DFTracer logs events with a start and end time (duration-based logging). 
@@ -488,3 +496,81 @@ To enable metadata mode, use ``metadata=True``:
     {"id":6,"name":"CM","cat":"dftracer","pid":2876815,"tid":2876815,"ph":"M","args":{"hhash":"2a702c695247d487","name":"epoch.start","value":"1753123071041678"}}
 
 The key difference: metadata mode logs events instantly, while regular mode waits until the event completes to log the duration.
+
+Init event
+****************************************
+
+Sometimes you need to log the initialization of a process or component. 
+
+This is useful for tracking startup phases and initialization overhead.
+
+To log an init event, use the ``init`` method:
+
+.. code-block:: python
+
+    class Checkpoint:
+        @ai.checkpoint.init
+        def __init__(self):
+            # Initialize something
+            ...
+
+    # or
+
+    with ai.checkpoint.init:
+        # Initialize something
+        ...
+
+This will output:
+
+.. code-block:: json
+
+    {"id":7,"name":"checkpoint.init","cat":"checkpoint","pid":444541,"tid":444541,"ts":1753136835509693,"dur":100583,"ph":"X","args":{"hhash":"2a702c695247d487","p_idx":6,"level":2}}
+    ...
+
+The event name becomes ``checkpoint.init`` (not just ``init``) to avoid conflicts with other events. 
+This namespacing keeps events organized under their proper categories.
+We could add a separate ``init`` category to our tree, but that would be overkill for something that may not be needed in most codebases.
+
+Caveats
+****************************************
+
+**Call ordering matters for enable/disable**
+
+The order of calls can affect whether events get logged or not.
+
+This works as expected:
+
+.. code-block:: python
+
+    class Checkpoint:
+        @ai.checkpoint.init # <-- this instance is tracked internally
+        def __init__(self):
+            # Initialize something
+            ...
+
+    if __name__ == "__main__":
+        ai.checkpoint.disable()  # Disables all checkpoint events
+
+This syntax sugar doesn't work as expected:
+
+.. code-block:: python
+
+    class Checkpoint:
+        @ai.checkpoint.init()  # Notice the parentheses
+        def __init__(self):
+            ...
+
+    if __name__ == "__main__":
+        ai.checkpoint.disable()  # This won't disable the event above
+
+Why?
+
+When you add parentheses ``()``, the decorator creates a new instance immediately. 
+Since ``disable()`` is called later, it can't affect the already-created instance.
+
+Solution:
+
+- Use the decorator without parentheses, or call ``disable()`` before defining your class.
+- Only use parentheses ``()`` when you need to force enable/disable a specific event
+- To add metadata, use the ``update()`` method instead
+- To create variations of an event, use the ``derive()`` method instead
