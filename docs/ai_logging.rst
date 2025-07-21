@@ -570,7 +570,7 @@ Since ``disable()`` is called later, it can't affect the already-created instanc
 
 Solution:
 
-- Use the decorator without parentheses, or call ``disable()`` before defining your class.
-- Only use parentheses ``()`` when you need to force enable/disable a specific event
-- To add metadata, use the ``update()`` method instead
-- To create variations of an event, use the ``derive()`` method instead
+#. Use the decorator without parentheses, or call ``disable()`` before defining your class.
+#. Only use parentheses ``()`` when you need to force enable/disable a specific event
+#. To add metadata, use the ``update()`` method instead
+#. To create variations of an event, use the ``derive()`` method instead
