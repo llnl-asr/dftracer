@@ -86,7 +86,7 @@ class _DFTracerAI:
     def __call__(
         fn: F,
         *,
-        enable: bool = True,
+        enable: Optional[bool] = None,
         epoch: Optional[int] = None,
         step: Optional[int] = None,
         image_idx: Optional[int] = None,
@@ -128,12 +128,14 @@ class _DFTracerAI:
         for key, value in args.items():
             self._arguments[key] = str(value)
 
+        is_enabled = self.profiler._enable if enable is None else enable
+
         if fn:
 
             def _decorator(f):
                 @functools.wraps(f)
                 def wrapper(*args, **kwargs):
-                    if enable:
+                    if is_enabled:
                         with self:
                             return f(*args, **kwargs)
                     return f(*args, **kwargs)
@@ -142,7 +144,6 @@ class _DFTracerAI:
 
             return cast(F, _decorator(fn))
         else:
-            is_enabled = self.profiler._enable if enable is None else enable
             return cast(
                 F,
                 DFTracerAI(
