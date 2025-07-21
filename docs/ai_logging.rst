@@ -443,3 +443,48 @@ Example:
     ## this will update all children of ai.data.preprocess
     ## including the derived profiler such as `collate`
     ai.data.preprocess.update(epoch=epoch) 
+
+As metadata
+****************************************
+
+By default, DFTracer logs events with a start and end time (duration-based logging). 
+But sometimes you want to log events immediately as they happen, without waiting for them to finish.
+
+This is useful for real-time monitoring or when you need immediate feedback.
+
+To enable metadata mode, use ``metadata=True``:
+
+.. code-block:: python
+
+    # Regular
+    for epoch in ai.pipeline.epoch.iter(range(num_epochs)):
+        for step in range(num_steps):
+            # Do some work
+            ...
+
+    # As metadata
+    for epoch in range(num_epochs):
+        ai.pipeline.epoch.start(metadata=True)
+        for step in range(num_steps):
+            # Do some work
+        ai.pipeline.epoch.stop(metadata=True)
+
+**Regular mode output:**
+
+.. code-block:: json
+
+    {"id":27,"name":"epoch.block","cat":"pipeline","pid":2877353,"tid":2877353,"ts":1753123213646764,"dur":828765,"ph":"X","args":{"hhash":"2a702c695247d487","p_idx":6,"count":"1","level":2}}
+    ...
+    {"id":69,"name":"epoch.block","cat":"pipeline","pid":2877353,"tid":2877353,"ts":1753123215361535,"dur":819403,"ph":"X","args":{"hhash":"2a702c695247d487","p_idx":6,"count":"3","level":2}}
+
+**Metadata mode output:**
+
+.. code-block:: json
+
+    {"id":6,"name":"CM","cat":"dftracer","pid":2876815,"tid":2876815,"ph":"M","args":{"hhash":"2a702c695247d487","name":"epoch.end","value":"1753123070219202"}}
+    {"id":6,"name":"CM","cat":"dftracer","pid":2876815,"tid":2876815,"ph":"M","args":{"hhash":"2a702c695247d487","name":"epoch.start","value":"1753123070219648"}}
+    ...
+    {"id":6,"name":"CM","cat":"dftracer","pid":2876815,"tid":2876815,"ph":"M","args":{"hhash":"2a702c695247d487","name":"epoch.end","value":"1753123071041297"}}
+    {"id":6,"name":"CM","cat":"dftracer","pid":2876815,"tid":2876815,"ph":"M","args":{"hhash":"2a702c695247d487","name":"epoch.start","value":"1753123071041678"}}
+
+The key difference: metadata mode logs events instantly, while regular mode waits until the event completes to log the duration.

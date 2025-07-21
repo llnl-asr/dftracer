@@ -35,6 +35,8 @@ ITER_NAME = "iter"
 CTX_SEPARATOR = "."
 ROOT_NAME = "ai_root"
 ROOT_CAT = "ai_root"
+START_METADATA_NAME = "start"
+STOP_METADATA_NAME = "end"
 
 def get_iter_block_name(name: str):
     return f"{name}{CTX_SEPARATOR}{BLOCK_NAME}" if not name.endswith(f"{CTX_SEPARATOR}{BLOCK_NAME}") else name
@@ -157,11 +159,19 @@ class _DFTracerAI:
         self.profiler.__exit__(exc_type, exc_val, exc_tb)
         return False
     
-    def start(self):
-        self.__enter__()
+    def start(self, metadata: bool = False):
+        if metadata:
+            time = dftracer.get_instance().get_time()
+            self.profiler.log_metadata(key=f"{self.profiler._name}{CTX_SEPARATOR}{START_METADATA_NAME}", value=str(time))
+        else:
+            self.__enter__()
 
-    def stop(self):
-        self.__exit__(None, None, None)
+    def stop(self, metadata: bool = False):
+        if metadata:
+            time = dftracer.get_instance().get_time()
+            self.profiler.log_metadata(key=f"{self.profiler._name}{CTX_SEPARATOR}{STOP_METADATA_NAME}", value=str(time))
+        else:
+            self.__exit__(None, None, None)
 
     def enable(self):
         self.profiler._enable = True

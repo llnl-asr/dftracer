@@ -45,6 +45,10 @@ def get_args():
         "--niter", default=1, type=int, help="Number of iterations for the experiment"
     )
     parser.add_argument(
+        "--epoch-as-metadata", action="store_true", default=False,
+        help="Use epoch as metadata in the AI logger",
+    )
+    parser.add_argument(
         "--record_size",
         default=1048576,
         type=int,
@@ -111,16 +115,30 @@ def train(args, hook):
     data = np.ones((args.record_size, 1), dtype=np.uint8)
     data_gen(args, io, data)
 
-    for epoch in ai.pipeline.epoch.iter(range(args.niter)):
-        for step, data in ai.dataloader.fetch.iter(
-            enumerate(read_data(args, io, epoch))
-        ):
-            hook.before_step()
-            data = collate(data)
-            _ = transfer(data)
-            _ = compute(data)
-            hook.after_step()
-            ai.dataloader.fetch.update(step=step, epoch=epoch)
+    if args.epoch_as_metadata:
+        for epoch in range(args.niter):
+            ai.pipeline.epoch.start(metadata=True)
+            for step, data in ai.dataloader.fetch.iter(
+                enumerate(read_data(args, io, epoch))
+            ):
+                hook.before_step()
+                data = collate(data)
+                _ = transfer(data)
+                _ = compute(data)
+                hook.after_step()
+                ai.dataloader.fetch.update(step=step, epoch=epoch)
+            ai.pipeline.epoch.stop(metadata=True)
+    else:
+        for epoch in ai.pipeline.epoch.iter(range(args.niter)):
+            for step, data in ai.dataloader.fetch.iter(
+                enumerate(read_data(args, io, epoch))
+            ):
+                hook.before_step()
+                data = collate(data)
+                _ = transfer(data)
+                _ = compute(data)
+                hook.after_step()
+                ai.dataloader.fetch.update(step=step, epoch=epoch)
 
 def main():
     args = get_args()
