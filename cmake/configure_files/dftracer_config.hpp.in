@@ -34,6 +34,7 @@
 #cmakedefine DFTRACER_FTRACING_ENABLE 1
 #cmakedefine DFTRACER_HWLOC_ENABLE 1
 #cmakedefine DFTRACER_HIP_TRACING_ENABLE 1
+#cmakedefine DFTRACER_CUDA_TRACING_ENABLE 1
 
 //==========================
 // Common macro definitions

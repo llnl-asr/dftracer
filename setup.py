@@ -19,6 +19,8 @@ PLAT_TO_CMAKE = {
 }
 
 
+
+
 def myversion_func(version: ScmVersion) -> str:
     from setuptools_scm.version import only_version
 
@@ -90,6 +92,8 @@ class CMakeBuild(build_ext):
         cmake_args += [f"-DCMAKE_BUILD_TYPE={build_type}"]
         enable_ftracing = os.environ.get("DFTRACER_ENABLE_FTRACING", "OFF")
         cmake_args += [f"-DDFTRACER_ENABLE_FTRACING={enable_ftracing}"]
+        enable_cuda_tracing = os.environ.get("DFTRACER_ENABLE_CUDA_TRACING", "OFF")
+        cmake_args += [f"-DDFTRACER_ENABLE_CUDA_TRACING={enable_cuda_tracing}"]
         enable_hip_tracing = os.environ.get("DFTRACER_ENABLE_HIP_TRACING", "OFF")
         cmake_args += [f"-DDFTRACER_ENABLE_HIP_TRACING={enable_hip_tracing}"]
         enable_mpi = os.environ.get("DFTRACER_ENABLE_MPI", "OFF")

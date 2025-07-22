@@ -394,6 +394,7 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/stdio.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/finstrument/functions.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/hip/intercept.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/cuda/intercept.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/posix_internal.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/dftracer.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/dftracer_main.cpp
