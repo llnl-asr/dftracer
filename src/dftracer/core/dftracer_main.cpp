@@ -201,10 +201,17 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char *_log_file,
       if (_log_file == nullptr) {
         DFTRACER_LOG_INFO("Extracted process_name %s", exec_name);
         if (!conf->log_file.empty()) {
+          char log_filename_str[DFT_PATH_MAX];
+          char hostname[256] = "unknown";
+          gethostname(hostname, sizeof(hostname));
+          hostname[sizeof(hostname) - 1] = '\0';
+          sprintf(log_filename_str, "%s-%s-%lu", exec_name, hostname,
+                  this->process_id);
+          char *log_file_hash = logger->get_hash(log_filename_str);
           DFTRACER_LOG_DEBUG("Conf has log file %s", conf->log_file.c_str());
-          this->log_file = std::string(conf->log_file) + "-" + exec_name + "-" +
-                           std::to_string(this->process_id) + "-" +
-                           log_file_suffix + ".pfw";
+          this->log_file = std::string(conf->log_file) + "-" +
+                           std::string(log_file_hash) + "-" + log_file_suffix +
+                           ".pfw";
         } else {  // GCOV_EXCL_START
           DFTRACER_LOG_ERROR(DFTRACER_UNDEFINED_LOG_FILE_MSG, "");
           throw std::runtime_error(DFTRACER_UNDEFINED_LOG_FILE_CODE);
