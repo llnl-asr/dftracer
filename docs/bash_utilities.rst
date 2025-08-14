@@ -90,3 +90,55 @@ Extract max timestamp
 For more commands on `jq` refer to  `JQ Manual
 <https://jqlang.github.io/jq/manual/>`_.
 
+
+-------------------
+Querying AI DFTracer
+-------------------
+
+.. code-block:: bash
+
+    function extract_duration() {
+        local name="$1"
+        local is_cat="$2"
+        if [ "$is_cat" = "true" ]; then
+            gzip -dc *.gz | grep "\"cat\":\"$name\"" | LC_ALL=C sed 's/[^[:print:]\r\t]//g' | jq -R -c "fromjson?" | jq -c '"\(.pid) \(.dur)"' |  awk '{dur[$1]+=$2} END{max=0; for(p in dur) if(dur[p]>max) max=dur[p]; print max/1000000 " seconds"}'
+        else
+            gzip -dc *.gz | grep "\"name\":\"$name\"" | LC_ALL=C sed 's/[^[:print:]\r\t]//g' | jq -R -c "fromjson?" | jq -c '"\(.pid) \(.dur)"' |  awk '{dur[$1]+=$2} END{max=0; for(p in dur) if(dur[p]>max) max=dur[p]; print max/1000000 " seconds"}'
+        fi
+    }
+
+Overall
+*******
+
+.. code-block:: bash
+
+    extract_duration "ai_root"
+    extract_duration "train"
+    extract_duration "epoch"
+
+Checkpointing
+*************
+
+.. code-block:: bash
+
+    extract_duration "restart"
+    extract_duration "capture"
+
+Compute
+*******
+
+.. code-block:: bash
+
+    extract_duration "fetch.block"
+    extract_duration "compute"
+    extract_duration "backward"
+    extract_duration "forward"
+
+I/O
+***
+
+.. code-block:: bash
+
+    extract_duration "fetch.iter"
+    extract_duration "item"
+    extract_duration "POSIX" true
