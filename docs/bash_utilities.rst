@@ -97,15 +97,30 @@ Querying AI DFTracer
 
 .. code-block:: bash
 
-    function extract_duration() {
-        local name="$1"
-        local is_cat="$2"
-        if [ "$is_cat" = "true" ]; then
-            gzip -dc *.gz | grep "\"cat\":\"$name\"" | LC_ALL=C sed 's/[^[:print:]\r\t]//g' | jq -R -c "fromjson?" | jq -c '"\(.pid) \(.dur)"' |  awk '{dur[$1]+=$2} END{max=0; for(p in dur) if(dur[p]>max) max=dur[p]; print max/1000000 " seconds"}'
-        else
-            gzip -dc *.gz | grep "\"name\":\"$name\"" | LC_ALL=C sed 's/[^[:print:]\r\t]//g' | jq -R -c "fromjson?" | jq -c '"\(.pid) \(.dur)"' |  awk '{dur[$1]+=$2} END{max=0; for(p in dur) if(dur[p]>max) max=dur[p]; print max/1000000 " seconds"}'
+   function extract_duration() {
+        local name="$1"     # Event name to search for
+        local cat="$2"      # Category to search in (optional)
+        
+        # Default to searching by "name" field if no category specified
+        if [ -z "$cat" ]; then
+            cat="name"
         fi
+        
+        # Extract duration data for the specified event:
+        # 1. Decompress all .gz files
+        # 2. Filter for events matching the category and name
+        # 3. Clean non-printable characters
+        # 4. Parse JSON and extract PID and duration
+        # 5. Sum durations by PID and find maximum
+        # 6. Convert from microseconds to seconds
+        gzip -dc *.gz | \
+            grep "\"$cat\":\"$name\"" | \
+            LC_ALL=C sed 's/[^[:print:]\r\t]//g' | \
+            jq -R -c "fromjson?" | \
+            jq -c '"\(.pid) \(.dur)"' | \
+            awk '{dur[$1]+=$2} END{max=0; for(p in dur) if(dur[p]>max) max=dur[p]; print max/1000000 " seconds"}'
     }
+
 
 Overall
 *******
@@ -141,4 +156,4 @@ I/O
 
     extract_duration "fetch.iter"
     extract_duration "item"
-    extract_duration "POSIX" true
+    extract_duration "POSIX" "cat"
