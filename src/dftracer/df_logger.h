@@ -160,6 +160,11 @@ class DFTLogger {
       dftracer::Metadata *meta = nullptr;
       if (include_metadata) {
         meta = new dftracer::Metadata();
+        char cwd[PATH_MAX];
+        if (getcwd(cwd, sizeof(cwd)) != NULL) {
+          auto cwd_hash = hash_and_store(cwd, METADATA_NAME_FILE_HASH);
+          meta->insert_or_assign("cwd", cwd_hash);
+        }
         cmd_hash = hash_and_store(cmd.data(), METADATA_NAME_STRING_HASH);
         exec_hash = hash_and_store(exec_name.data(), METADATA_NAME_STRING_HASH);
 #ifdef DFTRACER_GIT_VERSION
