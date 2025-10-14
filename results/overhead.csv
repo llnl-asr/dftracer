@@ -1,5 +1,5 @@
 access_type,mode,baseline_avg,baseline_std,mode_avg,mode_std,overhead_percent
-write,trace,1199.31,455.97,1217.55,436.78,1.52
-write,profile,1199.31,455.97,1196.78,446.27,-0.21
-read,trace,7556.10,4729.26,7579.82,4693.22,0.31
-read,profile,7556.10,4729.26,7271.37,4444.84,-3.77
+write,trace,1232.97,432.37,1239.50,431.78,0.53
+write,profile,1232.97,432.37,1244.79,462.63,0.96
+read,trace,9773.38,7146.21,9144.14,6437.73,-6.44
+read,profile,9773.38,7146.21,9919.63,7291.16,1.50
