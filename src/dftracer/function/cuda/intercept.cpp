@@ -27,7 +27,7 @@ int times = 0;
 namespace dftracer {
 
 // Helper function implementations
-const char *CUPTIFunction::getMemcpyKindString(CUpti_ActivityMemcpyKind kind) {
+const char* CUPTIFunction::getMemcpyKindString(CUpti_ActivityMemcpyKind kind) {
   switch (kind) {
     case CUPTI_ACTIVITY_MEMCPY_KIND_HTOD:
       return "HtoD";
@@ -52,7 +52,7 @@ const char *CUPTIFunction::getMemcpyKindString(CUpti_ActivityMemcpyKind kind) {
   }
 }
 
-const char *CUPTIFunction::getActivityOverheadKindString(
+const char* CUPTIFunction::getActivityOverheadKindString(
     CUpti_ActivityOverheadKind kind) {
   switch (kind) {
     case CUPTI_ACTIVITY_OVERHEAD_DRIVER_COMPILER:
@@ -68,7 +68,7 @@ const char *CUPTIFunction::getActivityOverheadKindString(
   }
 }
 
-const char *CUPTIFunction::getActivityObjectKindString(
+const char* CUPTIFunction::getActivityObjectKindString(
     CUpti_ActivityObjectKind kind) {
   switch (kind) {
     case CUPTI_ACTIVITY_OBJECT_PROCESS:
@@ -86,7 +86,7 @@ const char *CUPTIFunction::getActivityObjectKindString(
   }
 }
 
-const char *CUPTIFunction::getComputeApiKindString(
+const char* CUPTIFunction::getComputeApiKindString(
     CUpti_ActivityComputeApiKind kind) {
   switch (kind) {
     case CUPTI_ACTIVITY_COMPUTE_API_CUDA:
@@ -99,7 +99,7 @@ const char *CUPTIFunction::getComputeApiKindString(
 }
 
 uint32_t CUPTIFunction::getActivityObjectKindId(
-    CUpti_ActivityObjectKind kind, CUpti_ActivityObjectKindId *id) {
+    CUpti_ActivityObjectKind kind, CUpti_ActivityObjectKindId* id) {
   switch (kind) {
     case CUPTI_ACTIVITY_OBJECT_PROCESS:
       return id->pt.processId;
@@ -127,11 +127,11 @@ TimeResolution CUPTIFunction::transform_time(uint64_t end_time,
 }
 
 // Static callback implementations
-void CUPTIAPI CUPTIFunction::bufferRequested(uint8_t **buffer, size_t *size,
-                                             size_t *maxNumRecords) {
+void CUPTIAPI CUPTIFunction::bufferRequested(uint8_t** buffer, size_t* size,
+                                             size_t* maxNumRecords) {
   printf("CUPTI buffer requested\n");
   *size = BUF_SIZE;
-  *buffer = static_cast<uint8_t *>(malloc(BUF_SIZE));
+  *buffer = static_cast<uint8_t*>(malloc(BUF_SIZE));
   *maxNumRecords = 1;
 
   if (*buffer == nullptr) {
@@ -154,11 +154,11 @@ void CUPTIAPI CUPTIFunction::bufferRequested(uint8_t **buffer, size_t *size,
 }
 
 void CUPTIAPI CUPTIFunction::bufferCompleted(CUcontext ctx, uint32_t streamId,
-                                             uint8_t *buffer, size_t size,
+                                             uint8_t* buffer, size_t size,
                                              size_t validSize) {
   printf("CUPTI buffer completed\n");
   CUptiResult status;
-  CUpti_Activity *record = nullptr;
+  CUpti_Activity* record = nullptr;
   auto instance = dftracer::Singleton<dftracer::CUPTIFunction>::get_instance();
 
   if (validSize > 0) {
@@ -201,8 +201,8 @@ void CUPTIFunction::initialize() {
   // Enable all other activity record kinds
   // CUPTI_CALL(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONTEXT));
   // CUPTI_CALL(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_DRIVER));
-  // CUPTI_CALL(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_RUNTIME));
-  // CUPTI_CALL(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY));
+  CUPTI_CALL(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_RUNTIME));
+  CUPTI_CALL(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY));
   // CUPTI_CALL(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMSET));
   // CUPTI_CALL(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_NAME));
   // CUPTI_CALL(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MARKER));
@@ -241,52 +241,52 @@ void CUPTIFunction::finalize() {
 }
 
 // Activity processing implementation
-void CUPTIFunction::processActivity(CUpti_Activity *record) {
+void CUPTIFunction::processActivity(CUpti_Activity* record) {
   printf("Processing CUPTI activity: %d\n", record->kind);
 
   switch (record->kind) {
     case CUPTI_ACTIVITY_KIND_KERNEL:
     case CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL: {
-      const char *kindString = (record->kind == CUPTI_ACTIVITY_KIND_KERNEL)
+      const char* kindString = (record->kind == CUPTI_ACTIVITY_KIND_KERNEL)
                                    ? "KERNEL"
                                    : "CONC_KERNEL";
-      CUpti_ActivityKernel5 *kernel =
-          reinterpret_cast<CUpti_ActivityKernel5 *>(record);
+      CUpti_ActivityKernel5* kernel =
+          reinterpret_cast<CUpti_ActivityKernel5*>(record);
       processKernelActivity(kernel, kindString);
       break;
     }
     case CUPTI_ACTIVITY_KIND_MEMCPY: {
-      CUpti_ActivityMemcpy4 *memcpy =
-          reinterpret_cast<CUpti_ActivityMemcpy4 *>(record);
+      CUpti_ActivityMemcpy4* memcpy =
+          reinterpret_cast<CUpti_ActivityMemcpy4*>(record);
       processMemcpyActivity(memcpy);
       break;
     }
     case CUPTI_ACTIVITY_KIND_MEMSET: {
-      CUpti_ActivityMemset3 *memset =
-          reinterpret_cast<CUpti_ActivityMemset3 *>(record);
+      CUpti_ActivityMemset3* memset =
+          reinterpret_cast<CUpti_ActivityMemset3*>(record);
       processMemsetActivity(memset);
       break;
     }
     case CUPTI_ACTIVITY_KIND_RUNTIME: {
-      CUpti_ActivityAPI *api = reinterpret_cast<CUpti_ActivityAPI *>(record);
+      CUpti_ActivityAPI* api = reinterpret_cast<CUpti_ActivityAPI*>(record);
       processRuntimeActivity(api, "RUNTIME");
       break;
     }
     case CUPTI_ACTIVITY_KIND_DRIVER: {
-      CUpti_ActivityAPI *api = reinterpret_cast<CUpti_ActivityAPI *>(record);
+      CUpti_ActivityAPI* api = reinterpret_cast<CUpti_ActivityAPI*>(record);
       processDriverActivity(api);
       break;
     }
     case CUPTI_ACTIVITY_KIND_CONTEXT: {
-      CUpti_ActivityContext *context =
-          reinterpret_cast<CUpti_ActivityContext *>(record);
+      CUpti_ActivityContext* context =
+          reinterpret_cast<CUpti_ActivityContext*>(record);
       processContextActivity(context);
       break;
     }
     case CUPTI_ACTIVITY_KIND_DEVICE: {
       printf("Device\n");
-      CUpti_ActivityDevice2 *device =
-          reinterpret_cast<CUpti_ActivityDevice2 *>(record);
+      CUpti_ActivityDevice2* device =
+          reinterpret_cast<CUpti_ActivityDevice2*>(record);
       processDeviceActivity(device);
       printf("processed device activity\n");
       break;
@@ -297,8 +297,8 @@ void CUPTIFunction::processActivity(CUpti_Activity *record) {
   }
 }
 
-void CUPTIFunction::processKernelActivity(CUpti_ActivityKernel5 *kernel,
-                                          const char *kindString) {
+void CUPTIFunction::processKernelActivity(CUpti_ActivityKernel5* kernel,
+                                          const char* kindString) {
   TimeResolution start_time = transform_timestamp(kernel->start);
   TimeResolution end_time = transform_timestamp(kernel->end);
   TimeResolution duration = transform_time(kernel->end, kernel->start);
@@ -332,7 +332,7 @@ void CUPTIFunction::processKernelActivity(CUpti_ActivityKernel5 *kernel,
   logger->exit_event();
 }
 
-void CUPTIFunction::processMemcpyActivity(CUpti_ActivityMemcpy4 *memcpy) {
+void CUPTIFunction::processMemcpyActivity(CUpti_ActivityMemcpy4* memcpy) {
   TimeResolution start_time = transform_timestamp(memcpy->start);
   TimeResolution end_time = transform_timestamp(memcpy->end);
   TimeResolution duration = transform_time(memcpy->end, memcpy->start);
@@ -361,7 +361,7 @@ void CUPTIFunction::processMemcpyActivity(CUpti_ActivityMemcpy4 *memcpy) {
   logger->exit_event();
 }
 
-void CUPTIFunction::processMemsetActivity(CUpti_ActivityMemset3 *memset) {
+void CUPTIFunction::processMemsetActivity(CUpti_ActivityMemset3* memset) {
   TimeResolution start_time = transform_timestamp(memset->start);
   TimeResolution end_time = transform_timestamp(memset->end);
   TimeResolution duration = transform_time(memset->end, memset->start);
@@ -383,8 +383,8 @@ void CUPTIFunction::processMemsetActivity(CUpti_ActivityMemset3 *memset) {
   logger->exit_event();
 }
 
-void CUPTIFunction::processRuntimeActivity(CUpti_ActivityAPI *api,
-                                           const char *apiType) {
+void CUPTIFunction::processRuntimeActivity(CUpti_ActivityAPI* api,
+                                           const char* apiType) {
   TimeResolution start_time = transform_timestamp(api->start);
   TimeResolution end_time = transform_timestamp(api->end);
   TimeResolution duration = transform_time(api->end, api->start);
@@ -406,11 +406,11 @@ void CUPTIFunction::processRuntimeActivity(CUpti_ActivityAPI *api,
   logger->exit_event();
 }
 
-void CUPTIFunction::processDriverActivity(CUpti_ActivityAPI *api) {
+void CUPTIFunction::processDriverActivity(CUpti_ActivityAPI* api) {
   processRuntimeActivity(api, "DRIVER");
 }
 
-void CUPTIFunction::processContextActivity(CUpti_ActivityContext *context) {
+void CUPTIFunction::processContextActivity(CUpti_ActivityContext* context) {
   // Create metadata for context activity
   auto metadata = new std::unordered_map<std::string, std::any>();
   metadata->insert_or_assign("context_id",
@@ -430,11 +430,12 @@ void CUPTIFunction::processContextActivity(CUpti_ActivityContext *context) {
           static_cast<CUpti_ActivityComputeApiKind>(context->computeApiKind));
 
   logger->enter_event();
-  logger->log(event_name.c_str(), kind_name.c_str(), 0, 0, metadata);
+  logger->log(event_name.c_str(), kind_name.c_str(), logger->get_time(), 0,
+              metadata);
   logger->exit_event();
 }
 
-void CUPTIFunction::processDeviceActivity(CUpti_ActivityDevice2 *device) {
+void CUPTIFunction::processDeviceActivity(CUpti_ActivityDevice2* device) {
   printf("Processing device activity: %d\n", device->id);
 
   // Create metadata for device activity
