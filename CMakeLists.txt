@@ -368,7 +368,9 @@ set(DFTRACER_CORE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/posix
 set(DFTRACER_CORE_PUBLIC_INCLUDE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/dftracer.h
         ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/core/common/constants.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/core/common/typedef.h)
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/core/common/typedef.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/core/common/cpp_typedefs.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/core/common/public_enumeration.h)
 set(DFTRACER_CORE_PRIVATE_INCLUDE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/posix_internal.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/utils.h

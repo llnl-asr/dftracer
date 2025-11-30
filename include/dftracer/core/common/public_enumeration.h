@@ -1,0 +1,7 @@
+
+#ifndef DFTRACER_DFTRACER_CORE_COMMON_PUBLIC_ENUMERATION_H
+#define DFTRACER_DFTRACER_CORE_COMMON_PUBLIC_ENUMERATION_H
+#include <cstdint>
+enum ValueType : uint8_t { VALUE_TYPE_NUMBER = 0, VALUE_TYPE_STRING = 1 };
+enum MetadataType : uint8_t { MT_KEY = 0, MT_VALUE = 1, MT_IGNORE = 2 };
+#endif
