@@ -691,16 +691,17 @@ int brahma::POSIXDFTracer::execvpe(const char *pathname, char *const argv[],
 
 int brahma::POSIXDFTracer::fork() {
   BRAHMA_MAP_OR_FAIL(fork);
-  DFT_LOGGER_START_ALWAYS();
   int ret = __real_fork();
   if (ret == 0) {
     // zero comes for forked childs
     auto main = dftracer::Singleton<dftracer::DFTracerCore>::get_instance(
         ProfilerStage::PROFILER_INIT, ProfileType::PROFILER_PRELOAD);
     main->reinitialize();
+  } else {
+    DFT_LOGGER_START_ALWAYS();
+    DFT_LOGGER_UPDATE(ret);
+    DFT_LOGGER_END();
   }
-  DFT_LOGGER_UPDATE(ret);
-  DFT_LOGGER_END();
   return ret;
 }
 

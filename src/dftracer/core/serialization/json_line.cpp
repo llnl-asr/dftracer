@@ -122,7 +122,7 @@ size_t JsonLines::counter(char *buffer, int index,
   return written_size;
 }
 
-size_t JsonLines::metadata(char *buffer, int index, ConstEventNameType name,
+size_t JsonLines::metadata(char *buffer, ConstEventNameType name,
                            ConstEventNameType value, ConstEventNameType ph,
                            ProcessID process_id, ThreadID thread_id,
                            bool is_string) {
@@ -130,13 +130,13 @@ size_t JsonLines::metadata(char *buffer, int index, ConstEventNameType name,
   if (is_string) {
     written_size = sprintf(
         buffer,
-        R"({"id":%d,"name":"%s","cat":"dftracer","pid":%d,"tid":%lu,"ph":"M","args":{"hhash":"%s","name":"%s","value":"%s"}})",
-        index, ph, process_id, thread_id, this->hostname_hash, name, value);
+        R"({"name":"%s","cat":"dftracer","pid":%d,"tid":%lu,"ph":"M","args":{"hhash":"%s","name":"%s","value":"%s"}})",
+        ph, process_id, thread_id, this->hostname_hash, name, value);
   } else {
     written_size = sprintf(
         buffer,
-        R"({"id":%d,"name":"%s","cat":"dftracer","pid":%dq,"tid":%lu,"ph":"M","args":{"hhash":"%s","name":"%s","value":%s}})",
-        index, ph, process_id, thread_id, this->hostname_hash, name, value);
+        R"({"name":"%s","cat":"dftracer","pid":%d,"tid":%lu,"ph":"M","args":{"hhash":"%s","name":"%s","value":%s}})",
+        ph, process_id, thread_id, this->hostname_hash, name, value);
   }
   buffer[written_size++] = '\n';
   buffer[written_size] = '\0';

@@ -29,7 +29,7 @@ class JsonLines {
               ConstEventNameType category, TimeResolution start_time,
               TimeResolution duration, dftracer::Metadata *metadata,
               ProcessID process_id, ThreadID tid);
-  size_t metadata(char *buffer, int index, ConstEventNameType name,
+  size_t metadata(char *buffer, ConstEventNameType name,
                   ConstEventNameType value, ConstEventNameType ph,
                   ProcessID process_id, ThreadID thread_id,
                   bool is_string = true);

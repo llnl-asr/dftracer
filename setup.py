@@ -79,8 +79,6 @@ class CMakeBuild(build_ext):
         py_cmake_dir = py.get_cmake_dir()
         # py_cmake_dir = os.popen('python3 -c " import pybind11 as py; print(py.get_cmake_dir())"').read() #python("-c", "import pybind11 as py; print(py.get_cmake_dir())", output=str).strip()
 
-        if "DFTRACER_CMAKE_ARGS" in os.environ:
-            cmake_args += [item for item in os.environ["DFTRACER_CMAKE_ARGS"].split(";") if item]
         # Using this requires trailing slash for auto-detection & inclusion of
         # auxiliary "native" libs
         build_type = os.environ.get("DFTRACER_BUILD_TYPE", "Release") # Setting this to release causes memory issues with GCC-13.
@@ -131,8 +129,6 @@ class CMakeBuild(build_ext):
         build_args = []
         # Adding CMake arguments set as environment variable
         # (needed e.g. to build for ARM OSx on conda-forge)
-        if "CMAKE_ARGS" in os.environ:
-            cmake_args += [item for item in os.environ["CMAKE_ARGS"].split(" ") if item]
 
         # In this example, we pass in the version to C++. You might not need to.
         cmake_args += [f"-DEXAMPLE_VERSION_INFO={self.distribution.get_version()}"]
@@ -168,6 +164,10 @@ class CMakeBuild(build_ext):
             f"-Dyaml-cpp_DIR={install_prefix}",
             f"-Dpybind11_DIR={py_cmake_dir}",
         ]
+        
+        
+        if "DFTRACER_CMAKE_ARGS" in os.environ:
+            cmake_args += [item for item in os.environ["DFTRACER_CMAKE_ARGS"].split(";") if item]
 
         subprocess.run(
             ["cmake", ext.sourcedir, *cmake_args], cwd=build_temp, check=True

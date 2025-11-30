@@ -61,7 +61,7 @@ class DFTracerCore {
 
   void log_metadata(ConstEventNameType key, ConstEventNameType value);
 
-  inline void enter_event() { logger->enter_event(); }
+  inline int enter_event() { return logger->enter_event(); }
 
   inline void exit_event() { logger->exit_event(); }
 

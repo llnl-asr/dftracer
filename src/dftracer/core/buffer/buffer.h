@@ -40,10 +40,9 @@ class BufferManager {
                       TimeResolution duration, dftracer::Metadata* metadata,
                       ProcessID process_id, ThreadID tid);
 
-  void log_metadata_event(int index, ConstEventNameType name,
-                          ConstEventNameType value, ConstEventNameType ph,
-                          ProcessID process_id, ThreadID tid,
-                          bool is_string = true);
+  void log_metadata_event(ConstEventNameType name, ConstEventNameType value,
+                          ConstEventNameType ph, ProcessID process_id,
+                          ThreadID tid, bool is_string = true);
 
   void log_counter_event(int index, ConstEventNameType name,
                          ConstEventNameType category, TimeResolution start_time,

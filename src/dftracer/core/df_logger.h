@@ -110,8 +110,8 @@ class DFTLogger {
       hwloc_topology_load(topology);   // actual detection
 #endif
     }
-    buffer_manager =
-        dftracer::Singleton<dftracer::BufferManager>::get_instance();
+    this->buffer_manager =
+        dftracer::Singleton<dftracer::BufferManager>::get_new_instance();
     this->is_init = true;
   }
   ~DFTLogger() {
@@ -152,11 +152,9 @@ class DFTLogger {
       char thread_name[128];
       auto size = sprintf(thread_name, "%d", this->process_id);
       thread_name[size] = '\0';
-      int current_index = this->enter_event();
       this->buffer_manager->log_metadata_event(
-          current_index, thread_name, METADATA_NAME_THREAD_NAME,
-          METADATA_NAME_THREAD_NAME, this->process_id, tid);
-      this->exit_event();
+          thread_name, METADATA_NAME_THREAD_NAME, METADATA_NAME_THREAD_NAME,
+          this->process_id, tid);
       dftracer::Metadata *meta = nullptr;
       if (include_metadata) {
         meta = new dftracer::Metadata();
@@ -204,11 +202,9 @@ class DFTLogger {
           if (dftracer_tid) {
             tid = df_gettid() + this->process_id;
           }
-          int current_index = this->enter_event();
           this->buffer_manager->log_metadata_event(
-              current_index, "core_affinity", all_stream.str().c_str(),
-              METADATA_NAME_PROCESS, this->process_id, tid, false);
-          this->exit_event();
+              "core_affinity", all_stream.str().c_str(), METADATA_NAME_PROCESS,
+              this->process_id, tid, false);
         }
 #endif
       }
@@ -238,7 +234,8 @@ class DFTLogger {
 
   inline int get_parent() {
     std::shared_lock<std::shared_mutex> lock(level_mtx);
-    if (level > 1 && index_stack.size() > 1) {
+    size_t stack_size = index_stack.size();
+    if (level > 1 && stack_size > 1 && level <= stack_size) {
       return index_stack[level - 2];
     }
     return -1;
@@ -246,7 +243,8 @@ class DFTLogger {
 
   inline int get_current() {
     std::shared_lock<std::shared_mutex> lock(level_mtx);
-    if (level > 0 && index_stack.size() > 0) {
+    size_t stack_size = index_stack.size();
+    if (level > 0 && stack_size > 0 && level <= stack_size) {
       return index_stack[level - 1];
     }
     return -1;
@@ -283,20 +281,15 @@ class DFTLogger {
         if (this->buffer_manager != nullptr) {
           this->buffer_manager->set_rank(rank);
         }
-        int current_index = this->enter_event();
         this->buffer_manager->log_metadata_event(
-            current_index, "rank", std::to_string(rank).c_str(),
-            METADATA_NAME_PROCESS, this->process_id, tid);
-        this->exit_event();
+            "rank", std::to_string(rank).c_str(), METADATA_NAME_PROCESS,
+            this->process_id, tid);
         char process_name[1024];
         auto size = sprintf(process_name, "Rank %d", rank);
         process_name[size] = '\0';
-        current_index = this->enter_event();
         this->buffer_manager->log_metadata_event(
-            current_index, process_name, METADATA_NAME_PROCESS_NAME,
+            process_name, METADATA_NAME_PROCESS_NAME,
             METADATA_NAME_PROCESS_NAME, this->process_id, tid);
-        this->exit_event();
-
         mpi_event = true;
       }
     }
@@ -353,9 +346,8 @@ class DFTLogger {
       tid = df_gettid();
     }
     handle_mpi(tid);
-    this->buffer_manager->log_metadata_event(index_stack[level - 1], key, value,
-                                             CUSTOM_METADATA, this->process_id,
-                                             tid);
+    this->buffer_manager->log_metadata_event(key, value, CUSTOM_METADATA,
+                                             this->process_id, tid);
   }
 
   inline HashType hash_and_store(char *filename, ConstEventNameType name) {
@@ -397,10 +389,8 @@ class DFTLogger {
         tid = df_gettid();
       }
       fix_str(file, PATH_MAX);
-      int current_index = this->enter_event();
-      this->buffer_manager->log_metadata_event(current_index, file, hash, name,
+      this->buffer_manager->log_metadata_event(file, hash, name,
                                                this->process_id, tid, true);
-      this->exit_event();
     }
     return hash;
   }
@@ -419,8 +409,11 @@ class DFTLogger {
     if (this->buffer_manager != nullptr) {
       auto meta = new dftracer::Metadata();
       meta->insert_or_assign("num_events", index.load());
-      this->enter_event();
-      this->log("end", "dftracer", this->get_time(), 0, meta);
+      int current_index = this->enter_event();
+      auto tid = df_gettid();
+      this->buffer_manager->log_data_event(current_index, "end", "dftracer",
+                                           this->get_time(), 0, meta,
+                                           this->process_id, tid);
       this->exit_event();
       this->buffer_manager->finalize(index.load(), this->process_id, true);
       DFTRACER_LOG_INFO("Released Logger", "");

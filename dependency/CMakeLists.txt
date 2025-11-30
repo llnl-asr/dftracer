@@ -1,7 +1,7 @@
 include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/modules/dftracer-utils.cmake)
 install_external_project(cpp-logger 1.0.0 "CPP_LOGGER" https://github.com/hariharan-devarajan/cpp-logger.git v0.0.6 ${CMAKE_INSTALL_PREFIX} "")
 install_external_project(gotcha 2.3.2 "gotcha" https://github.com/LLNL/GOTCHA.git 1.0.7 ${CMAKE_INSTALL_PREFIX} "-DCMAKE_POLICY_VERSION_MINIMUM=3.5")
-install_external_project(brahma 2.3.0 "BRAHMA" https://github.com/hariharan-devarajan/brahma.git v0.0.13 ${CMAKE_INSTALL_PREFIX} "")
+install_external_project(brahma 3.0.0 "BRAHMA" https://github.com/hariharan-devarajan/brahma.git v1.0.1 ${CMAKE_INSTALL_PREFIX} "")
 add_dependencies(brahma cpp-logger)
 add_dependencies(brahma gotcha)
 find_package(yaml-cpp QUIET)

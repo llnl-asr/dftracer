@@ -227,7 +227,7 @@ else ()
         message(FATAL_ERROR "-- [CPP_LOGGER] is needed for ${PROJECT_NAME} build")
 endif ()
 
-find_package(brahma 2.1.0 REQUIRED)
+find_package(brahma 3.0.0 REQUIRED)
 if (${brahma_FOUND})
         message(STATUS "[BRAHMA] found brahma at ${BRAHMA_INCLUDE_DIRS}")
         include_directories(${BRAHMA_INCLUDE_DIRS})

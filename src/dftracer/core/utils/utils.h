@@ -235,7 +235,7 @@ inline const char* is_traced_common(const char* filename, const char* func) {
         func);
     return nullptr;
   }
-  DFTRACER_LOG_WARN("Profiler Intercepted POSIX tracing file %s for func %s",
+  DFTRACER_LOG_INFO("Profiler Intercepted POSIX tracing file %s for func %s",
                     filename, func);
   return filename;
 }

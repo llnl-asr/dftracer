@@ -38,6 +38,18 @@ class Singleton {
   }
 
   /**
+   * Uses unique pointer to build a static global instance of variable.
+   * @tparam T
+   * @return instance of T
+   */
+  template <typename... Args>
+  static std::shared_ptr<T> get_new_instance(Args... args) {
+    if (stop_creating_instances) return nullptr;
+    instance = std::make_shared<T>(std::forward<Args>(args)...);
+    return instance;
+  }
+
+  /**
    * Operators
    */
   Singleton &operator=(const Singleton) = delete; /* deleting = operatos*/
