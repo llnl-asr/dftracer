@@ -1,12 +1,12 @@
 // Created by Druva on 7/15/25
-#include <dftracer/function/cuda/intercept.h>
+#include <dftracer/core/function/cuda/intercept.h>
 
-#include <dftracer/dftracer_config.hpp>
+#include <dftracer/core/dftracer_config.hpp>
 
-#define DFTRACER_CUPTI_TRACING_ENABLE 1
-#ifdef DFTRACER_CUPTI_TRACING_ENABLE
+#ifdef DFTRACER_CUDA_TRACING_ENABLE
 
-#include <dftracer/core/logging.h>
+#include <dftracer/core/common/logging.h>
+#include <dftracer/core/common/datastructure.h>
 
 #include <cmath>
 #include <cstdlib>
@@ -129,34 +129,20 @@ TimeResolution CUPTIFunction::transform_time(uint64_t end_time,
 // Static callback implementations
 void CUPTIAPI CUPTIFunction::bufferRequested(uint8_t** buffer, size_t* size,
                                              size_t* maxNumRecords) {
-  printf("CUPTI buffer requested\n");
   *size = BUF_SIZE;
   *buffer = static_cast<uint8_t*>(malloc(BUF_SIZE));
-  *maxNumRecords = 1;
+  *maxNumRecords = 0;
 
   if (*buffer == nullptr) {
     DFTRACER_LOG_ERROR("Failed to allocate CUPTI buffer of size %zu", BUF_SIZE);
-    printf("Failed to allocate CUPTI buffer of size %zu\n", BUF_SIZE);
     *size = 0;
-    *maxNumRecords = 0;
-  } else {
-    total_memory_allocated += BUF_SIZE;
-    printf("CUPTI buffer allocated: %zu bytes\n", BUF_SIZE);
-    printf("Total memory allocated: %llu bytes\n", total_memory_allocated);
-    printf("Total times flushed: %d\n", times);
-    if (++times == 20) {
-      // Flush
-      times = 0;
-      printf("Flushing\n");
-      CUPTI_CALL(cuptiActivityFlushAll(1));
-    }
   }
 }
 
 void CUPTIAPI CUPTIFunction::bufferCompleted(CUcontext ctx, uint32_t streamId,
                                              uint8_t* buffer, size_t size,
                                              size_t validSize) {
-  printf("CUPTI buffer completed\n");
+  DFTRACER_LOG_DEBUG("CUPTI buffer completed", "");
   CUptiResult status;
   CUpti_Activity* record = nullptr;
   auto instance = dftracer::Singleton<dftracer::CUPTIFunction>::get_instance();
@@ -186,7 +172,7 @@ void CUPTIAPI CUPTIFunction::bufferCompleted(CUcontext ctx, uint32_t streamId,
 
 // Main class method implementations
 void CUPTIFunction::initialize() {
-  printf("CUPTIFunction::initialize() called\n");
+  DFTRACER_LOG_INFO("CUPTIFunction::initialize() called", "");
   DFTRACER_LOG_DEBUG("Initializing CUPTIFunction instance", "");
 
   // Get initial timestamp for normalization
@@ -208,7 +194,7 @@ void CUPTIFunction::initialize() {
   // CUPTI_CALL(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MARKER));
   CUPTI_CALL(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL));
   // CUPTI_CALL(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_OVERHEAD));
-  printf("Enabled all activity kinds\n");
+  DFTRACER_LOG_INFO("Enabled all CUPTI activity kinds", "");
 
   // Register callbacks for buffer requests and completion
   CUPTI_CALL(cuptiActivityRegisterCallbacks(bufferRequested, bufferCompleted));
@@ -227,22 +213,35 @@ void CUPTIFunction::initialize() {
   CUPTI_CALL(
       cuptiActivitySetAttribute(CUPTI_ACTIVITY_ATTR_DEVICE_BUFFER_POOL_LIMIT,
                                 &attrValueSize, &attrValue));
-  printf("CUPTI buffer pool limit set to %zu\n", attrValue);
+  DFTRACER_LOG_INFO("CUPTI buffer pool limit set to %zu", attrValue);
+  cupti_initialized = true;
   DFTRACER_LOG_DEBUG("CUPTI initialization completed", "");
 }
 
 void CUPTIFunction::finalize() {
   DFTRACER_LOG_DEBUG("Finalizing CUPTIFunction instance", "");
 
-  // Force flush any remaining activity buffers before termination
+  if (!cupti_initialized) {
+    DFTRACER_LOG_DEBUG("CUPTI was never initialized, skipping finalize", "");
+    return;
+  }
+
+  // Force flush any remaining activity buffers before disabling
   CUPTI_CALL(cuptiActivityFlushAll(1));
 
+  // Disable all activity kinds
+  CUPTI_CALL(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_DEVICE));
+  CUPTI_CALL(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_RUNTIME));
+  CUPTI_CALL(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_MEMCPY));
+  CUPTI_CALL(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL));
+
+  cupti_initialized = false;
   DFTRACER_LOG_DEBUG("CUPTI finalization completed", "");
 }
 
 // Activity processing implementation
 void CUPTIFunction::processActivity(CUpti_Activity* record) {
-  printf("Processing CUPTI activity: %d\n", record->kind);
+  DFTRACER_LOG_DEBUG("Processing CUPTI activity: %d", record->kind);
 
   switch (record->kind) {
     case CUPTI_ACTIVITY_KIND_KERNEL:
@@ -284,11 +283,11 @@ void CUPTIFunction::processActivity(CUpti_Activity* record) {
       break;
     }
     case CUPTI_ACTIVITY_KIND_DEVICE: {
-      printf("Device\n");
+      DFTRACER_LOG_DEBUG("Device activity", "");
       CUpti_ActivityDevice2* device =
           reinterpret_cast<CUpti_ActivityDevice2*>(record);
       processDeviceActivity(device);
-      printf("processed device activity\n");
+      DFTRACER_LOG_DEBUG("Processed device activity", "");
       break;
     }
     default:
@@ -304,7 +303,7 @@ void CUPTIFunction::processKernelActivity(CUpti_ActivityKernel5* kernel,
   TimeResolution duration = transform_time(kernel->end, kernel->start);
 
   // Create metadata for kernel activity
-  auto metadata = new std::unordered_map<std::string, std::any>();
+  auto metadata = new dftracer::Metadata();
   metadata->insert_or_assign("device_id",
                              static_cast<uint32_t>(kernel->deviceId));
   metadata->insert_or_assign("context_id",
@@ -338,7 +337,7 @@ void CUPTIFunction::processMemcpyActivity(CUpti_ActivityMemcpy4* memcpy) {
   TimeResolution duration = transform_time(memcpy->end, memcpy->start);
 
   // Create metadata for memcpy activity
-  auto metadata = new std::unordered_map<std::string, std::any>();
+  auto metadata = new dftracer::Metadata();
   metadata->insert_or_assign("device_id",
                              static_cast<uint32_t>(memcpy->deviceId));
   metadata->insert_or_assign("context_id",
@@ -367,7 +366,7 @@ void CUPTIFunction::processMemsetActivity(CUpti_ActivityMemset3* memset) {
   TimeResolution duration = transform_time(memset->end, memset->start);
 
   // Create metadata for memset activity
-  auto metadata = new std::unordered_map<std::string, std::any>();
+  auto metadata = new dftracer::Metadata();
   metadata->insert_or_assign("device_id",
                              static_cast<uint32_t>(memset->deviceId));
   metadata->insert_or_assign("context_id",
@@ -390,7 +389,7 @@ void CUPTIFunction::processRuntimeActivity(CUpti_ActivityAPI* api,
   TimeResolution duration = transform_time(api->end, api->start);
 
   // Create metadata for runtime API activity
-  auto metadata = new std::unordered_map<std::string, std::any>();
+  auto metadata = new dftracer::Metadata();
   metadata->insert_or_assign("cbid", static_cast<uint32_t>(api->cbid));
   metadata->insert_or_assign("process_id",
                              static_cast<uint32_t>(api->processId));
@@ -412,7 +411,7 @@ void CUPTIFunction::processDriverActivity(CUpti_ActivityAPI* api) {
 
 void CUPTIFunction::processContextActivity(CUpti_ActivityContext* context) {
   // Create metadata for context activity
-  auto metadata = new std::unordered_map<std::string, std::any>();
+  auto metadata = new dftracer::Metadata();
   metadata->insert_or_assign("context_id",
                              static_cast<uint32_t>(context->contextId));
   metadata->insert_or_assign("device_id",
@@ -436,10 +435,10 @@ void CUPTIFunction::processContextActivity(CUpti_ActivityContext* context) {
 }
 
 void CUPTIFunction::processDeviceActivity(CUpti_ActivityDevice2* device) {
-  printf("Processing device activity: %d\n", device->id);
+  DFTRACER_LOG_DEBUG("Processing device activity: %d", device->id);
 
   // Create metadata for device activity
-  auto metadata = new std::unordered_map<std::string, std::any>();
+  auto metadata = new dftracer::Metadata();
   metadata->insert_or_assign("device_id", static_cast<uint32_t>(device->id));
   metadata->insert_or_assign(
       "compute_capability_major",
@@ -467,4 +466,4 @@ void CUPTIFunction::processDeviceActivity(CUpti_ActivityDevice2* device) {
 }
 }  // namespace dftracer
 
-#endif  // DFTRACER_CUPTI_TRACING_ENABLE
+#endif  // DFTRACER_CUDA_TRACING_ENABLE

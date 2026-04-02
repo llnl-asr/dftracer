@@ -141,6 +141,9 @@ else()
         set(DFTRACER_FUNCTION_FLAGS)
 endif()
 
+# Options
+
+
 option (DFTRACER_BUILD_PYTHON_BINDINGS "Build python bindings." ON)
 set(DFTRACER_PYTHON_EXE "python3" CACHE STRING "Python executable to use for building.")
 set(DFTRACER_PYTHON_SITE $ENV{DFTRACER_PYTHON_SITE} CACHE STRING "Python site packages to use for building.")
@@ -171,8 +174,13 @@ option (DFTRACER_ENABLE_HIP_TRACING "Enable HIP Tracing" OFF)
 if (DFTRACER_ENABLE_HIP_TRACING)
     set(DFTRACER_HIP_TRACING_ENABLE 1)
 endif()
+option (DFTRACER_ENABLE_CUDA_TRACING "Enable CUDA Tracing" OFF)
+if (DFTRACER_ENABLE_CUDA_TRACING)
+    set(DFTRACER_CUDA_TRACING_ENABLE 1)
+endif()
 option (DFTRACER_ENABLE_MPI "Enable MPI" OFF)
 if (DFTRACER_ENABLE_MPI)
+
     set(DFTRACER_MPI_ENABLE 1)
 endif()
 option (DFTRACER_ENABLE_DYNAMIC_DETECTION "Enable Dynamic Detection" OFF)
@@ -377,13 +385,31 @@ else()
 
         # print_all_variables()
 
-        # Set RPATH to all dependency library dirs
-        list(REMOVE_DUPLICATES DEPENDENCY_LIBRARY_DIRS)
-        set(CMAKE_INSTALL_RPATH "${DEPENDENCY_LIBRARY_DIRS}")
-        set(CMAKE_BUILD_RPATH "${DEPENDENCY_LIBRARY_DIRS}")
-        set(CMAKE_SKIP_BUILD_RPATH OFF)
-        set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
-        set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+# Set RPATH to all dependency library dirs
+list(REMOVE_DUPLICATES DEPENDENCY_LIBRARY_DIRS)
+set(CMAKE_INSTALL_RPATH "${DEPENDENCY_LIBRARY_DIRS}")
+set(CMAKE_BUILD_RPATH "${DEPENDENCY_LIBRARY_DIRS}")
+set(CMAKE_SKIP_BUILD_RPATH OFF)
+set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+
+
+if (DFTRACER_ENABLE_HIP_TRACING)
+  find_package(rocprofiler-sdk REQUIRED)
+  set(HIP_TRACING_LIBRARIES rocprofiler-sdk::rocprofiler-sdk)
+  set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${HIP_TRACING_LIBRARIES})
+endif()
+
+if (DFTRACER_ENABLE_CUDA_TRACING)
+  find_package(CUDAToolkit REQUIRED)
+  if (CUDAToolkit_FOUND)
+    message(STATUS "[DFTRACER] found CUDA Toolkit at ${CUDAToolkit_INCLUDE_DIRS}")
+    include_directories(${CUDAToolkit_INCLUDE_DIRS})
+    set(DEPENDENCY_LIB ${DEPENDENCY_LIB} CUDA::cupti CUDA::cuda_driver)
+  else()
+    message(FATAL_ERROR "-- [DFTRACER] CUDA Toolkit with CUPTI is needed for CUDA tracing")
+  endif()
+endif()
 
         include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
         include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -931,6 +957,7 @@ else()
         DFTRACER_ENABLE_MPI
         DFTRACER_HWLOC_ENABLE
         DFTRACER_HIP_TRACING_ENABLE
+        DFTRACER_CUDA_TRACING_ENABLE
         DFTRACER_USE_CLANG_LIBCXX
         DFTRACER_WARNINGS_AS_ERRORS
         DFTRACER_BUILD_PYTHON_BINDINGS

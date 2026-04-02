@@ -9,43 +9,39 @@
 
 #include <iostream>
 #include <memory>
+#include <type_traits>
 #include <utility>
-/**
- * Make a class singleton when used with the class. format for class name T
- * Singleton<T>::GetInstance()
- * @tparam T
- */
+
 namespace dftracer {
+
+template <typename T, typename = void>
+struct has_no_arg_initialize : std::false_type {};
+
+template <typename T>
+struct has_no_arg_initialize<
+    T, std::void_t<decltype(std::declval<T>().initialize())>> : std::true_type {
+};
+
 template <typename T>
 class Singleton {
  public:
-  /**
-   * Members of Singleton Class
-   */
-  /**
-   * Uses unique pointer to build a static global instance of variable.
-   * @tparam T
-   * @return instance of T
-   */
   template <typename... Args>
   static std::shared_ptr<T> get_instance(Args... args) {
     if (stop_creating_instances) return nullptr;
     if (instance == nullptr) {
       instance = std::make_shared<T>(std::forward<Args>(args)...);
     }
-
     return instance;
   }
 
-  /**
-   * Operators
-   */
-  Singleton &operator=(const Singleton) = delete; /* deleting = operatos*/
+  Singleton &operator=(const Singleton) = delete;
+
  public:
-  Singleton(const Singleton &) = delete; /* deleting copy constructor. */
+  Singleton(const Singleton &) = delete;
   static void finalize() {
     stop_creating_instances = true;
     if (instance == nullptr) return;
+    instance->finalize();
   }
 
  protected:
@@ -53,7 +49,7 @@ class Singleton {
   static bool stop_creating_instances;
   static std::shared_ptr<T> instance;
 
-  Singleton() {} /* hidden default constructor. */
+  Singleton() {}
 };
 
 }  // namespace dftracer

@@ -4,7 +4,7 @@
 #include <dftracer/core/common/dftracer_main.h>
 #include <dftracer/core/finstrument/functions.h>
 #include <dftracer/core/function/hip/intercept.h>
-#include <dftracer/core/function/hip/intercept.h>
+#include <dftracer/core/function/cuda/intercept.h>
 
 template <>
 std::shared_ptr<dftracer::DFTracerCore>
@@ -149,7 +149,6 @@ bool dftracer::DFTracerCore::finalize() {
       }
     }
     if (logger != nullptr) {
-      logger->finalize();
       dftracer::Singleton<DFTLogger>::finalize();
     }
     this->is_initialized = false;
@@ -353,7 +352,11 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char *_log_file,
 #endif
 #ifdef DFTRACER_CUDA_TRACING_ENABLE
         DFTRACER_LOG_DEBUG("CUDA tracing is enabled", "");
-        dftracer::Singleton<dftracer::CUPTIFunction>::get_instance();
+        auto cuda_instance =
+            dftracer::Singleton<dftracer::CUPTIFunction>::get_instance();
+        if (cuda_instance != nullptr) {
+          cuda_instance->initialize();
+        }
 #endif
       }
     } else {
