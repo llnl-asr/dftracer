@@ -243,7 +243,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
       DFTRACER_LOG_DEBUG("YAML ConfigurationManager.aggregation_type %d",
                          this->aggregation_type);
       DFTRACER_LOG_DEBUG("YAML ConfigurationManager.aggregation_enable %d",
-                         this->aggregation_file);
+                         this->aggregation_file.c_str());
     }
     if (config[DFT_YAML_INTERNAL]) {
       if (config[DFT_YAML_INTERNAL][DFT_YAML_INTERNAL_SIGNALS]) {
