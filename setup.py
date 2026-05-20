@@ -145,7 +145,7 @@ class CMakeBuild(build_ext):
         cmake_args += [f"-DEXAMPLE_VERSION_INFO={self.distribution.get_version()}"]
         if "DFTRACER_CMAKE_ARGS" in os.environ:
             cmake_args += [
-                item for item in os.environ["DFTRACER_CMAKE_ARGS"].split(";") if item
+                item for item in os.environ["DFTRACER_CMAKE_ARGS"].split() if item
             ]
 
         # Set CMAKE_BUILD_PARALLEL_LEVEL to control the parallel build level
@@ -188,7 +188,7 @@ class CMakeBuild(build_ext):
 
         if "DFTRACER_CMAKE_ARGS" in os.environ:
             cmake_args += [
-                item for item in os.environ["DFTRACER_CMAKE_ARGS"].split(";") if item
+                item for item in os.environ["DFTRACER_CMAKE_ARGS"].split() if item
             ]
 
         subprocess.run(
