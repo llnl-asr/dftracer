@@ -26,12 +26,11 @@ jobs:
         #   1.10.x: [101005, 101100)  → 1.10.11 = 101011 ✓  (openmpi 4.1.6 = 400106 ✓)
         #   1.12.x: [101203, 101300)  → 1.12.3  = 101203 ✓  (mpich   4.2.3 = 400203 ✓)
         #   1.14.x: [101405, 101500)  → 1.14.5  = 101405 ✓  (openmpi 5.0.6 = 500006 ✓)
+        # NOTE: openmpi@4.1.6 is excluded here — the gdb-wrapped verification
+        # step reliably hangs under it in this container (deadlocks during
+        # MPI_Init before either rank finishes initializing), even when
+        # launched via mpirun -np 2. openmpi@5.0.6 and mpich@4.2.3 both work.
         include:
-          - hdf5_version: "1.10.11"
-            hdf5_pkg: "hdf5@1.10.11"
-            mpi_pkg: "openmpi@4.1.6"
-            mpi: "openmpi"
-            mpi_version: "4.1.6"
           - hdf5_version: "1.12.3"
             hdf5_pkg: "hdf5@1.12.3"
             mpi_pkg: "mpich@4.2.3"
@@ -135,6 +134,13 @@ jobs:
             exit 1
           fi
 
+          # OpenMPI's mpirun refuses to run as root without this flag; MPICH's
+          # hydra-based mpirun has no such flag and errors out if given one.
+          MPIRUN_ROOT_FLAGS=""
+          if [ "${{ matrix.mpi }}" = "openmpi" ]; then
+            MPIRUN_ROOT_FLAGS="--allow-run-as-root"
+          fi
+
           export DFTRACER_ENABLE=1
           export DFTRACER_INC_METADATA=1
           export DFTRACER_LOG_FILE="${VERIFY_TRACE_DIR}/hdf5_mpi_verify"
@@ -144,13 +150,25 @@ jobs:
           export DFTRACER_BIND_SIGNALS=0
           export OMPI_ALLOW_RUN_AS_ROOT=1
           export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
+          # OpenMPI's vader BTL uses cross-memory-attach (process_vm_readv) between
+          # sibling ranks. Under gdb, Yama ptrace_scope blocks CMA between the
+          # non-ancestor ranks, deadlocking OpenMPI singleton runs. Disable it;
+          # no-op for MPICH.
+          export OMPI_MCA_btl_vader_single_copy_mechanism=none
           export LD_PRELOAD="${PRELOAD_LIB}"
           export LD_LIBRARY_PATH="${HDF5_DIR}/lib:${HDF5_DIR}/lib64:${LD_LIBRARY_PATH:-}"
 
           echo "Running test_c_hdf5_mpi with dftracer preload (under gdb to capture a backtrace on crash)..."
           ulimit -c unlimited
+          # test_c_hdf5_mpi requires two real MPI ranks (see test/CMakeLists.txt,
+          # which always launches it via mpirun -np 2). Running the raw binary
+          # directly makes OpenMPI enter "singleton" mode, which forks an
+          # internal orted/PMIx bootstrap process that hangs indefinitely under
+          # gdb in this container. Launch it through mpirun instead, wrapping
+          # each rank with gdb.
           if command -v gdb >/dev/null 2>&1; then
-            gdb -q -batch \
+            timeout 240 mpirun ${MPIRUN_ROOT_FLAGS} -np 2 \
+              gdb -q -batch \
               -ex run \
               -ex "thread apply all bt full" \
               -ex "quit" \
@@ -161,7 +179,7 @@ jobs:
               exit 1
             fi
           else
-            "${TEST_BIN}" "${VERIFY_DATA_DIR}"
+            mpirun ${MPIRUN_ROOT_FLAGS} -np 2 "${TEST_BIN}" "${VERIFY_DATA_DIR}"
           fi
           unset LD_PRELOAD DFTRACER_INIT DFTRACER_ENABLE DFTRACER_DATA_DIR
 
