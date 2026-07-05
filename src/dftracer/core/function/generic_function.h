@@ -8,7 +8,7 @@
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/df_logger.h>
-#include <dftracer/core/utils/posix_internal.h>
+#include <dftracer/core/utils/posix_bypass.h>
 
 /* External Header */
 #include <memory>

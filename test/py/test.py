@@ -4,7 +4,6 @@ import threading
 from multiprocessing import get_context
 from time import sleep
 
-import h5py
 import numpy as np
 import PIL.Image as im
 from dftracer.python import dftracer, dft_fn
@@ -121,6 +120,8 @@ class IOReader(IOHandler):
         if self.format == "npz":
             self.data = np.load(filename)
         if self.format == "hdf5":
+            import h5py
+
             fd = h5py.File(filename, "r")
             self.data = fd["x"][:]  # type: ignore
             fd.close()
@@ -141,6 +142,8 @@ class IOWriter(IOHandler):
             with open(filename, "wb") as f:
                 np.save(f, data)
         if self.format == "hdf5":
+            import h5py
+
             fd = h5py.File(filename, "w")
             fd.create_dataset("x", data=data)
             fd.close()

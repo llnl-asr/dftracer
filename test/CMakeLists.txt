@@ -93,7 +93,7 @@ endif()
 set(DFTRACER_PYTHON_H5PY_LIBDIR "")
 if(DEFINED DFTRACER_PYTHON_EXE AND NOT "${DFTRACER_PYTHON_EXE}" STREQUAL "")
     execute_process(
-        COMMAND ${DFTRACER_PYTHON_EXE} -c "import os, h5py; p=os.path.join(os.path.dirname(os.path.dirname(h5py.__file__)), 'h5py.libs'); print(p if os.path.isdir(p) else '')"
+        COMMAND ${DFTRACER_PYTHON_EXE} -c "import importlib.util, os; spec=importlib.util.find_spec('h5py'); p=os.path.join(os.path.dirname(os.path.dirname(spec.origin)), 'h5py.libs') if spec and spec.origin else ''; print(p if p and os.path.isdir(p) else '')"
         OUTPUT_VARIABLE _h5py_libdir
         ERROR_QUIET
         OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -784,13 +784,18 @@ set_tests_properties(check_file_exists_${test_name} PROPERTIES DEPENDS ${test_na
 # This test verifies the CMake package config works correctly
 set(test_name test_package_find_build_tree)
 find_program(SYSTEM_CMAKE cmake PATHS /usr/bin /usr/local/bin NO_DEFAULT_PATH)
+set(_dftracer_package_find_cmake_args
+    -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+    -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
 
 add_test(NAME ${test_name}
     COMMAND ${SYSTEM_CMAKE}
+    --fresh
     -S ${CMAKE_CURRENT_SOURCE_DIR}/package_find
     -B ${CMAKE_CURRENT_BINARY_DIR}/package_find_build
     -Ddftracer_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/cmake/dftracer
     -DCMAKE_PREFIX_PATH=${CMAKE_BINARY_DIR}
+    ${_dftracer_package_find_cmake_args}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 set_common_linker_properties(${test_name})
@@ -891,10 +896,12 @@ file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/package_find/version_old_major/test_versio
 set(test_name test_package_version_exact_match)
 add_test(NAME ${test_name}
     COMMAND ${SYSTEM_CMAKE}
+    --fresh
     -S ${CMAKE_CURRENT_BINARY_DIR}/package_find_configured/version_exact
     -B ${CMAKE_CURRENT_BINARY_DIR}/version_exact_build
     -Ddftracer_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/cmake/dftracer
     -DCMAKE_PREFIX_PATH=${CMAKE_BINARY_DIR}
+    ${_dftracer_package_find_cmake_args}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 set_common_linker_properties(${test_name})
@@ -903,10 +910,12 @@ set_common_linker_properties(${test_name})
 set(test_name test_package_version_compatible)
 add_test(NAME ${test_name}
     COMMAND ${SYSTEM_CMAKE}
+    --fresh
     -S ${CMAKE_CURRENT_BINARY_DIR}/package_find_configured/version_compatible
     -B ${CMAKE_CURRENT_BINARY_DIR}/version_compatible_build
     -Ddftracer_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/cmake/dftracer
     -DCMAKE_PREFIX_PATH=${CMAKE_BINARY_DIR}
+    ${_dftracer_package_find_cmake_args}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 set_common_linker_properties(${test_name})
@@ -915,10 +924,12 @@ set_common_linker_properties(${test_name})
 set(test_name test_package_version_minimum)
 add_test(NAME ${test_name}
     COMMAND ${SYSTEM_CMAKE}
+    --fresh
     -S ${CMAKE_CURRENT_BINARY_DIR}/package_find_configured/version_minimum
     -B ${CMAKE_CURRENT_BINARY_DIR}/version_minimum_build
     -Ddftracer_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/cmake/dftracer
     -DCMAKE_PREFIX_PATH=${CMAKE_BINARY_DIR}
+    ${_dftracer_package_find_cmake_args}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 set_common_linker_properties(${test_name})
@@ -927,10 +938,12 @@ set_common_linker_properties(${test_name})
 set(test_name test_package_version_wrong_exact_fail)
 add_test(NAME ${test_name}
     COMMAND ${SYSTEM_CMAKE}
+    --fresh
     -S ${CMAKE_CURRENT_BINARY_DIR}/package_find_configured/version_wrong_exact
     -B ${CMAKE_CURRENT_BINARY_DIR}/version_wrong_exact_build
     -Ddftracer_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/cmake/dftracer
     -DCMAKE_PREFIX_PATH=${CMAKE_BINARY_DIR}
+    ${_dftracer_package_find_cmake_args}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 set_tests_properties(${test_name} PROPERTIES WILL_FAIL TRUE)
@@ -939,10 +952,12 @@ set_tests_properties(${test_name} PROPERTIES WILL_FAIL TRUE)
 set(test_name test_package_version_incompatible_major_fail)
 add_test(NAME ${test_name}
     COMMAND ${SYSTEM_CMAKE}
+    --fresh
     -S ${CMAKE_CURRENT_BINARY_DIR}/package_find_configured/version_incompatible_major
     -B ${CMAKE_CURRENT_BINARY_DIR}/version_incompatible_major_build
     -Ddftracer_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/cmake/dftracer
     -DCMAKE_PREFIX_PATH=${CMAKE_BINARY_DIR}
+    ${_dftracer_package_find_cmake_args}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 set_tests_properties(${test_name} PROPERTIES WILL_FAIL TRUE)
@@ -951,10 +966,12 @@ set_tests_properties(${test_name} PROPERTIES WILL_FAIL TRUE)
 set(test_name test_package_version_higher_minor_fail)
 add_test(NAME ${test_name}
     COMMAND ${SYSTEM_CMAKE}
+    --fresh
     -S ${CMAKE_CURRENT_BINARY_DIR}/package_find_configured/version_higher_minor
     -B ${CMAKE_CURRENT_BINARY_DIR}/version_higher_minor_build
     -Ddftracer_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/cmake/dftracer
     -DCMAKE_PREFIX_PATH=${CMAKE_BINARY_DIR}
+    ${_dftracer_package_find_cmake_args}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 set_tests_properties(${test_name} PROPERTIES WILL_FAIL TRUE)
@@ -963,10 +980,12 @@ set_tests_properties(${test_name} PROPERTIES WILL_FAIL TRUE)
 set(test_name test_package_version_old_major_fail)
 add_test(NAME ${test_name}
     COMMAND ${SYSTEM_CMAKE}
+    --fresh
     -S ${CMAKE_CURRENT_BINARY_DIR}/package_find_configured/version_old_major
     -B ${CMAKE_CURRENT_BINARY_DIR}/version_old_major_build
     -Ddftracer_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/cmake/dftracer
     -DCMAKE_PREFIX_PATH=${CMAKE_BINARY_DIR}
+    ${_dftracer_package_find_cmake_args}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 set_tests_properties(${test_name} PROPERTIES WILL_FAIL TRUE)

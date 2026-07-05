@@ -111,6 +111,11 @@ void test_service_constructor() {
   setenv("DFTRACER_ENABLE", "1", 1);
   setenv("DFTRACER_LOG_FILE", "/tmp/test_dftracer_service", 1);
 
+  // Ensure configuration has the expected log_file even if the singleton was
+  // created before the environment variables above were set.
+  auto conf = Singleton<ConfigurationManager>::get_instance();
+  conf->log_file = "/tmp/test_dftracer_service";
+
   try {
     DFTracerService service;
     std::cout << "✓ Service constructed successfully" << std::endl;

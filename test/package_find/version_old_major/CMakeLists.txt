@@ -1,6 +1,6 @@
 # Test find_package with different (older) major version (should fail)
 # This file is auto-configured from CMakeLists.txt.in
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.24)
 project(dftracer_version_old_major_test CXX)
 
 # Should fail - different major version is incompatible (SameMajorVersion policy)

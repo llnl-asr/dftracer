@@ -43,7 +43,7 @@ void BufferManager::compress_and_write_if_needed(size_t size, bool force) {
   }
 }
 int BufferManager::initialize(const char* filename, HashType hostname_hash) {
-  DFTRACER_LOG_DEBUG("BufferManager.initialize %s %d", filename, hostname_hash);
+  DFTRACER_LOG_DEBUG("BufferManager.initialize %s %s", filename, hostname_hash);
   this->config =
       dftracer::Singleton<dftracer::ConfigurationManager>::get_instance();
   if (buffer == nullptr) {

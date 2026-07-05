@@ -87,6 +87,13 @@ jobs:
         run: |
           source /home/spack/spack/share/spack/setup-env.sh
           spack load ${{ matrix.hdf5_pkg }} ${{ matrix.mpi_pkg }} cmake
+          cmake --version
+          CMAKE_MIN_VERSION="3.24.0"
+          CMAKE_VERSION="$(cmake --version | awk '/^cmake version/{print $3}')"
+          if [ "$(printf '%s\n' "$CMAKE_MIN_VERSION" "$CMAKE_VERSION" | sort -V | head -n 1)" != "$CMAKE_MIN_VERSION" ]; then
+            echo "CMake ${CMAKE_VERSION} is too old; need >= ${CMAKE_MIN_VERSION} for cmake --fresh"
+            exit 1
+          fi
 
           HDF5_DIR=$(spack location -i ${{ matrix.hdf5_pkg }})
           echo "HDF5_DIR=${HDF5_DIR}"

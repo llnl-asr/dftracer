@@ -15,7 +15,7 @@
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/utils/configuration_manager.h>
 #include <dftracer/core/utils/md5.h>
-#include <dftracer/core/utils/posix_internal.h>
+#include <dftracer/core/utils/posix_bypass.h>
 #include <dftracer/core/utils/utils.h>
 #include <libgen.h>
 #include <sys/time.h>

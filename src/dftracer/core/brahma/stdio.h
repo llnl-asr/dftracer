@@ -56,7 +56,7 @@ class STDIODFTracer : public STDIO {
   }
 
   inline void trace(FILE* fh, HashType hash) {
-    DFTRACER_LOG_DEBUG("Calling STDIODFTracer.trace with hash %d", hash);
+    DFTRACER_LOG_DEBUG("Calling STDIODFTracer.trace with hash %s", hash);
     tracked_fh.insert_or_assign(fh, hash);
   }
 
@@ -114,7 +114,22 @@ class STDIODFTracer : public STDIO {
 
   char* fgets(char*, int, FILE*) override;
 
+  // flockfile/funlockfile/ftrylockfile/fflush: GOTCHA's generated
+  // flockfile_wrapper (brahma/interface/stdio.h) was observed, via a live
+  // gdb backtrace on a hung process, to resolve
+  // gotcha_get_wrappee(flockfile_brahma_handle) back to itself instead of
+  // libc when this library is loaded via LD_PRELOAD -- so the usual
+  // BRAHMA_MAP_OR_FAIL/__real_* pattern used by every other override in
+  // this class would cause unbounded recursive self-invocation for these
+  // four. Their out-of-line definitions in stdio.cpp instead call
+  // dftracer::STDIOBypass::get_instance() (stdio_bypass.h) for the "real
+  // function" step, which resolves libc's actual functions via
+  // dlopen(libc)+dlsym, independent of GOTCHA entirely -- so these stay
+  // traced for application code without reproducing the corruption.
   void flockfile(FILE*) override;
+  void funlockfile(FILE*) override;
+  int ftrylockfile(FILE*) override;
+  int fflush(FILE*) override;
 
   int fputc(int, FILE*) override;
 
@@ -123,10 +138,6 @@ class STDIODFTracer : public STDIO {
   FILE* freopen(const char*, const char*, FILE*) override;
 
   int fsetpos(FILE*, const fpos_t*) override;
-
-  int ftrylockfile(FILE*) override;
-
-  void funlockfile(FILE*) override;
 
   int getc(FILE*) override;
 

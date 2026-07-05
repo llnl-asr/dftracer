@@ -72,7 +72,21 @@ jobs:
 
       - name: Install system dependencies (similar to Dockerfile.dev)
         run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            gpg \
+            wget
+
+          . /etc/os-release
+          wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ ${VERSION_CODENAME} main" \
+            | sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
             build-essential \
             ca-certificates \
             ccache \
@@ -104,6 +118,13 @@ jobs:
             software-properties-common \
             valgrind \
             wget
+          cmake --version
+          CMAKE_MIN_VERSION="3.24.0"
+          CMAKE_VERSION="$(cmake --version | awk '/^cmake version/{print $3}')"
+          if [ "$(printf '%s\n' "$CMAKE_MIN_VERSION" "$CMAKE_VERSION" | sort -V | head -n 1)" != "$CMAKE_MIN_VERSION" ]; then
+            echo "CMake ${CMAKE_VERSION} is too old; need >= ${CMAKE_MIN_VERSION} for cmake --fresh"
+            exit 1
+          fi
 
           sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
           sudo apt-get update
@@ -140,8 +161,15 @@ jobs:
           fi
           source $VENV_DIR/bin/activate
           python -m pip install --upgrade pip setuptools wheel
-          pip install pybind11 ninja cmake>=3.12 setuptools>=64 setuptools-scm>=8
-          pip install pytest>=6.0 numpy>=1.24.3 pandas>=2.0.3
+          python -m pip install pybind11 ninja "setuptools>=64" "setuptools-scm>=8"
+          cmake --version
+          CMAKE_MIN_VERSION="3.24.0"
+          CMAKE_VERSION="$(cmake --version | awk '/^cmake version/{print $3}')"
+          if [ "$(printf '%s\n' "$CMAKE_MIN_VERSION" "$CMAKE_VERSION" | sort -V | head -n 1)" != "$CMAKE_MIN_VERSION" ]; then
+            echo "CMake ${CMAKE_VERSION} is too old after activating venv; need >= ${CMAKE_MIN_VERSION} for cmake --fresh"
+            exit 1
+          fi
+          python -m pip install "pytest>=6.0" "numpy>=1.24.3" "pandas>=2.0.3"
           pip install -r scripts/requirements-valgrind-runners.txt
 
       - name: Install matching Python clang bindings
@@ -401,4 +429,3 @@ jobs:
               --args "$EXE" "${CMD_ARGS[@]}" || true
             echo "::endgroup::"
           done
-

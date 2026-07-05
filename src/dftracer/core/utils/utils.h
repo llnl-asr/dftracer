@@ -7,9 +7,10 @@
 
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/singleton.h>
-#include <dftracer/core/utils/posix_internal.h>
+#include <dftracer/core/utils/posix_bypass.h>
 #include <execinfo.h>
 #include <limits.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include <any>
@@ -273,7 +274,8 @@ inline std::string get_filename(int fd) {
   char proclnk[PATH_MAX];
   char filename[PATH_MAX];
   snprintf(proclnk, PATH_MAX, "/proc/self/fd/%d", fd);
-  size_t r = df_readlink(proclnk, filename, PATH_MAX);
+  size_t r = dftracer::POSIXBypass::get_instance().readlink(proclnk, filename,
+                                                            PATH_MAX);
   filename[r] = '\0';
   return filename;
 }

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.24)
 
 # ------------------------------------------------------------------------------
 # Version information - Read from VERSION and PACKAGE_VERSION files
@@ -691,6 +691,32 @@ else()
 
         # print_all_variables()
 
+        # Put the active runtime library dirs before system dirs such as
+        # /usr/lib64. Some platforms emit DT_RPATH, which the loader searches
+        # before LD_LIBRARY_PATH.
+        set(_dftracer_runtime_library_dirs "")
+        if(NOT "${DFTRACER_TEST_LD_LIBRARY_PATH}" STREQUAL "")
+                string(REPLACE ":" ";" _dftracer_test_runtime_dirs "${DFTRACER_TEST_LD_LIBRARY_PATH}")
+                foreach(_dftracer_test_runtime_dir IN LISTS _dftracer_test_runtime_dirs)
+                        if(IS_DIRECTORY "${_dftracer_test_runtime_dir}")
+                                list(APPEND _dftracer_runtime_library_dirs "${_dftracer_test_runtime_dir}")
+                        endif()
+                endforeach()
+        endif()
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                execute_process(
+                        COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libstdc++.so
+                        OUTPUT_VARIABLE _dftracer_cxx_stdlib_for_rpath
+                        OUTPUT_STRIP_TRAILING_WHITESPACE)
+                if(EXISTS "${_dftracer_cxx_stdlib_for_rpath}")
+                        get_filename_component(_dftracer_cxx_stdlib_dir_for_rpath "${_dftracer_cxx_stdlib_for_rpath}" DIRECTORY)
+                        list(APPEND _dftracer_runtime_library_dirs "${_dftracer_cxx_stdlib_dir_for_rpath}")
+                endif()
+        endif()
+        if(_dftracer_runtime_library_dirs)
+                list(PREPEND DEPENDENCY_LIBRARY_DIRS ${_dftracer_runtime_library_dirs})
+        endif()
+
         # Set RPATH to all dependency library dirs
         list(REMOVE_DUPLICATES DEPENDENCY_LIBRARY_DIRS)
         set(CMAKE_INSTALL_RPATH "${DEPENDENCY_LIBRARY_DIRS}")
@@ -708,7 +734,8 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/stdio.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/finstrument/functions.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/hip/intercept.cpp
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/posix_internal.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/posix_bypass.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/stdio_bypass.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/dftracer.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/dftracer_main.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/configuration_manager.cpp
@@ -743,7 +770,8 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/core/common/cpp_typedefs.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/core/common/enumeration.h)
         set(DFTRACER_CORE_PRIVATE_INCLUDE
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/posix_internal.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/posix_bypass.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/stdio_bypass.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/utils.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/md5.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/finstrument/functions.h
@@ -1256,6 +1284,25 @@ else()
         # Always export targets as dftracer-targets.cmake for downstream find_package
         export(EXPORT ${DFTRACER_EXPORTED_TARGETS}
                 FILE "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/cmake/${PROJECT_NAME}/dftracer-targets.cmake")
+
+        # Resolve the real path of libc's shared object via the compiler, for
+        # dftracer::STDIOBypass/POSIXBypass (src/dftracer/core/utils) to
+        # dlopen(..., RTLD_NOLOAD) + dlsym() the real libc I/O functions
+        # directly, bypassing GOTCHA's PLT/GOT rewriting of these same
+        # symbol names in this process (see those headers for why this is
+        # necessary). Falls back to the bare soname if the compiler query
+        # doesn't resolve to a real file (e.g. non-glibc libc); dlopen with
+        # RTLD_NOLOAD still matches by recorded module name in that case.
+        execute_process(
+                COMMAND ${CMAKE_C_COMPILER} -print-file-name=libc.so.6
+                OUTPUT_VARIABLE DFTRACER_LIBC_SO_PATH
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        if(NOT EXISTS "${DFTRACER_LIBC_SO_PATH}")
+                message(STATUS "Could not resolve libc.so.6 via ${CMAKE_C_COMPILER}; falling back to bare soname")
+                set(DFTRACER_LIBC_SO_PATH "libc.so.6")
+        endif()
+        message(STATUS "DFTRACER_LIBC_SO_PATH: ${DFTRACER_LIBC_SO_PATH}")
 
         # Write the configure file
         configure_file("${CMAKE_SOURCE_DIR}/cmake/configure_files/dftracer_config.hpp.in"

@@ -4,6 +4,8 @@
 #include <dftracer/core/common/dftracer_main.h>
 #include <dftracer/core/finstrument/functions.h>
 #include <dftracer/core/function/hip/intercept.h>
+#include <dftracer/core/utils/posix_bypass.h>
+#include <dftracer/core/utils/stdio_bypass.h>
 #include <pthread.h>
 
 template <>
@@ -226,6 +228,16 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char* _log_file,
       "DFTracerCore::initialize _bind:%d _log_file:%s _data_dirs:%s "
       "_process_id:%p\n",
       _bind, _log_file, _data_dirs, _process_id);
+  // Resolve dftracer's own internal-I/O bypass singletons eagerly, before
+  // anything else: dlopen/dlsym (used by STDIOBypass) are not
+  // async-signal-safe, and STDIOWriter::write()/finalize() can run from a
+  // signal handler (SIGTERM-driven forced finalize). Resolving here,
+  // unconditionally and independent of conf->enable/this->bind, guarantees
+  // the actual bypass_* calls at signal-handler time are just cached
+  // function-pointer invocations. See stdio_bypass.h for why these must
+  // never be resolved via GOTCHA/gotcha_get_wrappee or a plain `&function`.
+  dftracer::STDIOBypass::get_instance().initialize();
+  dftracer::POSIXBypass::get_instance().initialize();
   if (conf->bind_signals) set_signal();
   if (!is_initialized) {
     this->bind = _bind;
@@ -239,10 +251,11 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char* _log_file,
       char exec_cmd[DFT_PATH_MAX] = "DEFAULT";
       char cmd[128];
       sprintf(cmd, "/proc/%d/cmdline", df_getpid());
-      int fd = df_open(cmd, O_RDONLY);
+      auto& posix_bypass = dftracer::POSIXBypass::get_instance();
+      int fd = posix_bypass.open(cmd, O_RDONLY);
       if (fd != -1) {
-        ssize_t read_bytes = df_read(fd, exec_cmd, DFT_PATH_MAX);
-        df_close(fd);
+        ssize_t read_bytes = posix_bypass.read(fd, exec_cmd, DFT_PATH_MAX);
+        posix_bypass.close(fd);
         ssize_t index = 0;
         size_t last_index = 0;
         bool has_extracted = false;
@@ -406,7 +419,7 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char* _log_file,
     }
     setenv("DFTRACER_LOG_FILE", this->log_file_prefix.c_str(), 1);
     setenv("DFTRACER_DATA_DIR", this->data_dirs.c_str(), 1);
-    DFTRACER_LOG_PRINT(
+    DFTRACER_LOG_INFO(
         "DFTracerCore::initialize _bind:%d _log_file:%s _data_dirs:%s "
         "_process_id:%d\n",
         this->bind, this->log_file.c_str(), this->data_dirs.c_str(),

@@ -65,7 +65,7 @@ class POSIXDFTracer : public POSIX {
   }
 
   inline void trace(int fd, HashType hash) {
-    DFTRACER_LOG_DEBUG("Calling POSIXDFTracer.trace for %d and %d", fd, hash);
+    DFTRACER_LOG_DEBUG("Calling POSIXDFTracer.trace for %d and %s", fd, hash);
     if (fd == -1) return;
     tracked_fd[fd % MAX_FD] = hash;
   }

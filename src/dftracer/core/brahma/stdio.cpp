@@ -4,6 +4,7 @@
 #include <cpp-logger/logger.h>
 #include <dftracer/core/brahma/stdio.h>
 #include <dftracer/core/df_logger.h>
+#include <dftracer/core/utils/stdio_bypass.h>
 
 static ConstEventNameType CATEGORY = "STDIO";
 
@@ -141,11 +142,37 @@ char* brahma::STDIODFTracer::fgets(char* str, int num, FILE* fp) {
   return ret;
 }
 
+// See the comment on these four overrides' declarations in stdio.h: unlike
+// every other override in this class, they call
+// dftracer::STDIOBypass::get_instance() for the "real function" step
+// instead of BRAHMA_MAP_OR_FAIL/__real_*, to avoid GOTCHA's broken
+// gotcha_get_wrappee() resolution for these specific symbols.
 void brahma::STDIODFTracer::flockfile(FILE* fp) {
-  BRAHMA_MAP_OR_FAIL(flockfile);
   DFT_LOGGER_START(fp);
-  __real_flockfile(fp);
+  dftracer::STDIOBypass::get_instance().flockfile(fp);
   DFT_LOGGER_END();
+}
+
+void brahma::STDIODFTracer::funlockfile(FILE* fp) {
+  DFT_LOGGER_START(fp);
+  dftracer::STDIOBypass::get_instance().funlockfile(fp);
+  DFT_LOGGER_END();
+}
+
+int brahma::STDIODFTracer::ftrylockfile(FILE* fp) {
+  DFT_LOGGER_START(fp);
+  int ret = dftracer::STDIOBypass::get_instance().ftrylockfile(fp);
+  DFT_LOGGER_UPDATE_TYPE(ret, MetadataType::MT_VALUE);
+  DFT_LOGGER_END();
+  return ret;
+}
+
+int brahma::STDIODFTracer::fflush(FILE* fp) {
+  DFT_LOGGER_START(fp);
+  int ret = dftracer::STDIOBypass::get_instance().fflush(fp);
+  DFT_LOGGER_UPDATE_TYPE(ret, MetadataType::MT_VALUE);
+  DFT_LOGGER_END();
+  return ret;
 }
 
 int brahma::STDIODFTracer::fputc(int c, FILE* fp) {
@@ -189,22 +216,6 @@ int brahma::STDIODFTracer::fsetpos(FILE* fp, const fpos_t* pos) {
   DFT_LOGGER_UPDATE_TYPE(ret, MetadataType::MT_VALUE);
   DFT_LOGGER_END();
   return ret;
-}
-
-int brahma::STDIODFTracer::ftrylockfile(FILE* fp) {
-  BRAHMA_MAP_OR_FAIL(ftrylockfile);
-  DFT_LOGGER_START(fp);
-  int ret = __real_ftrylockfile(fp);
-  DFT_LOGGER_UPDATE_TYPE(ret, MetadataType::MT_VALUE);
-  DFT_LOGGER_END();
-  return ret;
-}
-
-void brahma::STDIODFTracer::funlockfile(FILE* fp) {
-  BRAHMA_MAP_OR_FAIL(funlockfile);
-  DFT_LOGGER_START(fp);
-  __real_funlockfile(fp);
-  DFT_LOGGER_END();
 }
 
 int brahma::STDIODFTracer::getc(FILE* fp) {

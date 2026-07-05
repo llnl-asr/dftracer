@@ -4,7 +4,7 @@ requires = [
     "setuptools-scm>=8",
     "wheel",
     "ninja",
-    "cmake>=3.12",
+    "cmake>=3.24",
     "pybind11"
 ]
 build-backend = "setuptools.build_meta"
@@ -133,4 +133,3 @@ script-files = [
 [tool.setuptools_scm]
 local_scheme = "no-local-version"
 write_to = "python/dftracer/_version.py"
-

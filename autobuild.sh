@@ -444,6 +444,194 @@ execute_cmd() {
     fi
 }
 
+DFTRACER_TEST_LD_LIBRARY_PATH_HINT="${DFTRACER_TEST_LD_LIBRARY_PATH:-}"
+
+append_test_ld_path() {
+    local _path="$1"
+    if [ -z "${_path}" ] || [ ! -d "${_path}" ]; then
+        return 0
+    fi
+
+    case ":${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}:" in
+        *":${_path}:"*) ;;
+        *)
+            DFTRACER_TEST_LD_LIBRARY_PATH_HINT="${DFTRACER_TEST_LD_LIBRARY_PATH_HINT:+${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}:}${_path}"
+            ;;
+    esac
+}
+
+path_has_required_cxx_runtime() {
+    local _path="$1"
+    local _lib=""
+
+    for _lib in "${_path}/libstdc++.so.6" "${_path}/libstdc++.so"; do
+        if [ -f "${_lib}" ] && strings "${_lib}" 2>/dev/null | grep -q "GLIBCXX_3.4.29" && \
+           strings "${_lib}" 2>/dev/null | grep -q "CXXABI_1.3.13"; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+collect_cxx_runtime_library_paths() {
+    local _path=""
+    local _compiler=""
+    local _lib=""
+    local _lib_name=""
+    local _candidate_dirs=()
+
+    if [ -n "${DFTRACER_CXX_RUNTIME_DIR:-}" ]; then
+        _candidate_dirs+=("${DFTRACER_CXX_RUNTIME_DIR}")
+    fi
+
+    local _old_ifs="${IFS}"
+    IFS=":"
+    for _path in ${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}; do
+        if [ -n "${_path}" ]; then
+            _candidate_dirs+=("${_path}")
+        fi
+    done
+    IFS="${_old_ifs}"
+
+    for _compiler in "${CXX_COMPILER:-}" "${CXX:-}" c++ g++ CC; do
+        if [ -z "${_compiler}" ] || ! command -v "${_compiler}" >/dev/null 2>&1; then
+            continue
+        fi
+        for _lib_name in libstdc++.so.6 libstdc++.so; do
+            _lib="$("${_compiler}" -print-file-name="${_lib_name}" 2>/dev/null || true)"
+            if [ -n "${_lib}" ] && [ -f "${_lib}" ]; then
+                _candidate_dirs+=("$(dirname "${_lib}")")
+            fi
+        done
+    done
+
+    for _path in "${_candidate_dirs[@]}"; do
+        if [ -d "${_path}" ] && path_has_required_cxx_runtime "${_path}"; then
+            append_test_ld_path "${_path}"
+            return 0
+        fi
+    done
+}
+
+collect_python_runtime_library_paths() {
+    if [ -z "${PYTHON_EXE}" ] || ! command -v "${PYTHON_EXE}" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local _python_ld_paths
+    _python_ld_paths="$("${PYTHON_EXE}" -c 'import os, sysconfig
+paths = [
+    sysconfig.get_config_var("LIBDIR"),
+    sysconfig.get_config_var("LIBPL"),
+]
+seen = []
+for path in paths:
+    if path and os.path.isdir(path) and path not in seen:
+        seen.append(path)
+print(":".join(seen))' 2>/dev/null || true)"
+
+    local _old_ifs="${IFS}"
+    IFS=":"
+    for _path in ${_python_ld_paths}; do
+        append_test_ld_path "${_path}"
+    done
+    IFS="${_old_ifs}"
+}
+
+collect_hdf5_runtime_library_paths() {
+    local _hdf5_root="$1"
+    for _path in "${_hdf5_root}/lib" "${_hdf5_root}/lib64"; do
+        append_test_ld_path "${_path}"
+    done
+}
+
+append_cmake_test_ld_library_path_arg() {
+    if [ -n "${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}" ]; then
+        CMAKE_FULL_ARGS+=("-DDFTRACER_TEST_LD_LIBRARY_PATH=${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}")
+    fi
+}
+
+prepend_runtime_hint_to_rpath() {
+    local file_path="$1"
+
+    if [ -z "${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}" ] || ! command -v patchelf >/dev/null 2>&1; then
+        return 0
+    fi
+    if [ ! -f "${file_path}" ]; then
+        return 0
+    fi
+
+    local old_rpath=""
+    old_rpath="$(patchelf --print-rpath "${file_path}" 2>/dev/null || true)"
+    if [ -z "${old_rpath}" ]; then
+        return 0
+    fi
+
+    local new_rpath=""
+    local _old_ifs="${IFS}"
+    local path_entry=""
+    IFS=":"
+    for path_entry in ${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}:${old_rpath}; do
+        if [ -z "${path_entry}" ]; then
+            continue
+        fi
+        case ":${new_rpath}:" in
+            *":${path_entry}:"*) ;;
+            *) new_rpath="${new_rpath:+${new_rpath}:}${path_entry}" ;;
+        esac
+    done
+    IFS="${_old_ifs}"
+
+    if [ -n "${new_rpath}" ] && [ "${new_rpath}" != "${old_rpath}" ]; then
+        patchelf --set-rpath "${new_rpath}" "${file_path}" 2>/dev/null || true
+    fi
+}
+
+refresh_existing_runtime_rpaths() {
+    local ctest_build_dir="$1"
+
+    if [ -z "${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}" ]; then
+        return 0
+    fi
+    if ! command -v patchelf >/dev/null 2>&1; then
+        echo -e "${YELLOW}Warning: patchelf not found; existing binaries may still prefer stale RPATH entries${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}Refreshing runtime RPATHs without rebuilding...${NC}"
+    if [ "${DRY_RUN}" = "1" ]; then
+        echo -e "${YELLOW}[DRY-RUN] Would prepend ${DFTRACER_TEST_LD_LIBRARY_PATH_HINT} to existing ELF RPATHs${NC}"
+        return 0
+    fi
+
+    local search_roots=(
+        "${ctest_build_dir}/bin"
+        "${ctest_build_dir}/lib"
+        "${ctest_build_dir}/lib64"
+        "${INSTALL_PREFIX}/bin"
+        "${INSTALL_PREFIX}/lib"
+        "${INSTALL_PREFIX}/lib64"
+    )
+    if [ -n "${VIRTUAL_ENV}" ]; then
+        search_roots+=("${VIRTUAL_ENV}/bin")
+    fi
+    if [ -n "${CONDA_PREFIX}" ]; then
+        search_roots+=("${CONDA_PREFIX}/bin")
+    fi
+
+    local search_root=""
+    local file_path=""
+    for search_root in "${search_roots[@]}"; do
+        if [ ! -d "${search_root}" ]; then
+            continue
+        fi
+        while IFS= read -r -d '' file_path; do
+            prepend_runtime_hint_to_rpath "${file_path}"
+        done < <(find "${search_root}" -type f -print0)
+    done
+}
+
 run_ci_logged_cmd() {
     local step_name="$1"
     shift
@@ -664,17 +852,46 @@ ci_progress_is_regression() {
 
 find_ctest_build_dir() {
     local candidate=""
+    local python_abi_tag=""
+    local candidates=()
+    local viable_candidates=()
 
     if [ -d "${BUILD_DIR}" ]; then
-        candidate="$(find "${BUILD_DIR}" -type d -name "dftracer.dftracer" | head -n 1)"
+        while IFS= read -r candidate; do
+            candidates+=("${candidate}")
+        done < <(find "${BUILD_DIR}" -type d -name "dftracer.dftracer" | sort)
     fi
 
-    if [ -n "${candidate}" ] && [ -d "${candidate}" ]; then
-        realpath "${candidate}"
-        return 0
+    if [ ${#candidates[@]} -eq 0 ]; then
+        return 1
     fi
 
-    return 1
+    if [ -n "${PYTHON_EXE}" ] && command -v "${PYTHON_EXE}" >/dev/null 2>&1; then
+        python_abi_tag="$("${PYTHON_EXE}" -c 'import sysconfig; print(sysconfig.get_config_var("SOABI") or "")' 2>/dev/null || true)"
+    fi
+
+    for candidate in "${candidates[@]}"; do
+        local total_tests=""
+        total_tests="$(ctest --test-dir "${candidate}" -N 2>/dev/null | sed -n 's/^[[:space:]]*Total Tests:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | tail -n 1)"
+        if [[ "${total_tests}" =~ ^[0-9]+$ ]] && [ "${total_tests}" -gt 0 ]; then
+            viable_candidates+=("${candidate}")
+        fi
+    done
+
+    if [ ${#viable_candidates[@]} -eq 0 ]; then
+        return 1
+    fi
+
+    if [ -n "${python_abi_tag}" ]; then
+        for candidate in "${viable_candidates[@]}"; do
+            if [[ "${candidate}" == *"${python_abi_tag}"* ]]; then
+                realpath "${candidate}"
+                return 0
+            fi
+        done
+    fi
+
+    realpath "${viable_candidates[0]}"
 }
 
 run_valgrind_ctest_tests() {
@@ -929,6 +1146,36 @@ run_existing_ctest_tests() {
     fi
 
     echo "CTest build directory: ${ctest_build_dir}"
+
+    if [ -n "${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}" ]; then
+        local cmake_refresh_cmd=(
+            cmake
+            "${SCRIPT_DIR}"
+            "-DDFTRACER_TEST_LD_LIBRARY_PATH=${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}"
+            "-DDFTRACER_ENABLE_TESTS=ON"
+            "-DDFTRACER_INSTALL_DEPENDENCIES=OFF"
+        )
+
+        echo -e "${BLUE}Refreshing CTest metadata without rebuilding...${NC}"
+        if [ "${DRY_RUN}" = "1" ]; then
+            echo -e "${YELLOW}[DRY-RUN] Would execute in ${ctest_build_dir}: ${cmake_refresh_cmd[*]}${NC}"
+        elif ! (cd "${ctest_build_dir}" && "${cmake_refresh_cmd[@]}"); then
+            echo -e "${RED}Error: failed to refresh CTest metadata in ${ctest_build_dir}${NC}"
+            return 1
+        fi
+    fi
+    refresh_existing_runtime_rpaths "${ctest_build_dir}"
+
+    if [ "${USE_PYTHON}" = "yes" ] && [ -f "${SCRIPT_DIR}/test/py/requirements.txt" ]; then
+        local python_runner="${PYTHON_EXE:-python3}"
+        echo -e "${BLUE}Ensuring Python test requirements are installed for CTest...${NC}"
+        if [ "${DRY_RUN}" = "1" ]; then
+            echo -e "${YELLOW}[DRY-RUN] Would execute: ${python_runner} -m pip install -r ${SCRIPT_DIR}/test/py/requirements.txt${NC}"
+        elif ! "${python_runner}" -m pip install -r "${SCRIPT_DIR}/test/py/requirements.txt"; then
+            echo -e "${RED}Error: failed to install Python test requirements${NC}"
+            return 1
+        fi
+    fi
 
     if [ "${RUN_VALGRIND_CTEST}" = "1" ] || [ "${RUN_VALGRIND_DLIO}" = "1" ]; then
         local rc=0
@@ -1833,6 +2080,10 @@ run_service_smoke_test() {
         return 1
     fi
 
+    if [ -n "${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}" ]; then
+        refresh_existing_runtime_rpaths "${BUILD_DIR}"
+    fi
+
     local smoke_dir="${BUILD_DIR}/smoke_service"
     local pid_file="${smoke_dir}/dftracer_server.pid"
     mkdir -p "${smoke_dir}"
@@ -1843,6 +2094,9 @@ run_service_smoke_test() {
         export DFTRACER_TRACE_INTERVAL_MS=100
         : "${DFTRACER_LIBUV_THREADS:=1}"
         export DFTRACER_LIBUV_THREADS
+        if [ -n "${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}" ]; then
+            export LD_LIBRARY_PATH="${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+        fi
 
         echo -e "${BLUE}Running dftracer_service smoke test with ${service_bin}${NC}"
         if ! "${service_bin}" start "${smoke_dir}"; then
@@ -1934,6 +2188,9 @@ if [ "$USE_PYTHON" = "yes" ]; then
         exit 1
     fi
 fi
+
+collect_python_runtime_library_paths
+collect_cxx_runtime_library_paths
 
 # Handle --clean-install flag
 if [ "$CLEAN_INSTALL" = "1" ]; then
@@ -2142,6 +2399,9 @@ echo "Run Valgrind CTest: ${RUN_VALGRIND_CTEST}"
 echo "Run Valgrind DLIO: ${RUN_VALGRIND_DLIO}"
 echo "Run Local PR CI Suite: ${RUN_PR_CI_LOCAL}"
 echo "Skip Build Run Tests: ${SKIP_BUILD_RUN_TESTS}"
+if [ -n "${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}" ]; then
+    echo "CTest LD_LIBRARY_PATH hint: ${DFTRACER_TEST_LD_LIBRARY_PATH_HINT}"
+fi
 echo "Dry Run: ${DRY_RUN}"
 echo "Quiet: ${QUIET}"
 echo "Verbose: ${VERBOSE}"
@@ -2576,22 +2836,15 @@ else
         CMAKE_FULL_ARGS+=("-DHDF5_NO_FIND_PACKAGE_CONFIG_FILE=TRUE")
         # Also tell CTest to include the HDF5 lib dirs in LD_LIBRARY_PATH so
         # test binaries can find libhdf5 even before RPATH is fully resolved.
-        _hdf5_test_ld=""
-        for _d in "${HDF5_ROOT_DIR}/lib" "${HDF5_ROOT_DIR}/lib64"; do
-            if [ -d "${_d}" ]; then
-                _hdf5_test_ld="${_hdf5_test_ld:+${_hdf5_test_ld}:}${_d}"
-            fi
-        done
-        if [ -n "${_hdf5_test_ld}" ]; then
-            CMAKE_FULL_ARGS+=("-DDFTRACER_TEST_LD_LIBRARY_PATH=${_hdf5_test_ld}")
-        fi
-        unset _hdf5_test_ld _d
+        collect_hdf5_runtime_library_paths "${HDF5_ROOT_DIR}"
     fi
 
     # Add MPI home if specified
     if [ -n "${MPI_ROOT_DIR}" ]; then
         CMAKE_FULL_ARGS+=("-DMPI_HOME=${MPI_ROOT_DIR}")
     fi
+
+    append_cmake_test_ld_library_path_arg
 
     # Add custom CMake arguments
     if [ -n "${CMAKE_ARGS}" ]; then

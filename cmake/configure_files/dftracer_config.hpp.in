@@ -35,6 +35,11 @@
 #cmakedefine DFTRACER_CMAKE_C_SHARED_LIBRARY_FLAGS "@CMAKE_C_SHARED_LIBRARY_FLAGS@"
 #cmakedefine DFTRACER_CMAKE_CXX_SHARED_LIBRARY_FLAGS "@CMAKE_CXX_SHARED_LIBRARY_FLAGS@"
 
+/* Real path of libc's shared object, resolved via the compiler. Used by
+ * dftracer::STDIOBypass/POSIXBypass to dlopen(..., RTLD_NOLOAD) + dlsym()
+ * real libc I/O functions directly, bypassing GOTCHA's PLT/GOT rewriting. */
+#cmakedefine DFTRACER_LIBC_SO_PATH "@DFTRACER_LIBC_SO_PATH@"
+
 /* Macro flags */
 #cmakedefine DFTRACER_GNU_LINUX 1
 #cmakedefine DFTRACER_MPI_ENABLE 1

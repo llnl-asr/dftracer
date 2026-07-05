@@ -4,7 +4,6 @@ import os
 import time
 import numpy as np
 from PIL import Image
-import h5py
 from dftracer.python import dftracer, dft_fn as Profile
 parser = argparse.ArgumentParser(
     prog='DFTracer testing',
@@ -38,6 +37,8 @@ class IOHandler:
         if self.format== "npz":
             return np.load(filename)
         if self.format== "hdf5":
+            import h5py
+
             fd = h5py.File(filename, 'r')
             x = fd['x'][:]
             fd.close()
@@ -50,6 +51,8 @@ class IOHandler:
             with open(filename, 'wb') as f:
                 np.save(f, a)
         if self.format== "hdf5":
+            import h5py
+
             fd = h5py.File(filename, 'w')
             fd.create_dataset("x", data=a)
             fd.close()
@@ -62,4 +65,3 @@ if __name__ == "__main__":
     for n in range(args.niter):
         read_data(n)
     df_logger.finalize()
-

@@ -1,6 +1,6 @@
 # Test find_package with exact version match
 # This file is auto-configured from CMakeLists.txt.in
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.24)
 project(dftracer_version_exact_test CXX)
 
 # Should succeed - exact version match

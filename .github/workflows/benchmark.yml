@@ -84,6 +84,32 @@ jobs:
           echo "==> Create virtual environment"
           python -m venv venv
 
+      - name: Install system CMake
+        if: steps.pr_info.outputs.skip != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            gpg \
+            wget
+
+          . /etc/os-release
+          wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ ${VERSION_CODENAME} main" \
+            | sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake
+          cmake --version
+          CMAKE_MIN_VERSION="3.24.0"
+          CMAKE_VERSION="$(cmake --version | awk '/^cmake version/{print $3}')"
+          if [ "$(printf '%s\n' "$CMAKE_MIN_VERSION" "$CMAKE_VERSION" | sort -V | head -n 1)" != "$CMAKE_MIN_VERSION" ]; then
+            echo "CMake ${CMAKE_VERSION} is too old; need >= ${CMAKE_MIN_VERSION} for cmake --fresh"
+            exit 1
+          fi
+
       - name: Install dftracer from PR branch
         if: steps.pr_info.outputs.skip != 'true'
         run: |
