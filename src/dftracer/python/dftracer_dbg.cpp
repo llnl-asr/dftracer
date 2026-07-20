@@ -24,6 +24,10 @@ PYBIND11_MODULE(dftracer_dbg, m) {
         py::arg("log_file") = nullptr, py::arg("data_dirs") = nullptr,
         py::arg("process_id") = -1);
   m.def("get_time", &dftracer::get_time, "get time from profiler");
+  m.def("get_config", &dftracer::get_config,
+        "generic config lookup by DFTRACER_* env var key name (e.g. "
+        "\"DFTRACER_TIME_METRIC\"), returns the resolved current value",
+        py::arg("key"));
   m.def("enter_event", &dftracer::enter_event, "mark enter event");
   m.def("exit_event", &dftracer::exit_event, "mark exit event");
   m.def("log_event", &dftracer::log_event, "log event with args",

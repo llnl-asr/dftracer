@@ -22,6 +22,37 @@ TimeResolution get_time() {
   return 0;
 }
 
+// Generic config lookup by the same key names used for the DFTRACER_* env
+// vars (see constants.h), returned as the resolved (env-var-parsed) string
+// value — not the raw ENV VAR name, its current value. Lets any Python-side
+// caller (including external tool integrations like the PyTorch profiler or
+// torch._dynamo hooks, which need e.g. TIME_METRIC to convert their own
+// clock into dftracer's) query configuration without a bespoke binding per
+// field.
+std::string get_config(std::string key) {
+  DFTRACER_LOG_DEBUG("py.get_config %s", key.c_str());
+  auto conf = dftracer::Singleton<dftracer::ConfigurationManager>::get_instance();
+  if (key == DFTRACER_TIME_METRIC) return to_string(conf->time_metric);
+  if (key == DFTRACER_ENABLE) return conf->enable ? "1" : "0";
+  if (key == DFTRACER_LOG_FILE) return conf->log_file;
+  if (key == DFTRACER_DATA_DIR) return conf->data_dirs;
+  if (key == DFTRACER_GOTCHA_PRIORITY) return std::to_string(conf->gotcha_priority);
+  if (key == DFTRACER_SET_CORE_AFFINITY) return conf->core_affinity ? "1" : "0";
+  if (key == DFTRACER_INC_METADATA) return conf->metadata ? "1" : "0";
+  if (key == DFTRACER_DISABLE_POSIX) return conf->posix ? "0" : "1";
+  if (key == DFTRACER_DISABLE_STDIO) return conf->stdio ? "0" : "1";
+  if (key == DFTRACER_TRACE_COMPRESSION) return conf->compression ? "1" : "0";
+  if (key == DFTRACER_DISABLE_TIDS) return conf->tids ? "0" : "1";
+  if (key == DFTRACER_ENABLE_AGGREGATION) return conf->aggregation_enable ? "1" : "0";
+  if (key == DFTRACER_AGGREGATION_TYPE) return to_string(conf->aggregation_type);
+  if (key == DFTRACER_BIND_SIGNALS) return conf->bind_signals ? "1" : "0";
+  if (key == DFTRACER_WRITE_BUFFER_SIZE) return std::to_string(conf->write_buffer_size);
+  if (key == DFTRACER_TRACE_INTERVAL_MS) return std::to_string(conf->trace_interval_ms);
+  if (key == DFTRACER_LIBUV_THREADS) return std::to_string(conf->libuv_thread_count);
+  DFTRACER_LOG_DEBUG("py.get_config unknown key %s", key.c_str());
+  return "";
+}
+
 void log_event(
     std::string name, std::string cat, TimeResolution start_time,
     TimeResolution duration,
