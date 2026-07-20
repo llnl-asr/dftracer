@@ -328,7 +328,18 @@ if(DFTRACER_INSTALL_DEPENDENCIES)
 else()
         # Required Dependencies
         # =============================================================================
-        set(DEPENDENCY_LIB ${CMAKE_EXE_LINKER_FLAGS} $ENV{LDFLAGS} -lpthread)
+        # CMAKE_DL_LIBS is CMake's portable spelling of "whatever it takes to
+        # get dlopen/dlsym/dlclose" -- empty on glibc systems where they live
+        # in libc, but -ldl on systems where a linker enforces
+        # --no-allow-shlib-undefined and won't resolve dlopen from an
+        # implicit/transitive libc reference (observed on Cray PE / lld:
+        # `ld.lld: error: undefined reference: dlopen (disallowed by
+        # --no-allow-shlib-undefined)` linking dftracer_core's test_cpp and
+        # dftracer_service, which call dlopen via brahma/gotcha). Added to
+        # the shared DEPENDENCY_LIB so every target that links it (core,
+        # preload, service, tests) gets it for free instead of requiring
+        # callers to pass LDFLAGS=-ldl themselves.
+        set(DEPENDENCY_LIB ${CMAKE_EXE_LINKER_FLAGS} $ENV{LDFLAGS} -lpthread ${CMAKE_DL_LIBS})
         set(DEPENDENCY_LIBRARY_DIRS "")
 
         find_package(cpp-logger 2.0.0 REQUIRED)
