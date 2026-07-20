@@ -28,7 +28,18 @@ Optional YAML key (when using ``DFTRACER_CONFIGURATION``):
 - ``profiler.libuv_threads``
 
 The service appends hostname information to ``DFTRACER_LOG_FILE`` and writes
-one PID file per service process at ``<log_dir>/dftracer_server.pid``.
+one PID file per service process at
+``<log_dir>/dftracer_server_<hostname>.pid`` (``.out``/``.err`` logs are
+namespaced by hostname the same way). This means multiple nodes can safely
+share the same ``log_dir`` (e.g. on a shared filesystem) without their PID
+files colliding — each node's ``start``/``stop`` only ever touches its own
+PID file.
+
+The daemon also treats ``SIGTERM`` the same as ``SIGINT``: both trigger a
+graceful shutdown that flushes and compresses the trace buffer before
+exiting. This matters because job schedulers (Flux, Slurm) send ``SIGTERM``
+— not ``SIGINT`` — when cancelling a job/cgroup, so a job cancellation still
+produces a valid, flushed trace instead of an abruptly killed one.
 
 Single-node quick start
 =======================

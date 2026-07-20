@@ -115,6 +115,14 @@ class DFTracerService {
     uv_signal_init(&loop, &signal_handle);
     uv_signal_start(&signal_handle, DFTracerService::on_signal, SIGINT);
 
+    // Also treat SIGTERM as a graceful-shutdown request: job schedulers
+    // (Flux, Slurm) send SIGTERM (not SIGINT) when cancelling a job/cgroup,
+    // so without this handler a job cancellation kills the daemon without
+    // flushing/compressing its trace buffer.
+    sigterm_handle.data = this;
+    uv_signal_init(&loop, &sigterm_handle);
+    uv_signal_start(&sigterm_handle, DFTracerService::on_signal, SIGTERM);
+
     for (auto& task : collector_tasks) {
       task->timer.data = task.get();
       task->work_req.data = task.get();
@@ -146,8 +154,9 @@ class DFTracerService {
   std::atomic<int> index;     // Event index counter across libuv worker threads
   unsigned int interval;      // Interval between metric collections (ms)
   std::atomic<bool> running;  // Flag to control metric capture
-  uv_loop_t loop;             // Single libuv event loop
-  uv_signal_t signal_handle;  // Signal handler for SIGINT
+  uv_loop_t loop;                 // Single libuv event loop
+  uv_signal_t signal_handle;      // Signal handler for SIGINT
+  uv_signal_t sigterm_handle;     // Signal handler for SIGTERM
   bool loop_initialized = false;
   bool stop_requested = false;
   bool finalized = false;
@@ -158,7 +167,8 @@ class DFTracerService {
   std::vector<std::unique_ptr<CollectorTask>> collector_tasks;
 
   static void on_signal(uv_signal_t* handle, int signum) {
-    if (signum != SIGINT || handle == nullptr || handle->data == nullptr) {
+    if ((signum != SIGINT && signum != SIGTERM) || handle == nullptr ||
+        handle->data == nullptr) {
       return;
     }
     auto* service = static_cast<DFTracerService*>(handle->data);
@@ -244,6 +254,9 @@ class DFTracerService {
 
     uv_signal_stop(&signal_handle);
     uv_close(reinterpret_cast<uv_handle_t*>(&signal_handle), nullptr);
+
+    uv_signal_stop(&sigterm_handle);
+    uv_close(reinterpret_cast<uv_handle_t*>(&sigterm_handle), nullptr);
 
     for (auto& task : collector_tasks) {
       uv_timer_stop(&task->timer);
