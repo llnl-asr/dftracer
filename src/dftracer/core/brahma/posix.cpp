@@ -5,6 +5,8 @@
 #include <dftracer/core/brahma/posix.h>
 #include <dftracer/core/common/dftracer_main.h>
 
+#include <vector>
+
 static ConstEventNameType CATEGORY = "POSIX";
 
 std::shared_ptr<brahma::POSIXDFTracer> brahma::POSIXDFTracer::instance =
@@ -550,27 +552,60 @@ int brahma::POSIXDFTracer::ftruncate(int fd, off_t length) {
 }
 
 int brahma::POSIXDFTracer::execl(const char* pathname, const char* arg, ...) {
+  // NOTE: a va_list cannot be forwarded into another variadic call (this used
+  // to pass `args` straight into __real_execl(pathname, arg, args) as if it
+  // were a const char* — undefined behavior: on x86_64 glibc a va_list is an
+  // opaque pointer to saved register/stack state, and the real execl() would
+  // walk its own va_arg list starting from that garbage value looking for a
+  // NULL terminator, eventually dereferencing an invalid address and
+  // returning EFAULT ("execl failed: Bad address"). Rebuild a real
+  // NULL-terminated argv[] by walking the va_list ourselves and dispatch
+  // through the array-based real function instead, exactly as execv already
+  // does below.
   BRAHMA_MAP_OR_FAIL(execl);
+  BRAHMA_MAP_OR_FAIL(execv);
   DFT_LOGGER_START_ALWAYS();
   DFT_LOGGER_UPDATE_HASH(pathname);
   DFT_LOGGER_UPDATE_HASH(arg);
+
+  std::vector<char*> argv;
+  argv.push_back(const_cast<char*>(arg));
   va_list args;
   va_start(args, arg);
-  int ret = __real_execl(pathname, arg, args);
+  char* next;
+  while ((next = va_arg(args, char*)) != nullptr) {
+    argv.push_back(next);
+  }
   va_end(args);
+  argv.push_back(nullptr);
+
+  int ret = __real_execv(pathname, argv.data());
   DFT_LOGGER_END();
   return ret;
 }
 
 int brahma::POSIXDFTracer::execlp(const char* pathname, const char* arg, ...) {
+  // Same va_list-forwarding bug as execl() above — rebuild argv[] and
+  // dispatch through execvp() instead of re-splicing the va_list into
+  // another variadic call.
   BRAHMA_MAP_OR_FAIL(execlp);
+  BRAHMA_MAP_OR_FAIL(execvp);
   DFT_LOGGER_START_ALWAYS();
   DFT_LOGGER_UPDATE_HASH(pathname);
   DFT_LOGGER_UPDATE_HASH(arg);
+
+  std::vector<char*> argv;
+  argv.push_back(const_cast<char*>(arg));
   va_list args;
   va_start(args, arg);
-  int ret = __real_execlp(pathname, arg, args);
+  char* next;
+  while ((next = va_arg(args, char*)) != nullptr) {
+    argv.push_back(next);
+  }
   va_end(args);
+  argv.push_back(nullptr);
+
+  int ret = __real_execvp(pathname, argv.data());
   DFT_LOGGER_UPDATE(ret);
   DFT_LOGGER_END();
   return ret;
