@@ -54,8 +54,8 @@ std::string short_hostname() {
 // /proc/<pid>/cmdline for real dftracer_service processes avoids ever
 // spawning a matching shell process in the first place.
 std::vector<pid_t> find_other_start_pids(const std::string& binary_name,
-                                          const std::string& log_dir,
-                                          pid_t self_pid) {
+                                         const std::string& log_dir,
+                                         pid_t self_pid) {
   std::vector<pid_t> pids;
   DIR* proc = opendir("/proc");
   if (!proc) return pids;
@@ -69,10 +69,10 @@ std::vector<pid_t> find_other_start_pids(const std::string& binary_name,
     if (pid <= 0 || pid == self_pid) continue;
 
     std::ifstream cmdline_file("/proc/" + std::string(name) + "/cmdline",
-                                std::ios::binary);
+                               std::ios::binary);
     if (!cmdline_file) continue;
     std::string cmdline((std::istreambuf_iterator<char>(cmdline_file)),
-                         std::istreambuf_iterator<char>());
+                        std::istreambuf_iterator<char>());
     if (cmdline.empty()) continue;
 
     // cmdline is NUL-separated argv; split it out instead of doing a raw
@@ -151,10 +151,10 @@ int main(int argc, char* argv[]) {
       existing_pid_file.close();
       if (kill(existing_pid, 0) == 0) {
         std::cerr << "dftracer_service is already running on " << host
-                   << " (PID " << existing_pid << ") for " << log_dir
-                   << " — refusing to start a second instance. Run `stop` "
-                      "first."
-                   << std::endl;
+                  << " (PID " << existing_pid << ") for " << log_dir
+                  << " — refusing to start a second instance. Run `stop` "
+                     "first."
+                  << std::endl;
         return 1;
       }
       // PID file is stale (process no longer alive) — safe to remove and
@@ -173,8 +173,8 @@ int main(int argc, char* argv[]) {
     if (!rogue.empty()) {
       for (pid_t pid : rogue) {
         std::cerr << "Found rogue " << binary_name << " process (PID " << pid
-                   << ") for " << log_dir << " on " << host
-                   << " — sending SIGINT." << std::endl;
+                  << ") for " << log_dir << " on " << host
+                  << " — sending SIGINT." << std::endl;
         kill(pid, SIGINT);
       }
       // Give them a moment to shut down gracefully (flush trace buffer)
@@ -182,13 +182,12 @@ int main(int argc, char* argv[]) {
       for (int i = 0; i < 50 && !rogue.empty(); ++i) {
         usleep(100000);
         rogue.erase(std::remove_if(rogue.begin(), rogue.end(),
-                                    [](pid_t pid) { return kill(pid, 0) != 0; }),
+                                   [](pid_t pid) { return kill(pid, 0) != 0; }),
                     rogue.end());
       }
       for (pid_t pid : rogue) {
         std::cerr << "Rogue process " << pid
-                   << " did not exit within 5s; sending SIGKILL."
-                   << std::endl;
+                  << " did not exit within 5s; sending SIGKILL." << std::endl;
         kill(pid, SIGKILL);
       }
     }

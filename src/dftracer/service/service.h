@@ -154,9 +154,9 @@ class DFTracerService {
   std::atomic<int> index;     // Event index counter across libuv worker threads
   unsigned int interval;      // Interval between metric collections (ms)
   std::atomic<bool> running;  // Flag to control metric capture
-  uv_loop_t loop;                 // Single libuv event loop
-  uv_signal_t signal_handle;      // Signal handler for SIGINT
-  uv_signal_t sigterm_handle;     // Signal handler for SIGTERM
+  uv_loop_t loop;             // Single libuv event loop
+  uv_signal_t signal_handle;  // Signal handler for SIGINT
+  uv_signal_t sigterm_handle;  // Signal handler for SIGTERM
   bool loop_initialized = false;
   bool stop_requested = false;
   bool finalized = false;

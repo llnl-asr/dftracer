@@ -2085,7 +2085,8 @@ run_service_smoke_test() {
     fi
 
     local smoke_dir="${BUILD_DIR}/smoke_service"
-    local pid_file="${smoke_dir}/dftracer_server.pid"
+    local hn=$(hostname)
+    local pid_file="${smoke_dir}/dftracer_server_${hn}.pid"
     mkdir -p "${smoke_dir}"
 
     (
