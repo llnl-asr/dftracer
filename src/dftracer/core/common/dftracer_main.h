@@ -70,6 +70,17 @@ class DFTracerCore {
   void log_metadata(ConstEventNameType key, ConstEventNameType value,
                     TraceEventType type);
 
+  // App-supplied metadata, folded into the "end" event at finalize() (see
+  // DFTLogger::add_app_metadata). No-op if tracing isn't enabled.
+  inline void set_app_metadata(const char* key, int64_t value) {
+    if (!is_active() || key == nullptr) return;
+    logger->add_app_metadata(key, value);
+  }
+  inline void set_app_metadata(const char* key, const char* value) {
+    if (!is_active() || key == nullptr || value == nullptr) return;
+    logger->add_app_metadata(key, std::string(value));
+  }
+
   inline int enter_event() { return logger->enter_event(); }
 
   inline void exit_event() { logger->exit_event(); }

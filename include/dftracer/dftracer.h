@@ -20,6 +20,15 @@ void initialize_main(const char* log_file, const char* data_dirs,
 void initialize_no_bind(const char* log_file, const char* data_dirs,
                         int* process_id);
 void finalize();
+
+// App-supplied, process-global metadata (as opposed to update_metadata_*,
+// which is scoped to a single region/DFTracer instance). Folded into the
+// trace's single "end" event at finalize(), alongside the effective
+// configuration and which instrumentation layers were used. Last write for a
+// given key wins; safe to call at any point before finalize(). No-op if
+// tracing isn't enabled.
+void set_app_metadata_int(const char* key, int value);
+void set_app_metadata_string(const char* key, const char* value);
 #ifdef __cplusplus
 }
 #endif
@@ -66,6 +75,9 @@ class DFTracer {
 #define DFTRACER_CPP_INIT_NO_BIND(log_file, data_dirs, process_id) \
   initialize_no_bind(log_file, data_dirs, process_id);
 #define DFTRACER_CPP_FINI() finalize()
+#define DFTRACER_CPP_APP_METADATA_INT(key, val) set_app_metadata_int(key, val);
+#define DFTRACER_CPP_APP_METADATA_STR(key, val) \
+  set_app_metadata_string(key, val);
 #define DFTRACER_CPP_FUNCTION() \
   DFTracer profiler_dft_fn =    \
       DFTracer((char*)__FUNCTION__, CPP_LOG_CATEGORY, DF_DATA_EVENT);
@@ -128,6 +140,8 @@ void update_metadata_string_type(struct DFTracerData* data, const char* key,
 #define DFTRACER_C_INIT_NO_BIND(log_file, data_dirs, process_id) \
   initialize_no_bind(log_file, data_dirs, process_id);
 #define DFTRACER_C_FINI() finalize()
+#define DFTRACER_C_APP_METADATA_INT(key, val) set_app_metadata_int(key, val);
+#define DFTRACER_C_APP_METADATA_STR(key, val) set_app_metadata_string(key, val);
 
 #if defined(__GNUC__) || defined(__clang__)
 #define DFTRACER_C_REGION_CLEANUP \

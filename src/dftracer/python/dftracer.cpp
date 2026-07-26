@@ -42,5 +42,13 @@ PYBIND11_MODULE(dftracer, m) {
             std::unordered_map<std::string, std::tuple<int, float>>());
   m.def("log_metadata_event", &dftracer::log_metadata_event,
         "log metadata event", py::arg("key"), py::arg("value"));
+  m.def("set_app_metadata_int", &dftracer::set_app_metadata_int,
+        "set process-global app metadata (int), folded into the trace's "
+        "end event at finalize",
+        py::arg("key"), py::arg("value"));
+  m.def("set_app_metadata_string", &dftracer::set_app_metadata_string,
+        "set process-global app metadata (string), folded into the trace's "
+        "end event at finalize",
+        py::arg("key"), py::arg("value"));
   m.def("finalize", &dftracer::finalize, "finalize dftracer");
 }

@@ -25,6 +25,16 @@
 
 namespace dftracer {
 
+// A metadata value that is already a serialized JSON fragment (an object or
+// array literal) and must be embedded into "args" verbatim, unquoted, rather
+// than escaped as a string. Lets a single args key nest a whole object (e.g.
+// "cfg": {"enable":1,...}) instead of flattening it into many dotted scalar
+// keys, which is both more compact and easier to query with jq.
+struct RawJson {
+  std::string value;
+  explicit RawJson(std::string v) : value(std::move(v)) {}
+};
+
 class Metadata {
  private:
   typedef std::unordered_map<std::string,

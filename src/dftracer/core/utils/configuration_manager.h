@@ -9,6 +9,7 @@
 
 #include <vector>
 namespace dftracer {
+class Metadata;
 class ConfigurationManager {
  private:
   void derive_configurations();
@@ -41,6 +42,11 @@ class ConfigurationManager {
   std::vector<std::string> aggregation_exclusion_rules;
   ConfigurationManager();
   void finalize() {}
+
+  // Writes the effective configuration (and compile-time layer availability)
+  // into `meta` as a single batch, so callers fold it into one trace event
+  // instead of emitting one metadata event per setting.
+  void populate_metadata(Metadata* meta) const;
 };
 }  // namespace dftracer
 #endif  // DFTRACER_CONFIGURATION_MANAGER_H

@@ -82,6 +82,18 @@ class DFTLogger {
   bool enable_core_affinity;
   std::shared_ptr<dftracer::BufferManager> buffer_manager;
 
+  // Bitmask of TraceEventType values seen by log(), i.e. which instrumentation
+  // layers actually fired at least one event this run. Read out in finalize()
+  // to record e.g. "was MPI/HDF5/HIP/Python actually exercised" alongside the
+  // compile-time availability of those layers.
+  std::atomic<uint32_t> used_layers_{0};
+
+  // Process-global, app-supplied metadata (set via the public C/C++/Python
+  // set_app_metadata* API) that gets folded into the "end" event at
+  // finalize(), separate from the per-region metadata the update_* APIs emit.
+  std::mutex app_metadata_mtx_;
+  dftracer::Metadata app_metadata_;
+
   std::vector<unsigned> core_affinity() {
     DFTRACER_LOG_DEBUG("DFTLogger.core_affinity");
     auto cores = std::vector<unsigned>();
@@ -135,6 +147,19 @@ class DFTLogger {
   void reinitialize() {
     DFTRACER_LOG_DEBUG("DFTLogger.reinitialize");
     index.store(0);
+  }
+
+  // App-supplied metadata, folded into the "end" event's args at finalize().
+  // Safe to call from any traced API (C, C++, Python) at any point before
+  // finalize(); last write for a given key wins.
+  inline void add_app_metadata(const std::string& key, int64_t value) {
+    std::lock_guard<std::mutex> lock(app_metadata_mtx_);
+    app_metadata_.insert_or_assign(key, value);
+  }
+  inline void add_app_metadata(const std::string& key,
+                               const std::string& value) {
+    std::lock_guard<std::mutex> lock(app_metadata_mtx_);
+    app_metadata_.insert_or_assign(key, value);
   }
 
   // Returns false once finalize() has been called (is_init set to false).
@@ -386,6 +411,10 @@ class DFTLogger {
                                          type, start_time, duration, metadata,
                                          this->process_id, tid);
     has_entry = true;
+    if (type != TraceEventType::TRACE_TYPE_DFTRACER) {
+      used_layers_.fetch_or(1u << static_cast<uint32_t>(type),
+                            std::memory_order_relaxed);
+    }
   }
 
   inline void log_metadata(ConstEventNameType key, ConstEventNameType value,
@@ -455,11 +484,61 @@ class DFTLogger {
     return hash_and_store_str(file, name);
   }
 
+  // Folds the effective ConfigurationManager settings, which instrumentation
+  // layers actually produced events this run, and any app-supplied metadata
+  // into a single "end" event, so a trace is self-describing without
+  // cross-referencing how it was launched and without paying for one
+  // metadata event per setting.
+  inline void add_end_event_metadata(dftracer::Metadata* meta) {
+    config->populate_metadata(meta);
+
+    // Instrumentation layers that produced at least one event this run (see
+    // used_layers_ in log()), e.g. {"MPI":1,"PYTHON":1}.
+    uint32_t used = used_layers_.load(std::memory_order_relaxed);
+    std::ostringstream used_json;
+    used_json << "{";
+    bool first = true;
+    for (uint32_t t = 0;
+         t < static_cast<uint32_t>(TraceEventType::TRACE_TYPE_MAX); t++) {
+      if (used & (1u << t)) {
+        if (!first) used_json << ",";
+        used_json << "\"" << to_string(static_cast<TraceEventType>(t))
+                  << "\":1";
+        first = false;
+      }
+    }
+    used_json << "}";
+    meta->insert_or_assign("used", dftracer::RawJson(used_json.str()));
+
+    // App-supplied metadata, set via the public set_app_metadata* API from
+    // any of the C/C++/Python bindings.
+    std::ostringstream app_json;
+    app_json << "{";
+    {
+      std::lock_guard<std::mutex> lock(app_metadata_mtx_);
+      bool first_app = true;
+      for (auto& entry : app_metadata_) {
+        if (!first_app) app_json << ",";
+        app_json << "\"" << entry.first << "\":";
+        const std::any& value = std::get<1>(entry.second);
+        if (value.type() == typeid(int64_t)) {
+          app_json << std::any_cast<int64_t>(value);
+        } else if (value.type() == typeid(std::string)) {
+          app_json << "\"" << std::any_cast<std::string>(value) << "\"";
+        }
+        first_app = false;
+      }
+    }
+    app_json << "}";
+    meta->insert_or_assign("app", dftracer::RawJson(app_json.str()));
+  }
+
   inline void finalize() {
     DFTRACER_LOG_DEBUG("DFTLogger.finalize");
     if (this->buffer_manager != nullptr) {
       auto meta = new dftracer::Metadata();
       meta->insert_or_assign("num_events", index.load());
+      add_end_event_metadata(meta);
       int current_index = this->increment_index();
       auto tid = df_gettid();
       this->buffer_manager->log_data_event(

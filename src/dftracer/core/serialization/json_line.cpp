@@ -33,6 +33,14 @@ bool JsonLines::convert_metadata(Metadata* metadata,
   bool has_meta = false;
   for (const auto& item : *metadata) {
     has_meta = true;
+    if (std::get<1>(item.second).type() == typeid(dftracer::RawJson)) {
+      const auto& raw =
+          std::any_cast<const dftracer::RawJson&>(std::get<1>(item.second));
+      meta_stream << "\"" << item.first << "\":" << raw.value;
+      if (i < meta_size - 1) meta_stream << ",";
+      i++;
+      continue;
+    }
     DFTRACER_FOR_EACH_NUMERIC_TYPE(
         DFTRACER_ANY_CAST_MACRO, std::get<1>(item.second), {
           meta_stream << "\"" << item.first << "\":" << res.value();

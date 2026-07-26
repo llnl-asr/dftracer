@@ -5,9 +5,12 @@
 #include "configuration_manager.h"
 
 #include <dftracer/core/common/constants.h>
+#include <dftracer/core/common/datastructure.h>
 #include <yaml-cpp/yaml.h>
 
+#include <dftracer/core/dftracer_config.hpp>
 #include <filesystem>
+#include <sstream>
 
 #include "utils.h"
 
@@ -469,4 +472,60 @@ void dftracer::ConfigurationManager::derive_configurations() {
   }
   DFTRACER_LOG_DEBUG("ConfigurationManager::derive_configurations finished",
                      "");
+}
+
+void dftracer::ConfigurationManager::populate_metadata(
+    dftracer::Metadata* meta) const {
+  std::ostringstream cfg;
+  cfg << "{"
+      << "\"enable\":" << (int)this->enable << ","
+      << "\"metadata\":" << (int)this->metadata << ","
+      << "\"core_affinity\":" << (int)this->core_affinity << ","
+      << "\"time_metric\":\"" << to_string(this->time_metric) << "\","
+      << "\"io\":" << (int)this->io << ","
+      << "\"posix\":" << (int)this->posix << ","
+      << "\"stdio\":" << (int)this->stdio << ","
+      << "\"compression\":" << (int)this->compression << ","
+      << "\"trace_all_files\":" << (int)this->trace_all_files << ","
+      << "\"tids\":" << (int)this->tids << ","
+      << "\"bind_signals\":" << (int)this->bind_signals << ","
+      << "\"write_buffer_size\":" << this->write_buffer_size << ","
+      << "\"trace_interval_ms\":" << this->trace_interval_ms << ","
+      << "\"libuv_thread_count\":" << this->libuv_thread_count << ","
+      << "\"aggregation_enable\":" << (int)this->aggregation_enable << ","
+      << "\"aggregation_type\":\"" << to_string(this->aggregation_type) << "\""
+      << "}";
+  meta->insert_or_assign("cfg", dftracer::RawJson(cfg.str()));
+
+  // Compile-time layer availability: what this build supports, regardless of
+  // whether it was exercised this run (see DFTLogger's used-layer bitmask for
+  // that).
+  std::ostringstream build;
+  build << "{"
+        << "\"mpi\":"
+#ifdef DFTRACER_MPI_ENABLE
+        << 1
+#else
+        << 0
+#endif
+        << ",\"hdf5\":"
+#ifdef DFTRACER_HDF5_ENABLE
+        << 1
+#else
+        << 0
+#endif
+        << ",\"hip\":"
+#ifdef DFTRACER_HIP_TRACING_ENABLE
+        << 1
+#else
+        << 0
+#endif
+        << ",\"finstrument\":"
+#ifdef DFTRACER_FTRACING_ENABLE
+        << 1
+#else
+        << 0
+#endif
+        << "}";
+  meta->insert_or_assign("build", dftracer::RawJson(build.str()));
 }

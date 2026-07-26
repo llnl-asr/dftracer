@@ -306,6 +306,28 @@ void log_event(ConstEventNameType name, ConstEventNameType cat,
     DFTRACER_LOG_ERROR("dftracer.cpp.log_event dftracer not initialized");
 }
 
+extern "C" void set_app_metadata_int(const char* key, int value) {
+  DFTRACER_LOG_DEBUG("dftracer.cpp.set_app_metadata_int");
+  auto dftracer = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
+                                          ProfileType::PROFILER_ANY);
+  if (dftracer != nullptr)
+    dftracer->set_app_metadata(key, (int64_t)value);
+  else
+    DFTRACER_LOG_ERROR(
+        "dftracer.cpp.set_app_metadata_int dftracer not initialized");
+}
+
+extern "C" void set_app_metadata_string(const char* key, const char* value) {
+  DFTRACER_LOG_DEBUG("dftracer.cpp.set_app_metadata_string");
+  auto dftracer = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
+                                          ProfileType::PROFILER_ANY);
+  if (dftracer != nullptr)
+    dftracer->set_app_metadata(key, value);
+  else
+    DFTRACER_LOG_ERROR(
+        "dftracer.cpp.set_app_metadata_string dftracer not initialized");
+}
+
 void finalize() {
   DFTRACER_LOG_DEBUG("dftracer.cpp.finalize");
   release_all_live_regions();
