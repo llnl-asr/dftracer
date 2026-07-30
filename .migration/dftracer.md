@@ -51,3 +51,7 @@ Selected: 2026-07-30. Source: `git@github.com:llnl/dftracer.git` (develop). Targ
 - 2026-07-30: migration executed — `.gitlab-ci.yml` conversion merged with pre-existing LC HPC CI, dependency URLs switched, pages job added, YAML + sphinx build verified locally (sphinx: build succeeded, 50 warnings), commits pushed to gitlab `gitlab-migration`.
 - 2026-07-30 (follow-up): per user request, converted GitHub jobs moved off docker images onto the corona batch runner (1 node, `.corona-batch` template); matrices collapsed to the corona module toolchain; YAML re-validated; committed "ci: run converted jobs on corona batch runner (1 node)" and pushed.
 - 2026-07-30: Dependency URLs switched from https (lc.llnl.gov) to ssh form ssh://git@czgitlab.llnl.gov:7999/dftracer/{cpp-logger,brahma}.git (user request); both verified reachable (v0.0.8, v1.1.0).
+
+- 2026-07-30: CI restructured to corona flux-allocation flow — one allocation per normal pipeline (single `ci` job runs format-check, build-test, valgrind, hdf5-mpi-trace, docs phases via `flux proxy` on one `flux batch` allocation, pbatch/480m); benchmark and dlio-benchmark are now manual with their own allocations; MR opened.
+- 2026-07-30: Flux allocation made global via allocate/.flux-jobid artifact/release-allocation jobs; wait-event timeouts removed everywhere (manual jobs keep self-contained flows).
+- 2026-07-30: branch rebuilt onto merged develop; allocate (and manual jobs) switched to flux alloc --bg.

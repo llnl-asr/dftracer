@@ -44,6 +44,45 @@ Some migrations change source files in place to point dependencies at GitLab. Th
   dftracer also had a pre-existing LC HPC `.gitlab-ci.yml` (web-only
   tuolumne/corona jobs): on revert do NOT `git rm` it wholesale — restore the
   pre-migration version from develop@26fb8d9 instead.
+- **dftracer-utils** — no in-place source changes. The repo has no dependencies
+  on dftracer-group projects (all CPM/`GITHUB_REPOSITORY` deps are third-party);
+  the only `github.com/LLNL/dftracer-utils` occurrences are self-referential
+  project-metadata URLs in `src/CMakeLists.txt` and docs prose, left untouched.
+  Revert is fully additive-only (remove remote/branch/.gitlab-ci.yml).
+- **dfanalyzer** — no in-place source changes. Its only dftracer-group
+  dependency is `dftracer-utils>=0.0.12` in `pyproject.toml`, a plain PyPI
+  version spec (no GitHub URL to switch). The `github.com/LLNL/dfanalyzer`
+  URLs in `pyproject.toml` `[project.urls]` are self-referential metadata,
+  left untouched. Revert is fully additive-only (remove
+  remote/branch/.gitlab-ci.yml).
+- **dfdiagnoser** — `pyproject.toml`: `dftracer-analyzer>=0.0.9` (PyPI spec)
+  switched to `dftracer-analyzer @ git+ssh://git@czgitlab.llnl.gov:7999/dftracer/dfanalyzer.git@develop`
+  in BOTH the `checkpoint` optional-dependency extra and the `dev` dependency
+  group (NOTE(gitlab-migration) comments record the original). On revert,
+  restore the PyPI spec in both places. Other deps are third-party; `spack.yaml`
+  repos (mochi/diaspora) third-party; README/docs github links prose-only, all
+  untouched. `docs/` was newly authored — `git rm -r docs/` on revert if
+  unwanted on GitHub.
+- **dfoptimizer** — no in-place source changes. Its only dependency is
+  `structlog` (plus optional `pyzmq`), both third-party PyPI packages; the sole
+  `github.com/LLNL/dfdiagnoser` occurrence is a README prose link, left
+  untouched. Revert is fully additive-only (remove remote/branch/.gitlab-ci.yml;
+  `docs/` was newly authored — `git rm -r docs/` too if unwanted on GitHub).
+- **dfdashboard** — no in-place source changes. All dependencies in
+  `pyproject.toml` are third-party PyPI packages (bokeh, dask, zindex_py, ...);
+  the only `github.com/LLNL/DFDashboard` occurrence is the self-referential
+  install line in README.md, left untouched. Revert is fully additive-only
+  (remove remote/branch/.gitlab-ci.yml; `docs/` was newly authored —
+  `git rm -r docs/` too if unwanted on GitHub).
+
+- **dftracer-agents** — `pyproject.toml` `[project]` dependencies: three git deps
+  switched from GitHub to czgitlab ssh —
+  `dftracer-utils` (`git+https://github.com/llnl/dftracer-utils.git@develop`),
+  `dftracer-analyzer` (`git+https://github.com/llnl/dfanalyzer.git@develop`), and
+  `dfdiagnoser` (`git+https://github.com/llnl/DFDiagnoser.git@main`) →
+  `git+ssh://git@czgitlab.llnl.gov:7999/dftracer/{dftracer-utils,dfanalyzer,dfdiagnoser}.git`.
+  On revert, restore the GitHub URLs recorded in the `NOTE(gitlab-migration)`
+  comment above the dependency block.
 
 ## GitLab Pages revert
 
