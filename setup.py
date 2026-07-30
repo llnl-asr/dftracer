@@ -21,12 +21,18 @@ PLAT_TO_CMAKE = {
 
 
 def myversion_func(version: ScmVersion) -> str:
+    """Version a commit as the tag it follows, plus its distance from it.
+
+    An exact tag gives 2.1.1; N commits later gives 2.1.1.postN, matching what
+    the wheels and sdist published from develop are named. setuptools-scm's own
+    "post-release" scheme cannot be used directly: it appends .post0 to a tagged
+    commit, so releases would be 2.1.1.post0.
+    """
     from setuptools_scm.version import only_version
 
-    if version.distance > 0:
-        return version.format_next_version(only_version, fmt="{tag}.dev{distance}")
-    else:
-        return version.format_next_version(only_version, fmt="{tag}")
+    if version.distance and version.distance > 0:
+        return version.format_next_version(only_version, fmt="{tag}.post{distance}")
+    return version.format_next_version(only_version, fmt="{tag}")
 
 
 # A CMakeExtension needs a sourcedir instead of a file list.

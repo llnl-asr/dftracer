@@ -29,8 +29,8 @@ Below are the common commands used for to check the right version is being gener
         print(f'  Distance: {version.distance}')
         print(f'  Dirty: {version.dirty}')
         print(f'  Node: {version.node}')
-        if version.distance > 0:
-            result = version.format_next_version(only_version, fmt='{tag}.dev{distance}')
+        if version.distance and version.distance > 0:
+            result = version.format_next_version(only_version, fmt='{tag}.post{distance}')
             print(f'  Result (distance > 0): {result}')
             return result
         else:
