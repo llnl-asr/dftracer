@@ -46,8 +46,9 @@ nothing from the host, but it cannot trace MPI, HDF5 or HIP; for those see
 `Enabling MPI, HDF5 and HIP`_.
 
 Development builds are published from every merge into ``develop``, versioned
-``<last release>.postN``. They are prereleases, so pip only selects them when
-asked:
+``<last release>.postN``, as both wheels and a source distribution, so a
+prerelease can also be rebuilt with MPI or HDF5 support. pip only selects them
+when asked:
 
 .. code-block:: Bash
 

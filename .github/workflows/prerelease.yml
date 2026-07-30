@@ -1,7 +1,8 @@
 name: Publish prerelease
 
-# Every merge into develop publishes a build from wheels.yml -- the same build and
-# validation the pull request ran -- versioned <last tag>.post<commits since tag>:
+# Every merge into develop publishes the wheels from wheels.yml -- the same build
+# and validation the pull request ran -- plus an sdist, versioned
+# <last tag>.post<commits since tag>:
 #
 #   2.1.1        the tag
 #   2.1.1.post5  develop, 5 commits later
@@ -74,15 +75,58 @@ jobs:
       glibc: '2.28'
       version_scheme: 'post'
 
+  sdist:
+    name: Source distribution
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # MANIFEST.in grafts dependency/, so fetching first makes the sdist
+      # self-contained: a source build needs no dependency downloads. This is
+      # what lets an MPI or HDF5 build run off a prerelease:
+      #   DFTRACER_ENABLE_MPI=ON pip install --pre --no-binary dftracer dftracer
+      - name: Fetch the public dependency archives
+        run: scripts/wheel/fetch_deps.sh --verify
+
+      - name: Build sdist
+        # setuptools-scm would derive <tag>.dev<distance> from setup.py's scheme;
+        # pin the version the wheels were built with so the two agree.
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build --sdist --outdir dist .
+          python -m twine check dist/*
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   publish:
     name: Publish to PyPI
-    needs: [check, wheels]
+    needs: [check, wheels, sdist]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
         with:
           pattern: 'wheel-*'
           merge-multiple: true
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
           path: dist
 
       - name: List distributions
