@@ -1,7 +1,47 @@
+# GitLab CI for dftracer.
+#
+# Two job families coexist here:
+#   1. Pre-existing LC HPC jobs (tuolumne/corona, .gitlab/scripts/) — these
+#      keep their original behavior: they run ONLY on web-triggered pipelines
+#      (each now carries an explicit `web` rule since the global workflow
+#      rules were widened for the migrated jobs below).
+#   2. Jobs converted from .github/workflows/ (gitlab-migration, 2026-07-30).
+#      These run on the LC corona BATCH runner (1 node via Flux; see
+#      .corona-batch) using module-provided toolchains instead of docker
+#      images. The GitHub workflows are untouched and remain authoritative
+#      for GitHub; this conversion is additive. See .migration/dftracer.md
+#      and .migration/REVERT.md.
+#
+# Required CI/CD variables (Settings > CI/CD > Variables) for the manual
+# publish jobs (leave unset if you never run them):
+#   PYPI_TOKEN       - PyPI API token (python-publish, prerelease:publish)
+#   DOCKER_USERNAME  - DockerHub username (docker-publish)
+#   DOCKER_PASSWORD  - DockerHub password/token (docker-publish)
+#
+# Conversion map (GitHub workflow -> GitLab job):
+#   ci.yml              -> ci:build-test   (matrix python x gcc collapsed to
+#                          the corona module toolchain: gcc/11.2.1 +
+#                          python/3.13.2; Coveralls upload and GitHub
+#                          step-summary extras are GitHub-only and omitted)
+#   format-check.yml    -> format-check
+#   valgrind-ci.yml     -> valgrind:gates
+#   hdf5-mpi-trace-ci   -> hdf5-mpi-trace (spack-image matrix collapsed to
+#                          the corona hdf5-parallel + mvapich2 modules)
+#   benchmark.yml       -> benchmark (IOR); the store-results job that pushes
+#                          CSVs back to the GitHub PR branch is GitHub-only
+#                          and replaced by artifacts
+#   dlio-benchmark.yml  -> dlio-benchmark (matrix of workloads)
+#   wheels.yml          -> wheels (manual; needs a docker-capable runner —
+#                          cibuildwheel/manylinux cannot run on corona)
+#   prerelease.yml      -> prerelease:publish (manual, develop; docker runner)
+#   python-publish.yml  -> python-publish (manual, tags; docker runner)
+#   docker-publish.yml  -> docker-publish (manual, v* tags; docker:dind)
+
 workflow:
   rules:
-    - if: $CI_PIPELINE_SOURCE == "web"
-      when: always
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
     - when: never
 
 variables:
@@ -20,14 +60,60 @@ variables:
   MIN_NODES: 1
   MAX_NODES: 8
   EXCLUSION_LIST: llama_70b_zero3-0;llama_70b-4
+  CMAKE_BUILD_PARALLEL_LEVEL: "4"
 
 stages:
   - build
   - generate
+  - lint
   - test
+  - benchmark
+  - publish
+  - deploy
+
+# Templates and anchors --------------------------------------------------
+
+# Corona batch runner (1 node via the LC batch/Flux executor). Reuses the
+# .corona variables (modules, queues) from .gitlab/scripts/common.yml.
+.corona-batch:
+  extends: .corona
+  tags:
+    - batch
+    - corona
+  variables:
+    SCHEDULER_PARAMETERS: "-N 1 -q $SMALL_QUEUE -t $SMALL_QUEUE_WALLTIME"
+
+# Pre-existing LC HPC jobs: web-triggered pipelines only (original behavior).
+.web-only-rules: &web-only-rules
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+# Migrated GitHub jobs: push + merge request pipelines.
+.push-mr-rules: &push-mr-rules
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+
+# Module toolchain + fresh python venv for the migrated corona jobs
+# (replaces the apt-get/PPA installs the GitHub ubuntu runners needed).
+.corona-toolchain: &corona-toolchain
+  - source /etc/profile.d/z00_lmod.sh 2>/dev/null || true
+  - module load $GCC_MODULE $PYTHON_MODULE $MPI_MODULE
+  - export CC=gcc CXX=g++
+  - gcc --version && python3 --version && (which mpicc || true)
+  - cmake --version || module load cmake || true
+  - rm -rf venv && python3 -m venv venv
+  - export VENV_PATH=$PWD/venv
+  - source venv/bin/activate
+  - python -m pip install --upgrade pip setuptools wheel
+
+##############################################################################
+# Pre-existing LC HPC jobs (unchanged apart from the explicit web-only rule)
+##############################################################################
 
 dft_tuo_build:
   extends: .tuolumne
+  <<: *web-only-rules
   stage: build
   script:
     - source .gitlab/scripts/variables.sh
@@ -44,6 +130,7 @@ dft_tuo_build:
 
 dlio_tuo_generate:
   extends: .tuolumne
+  <<: *web-only-rules
   stage: generate
   script:
     - source .gitlab/scripts/variables.sh
@@ -58,6 +145,7 @@ dlio_tuo_generate:
 
 dlio_tuo_test:
   stage: test
+  <<: *web-only-rules
   trigger:
     include:
       - artifact: .gitlab/scripts/run_dlio_workload_test_tuo_ci.yaml
@@ -66,9 +154,9 @@ dlio_tuo_test:
     forward:
       pipeline_variables: true
 
-
 dlio_corona_build:
   extends: .corona
+  <<: *web-only-rules
   stage: build
   script:
     - source .gitlab/scripts/variables.sh
@@ -77,6 +165,7 @@ dlio_corona_build:
 
 dlio_corona_generate:
   extends: .corona
+  <<: *web-only-rules
   stage: generate
   script:
     - source .gitlab/scripts/variables.sh
@@ -91,6 +180,7 @@ dlio_corona_generate:
 
 dlio_corona_test:
   stage: test
+  <<: *web-only-rules
   trigger:
     include:
       - artifact: .gitlab/scripts/run_dlio_workload_test_corona_ci.yaml
@@ -103,3 +193,527 @@ include:
   - project: "lc-templates/id_tokens"
     file: "id_tokens.yml"
   - local: ".gitlab/scripts/common.yml"
+
+##############################################################################
+# format-check.yml -> lint (corona batch; clang-format from PyPI instead of
+# the ubuntu clang-format-19 package)
+##############################################################################
+format-check:
+  extends: .corona-batch
+  stage: lint
+  <<: *push-mr-rules
+  script:
+    - *corona-toolchain
+    - pip install "clang-format==19.*"
+    - ./script/formatting/check-formatting.sh "$(command -v clang-format)"
+
+##############################################################################
+# ci.yml -> build and test. NOTE: the GitHub python(3.9-3.12) x gcc(9-13)
+# matrix is collapsed to the single corona module toolchain
+# (gcc/11.2.1 + python/3.13.2) — version-coverage testing stays on GitHub.
+# Coveralls upload, step summaries and the separate gdb-rerun step are
+# GitHub-only and omitted; the clang/LLVM python-binding detection is skipped
+# (no matching libclang dev tree on corona), and HDF5 support is enabled only
+# if an hdf5-parallel module is available.
+##############################################################################
+ci:build-test:
+  extends: .corona-batch
+  stage: test
+  <<: *push-mr-rules
+  variables:
+    INSTALL_MODE: pip
+  script:
+    - *corona-toolchain
+    - module load hdf5-parallel 2>/dev/null && DFTRACER_HDF5=1 || DFTRACER_HDF5=0
+    - python -m pip install pybind11 ninja "setuptools>=64" "setuptools-scm>=8"
+    - python -m pip install "pytest>=6.0" "numpy>=1.24.3" "pandas>=2.0.3"
+    - pip install -r scripts/requirements-valgrind-runners.txt
+    # build with pip install mode
+    - |
+      export CFLAGS="${CFLAGS:-} -g3 -fno-omit-frame-pointer"
+      export CXXFLAGS="${CXXFLAGS:-} -g3 -fno-omit-frame-pointer"
+      export DFTRACER_CMAKE_ARGS="-DHDF5_PREFER_PARALLEL=ON;-DDFTRACER_TEST_LOG_LEVEL=INFO"
+      export DFTRACER_PIP_NO_BUILD_ISOLATION=1
+      BUILD_FLAGS="--enable-tests --enable-mpi"
+      [ "$DFTRACER_HDF5" = "1" ] && BUILD_FLAGS="$BUILD_FLAGS --enable-hdf5"
+      ./autobuild.sh $BUILD_FLAGS
+      pip install -r test/py/requirements.txt
+    # ctest (with DEBUG rerun of failures, as on GitHub)
+    - |
+      DFTRACER_DIR=$(realpath $(find build -type d -name "dftracer.dftracer" | head -n 1))
+      [ -d "$DFTRACER_DIR" ] || { echo "No DFTRACER build directory found"; exit 1; }
+      cd "$DFTRACER_DIR"
+      export DFTRACER_BIND_SIGNALS=1
+      set +e
+      ctest --output-on-failure
+      CTEST_RC=$?
+      set -e
+      if [ "$CTEST_RC" -ne 0 ]; then
+        echo "CTest failed at INFO log level; rerunning failed tests with DEBUG logging"
+        LAST_FAILED_FILE="$DFTRACER_DIR/Testing/Temporary/LastTestsFailed.log"
+        [ -f "$LAST_FAILED_FILE" ] || LAST_FAILED_FILE=$(find "$DFTRACER_DIR" -path "*/Testing/Temporary/LastTestsFailed.log" | head -n 1)
+        if [ -n "${LAST_FAILED_FILE:-}" ] && [ -f "$LAST_FAILED_FILE" ]; then
+          mapfile -t FAILED_TESTS < <(awk -F: '{print $2}' "$LAST_FAILED_FILE" | sed '/^$/d')
+          TESTS_JSON=$(ctest --show-only=json-v1)
+          for TEST_NAME in "${FAILED_TESTS[@]}"; do
+            CMD_JSON=$(echo "$TESTS_JSON" | jq -c --arg t "$TEST_NAME" '.tests[] | select(.name==$t) | .command' | head -n 1)
+            if [ -z "${CMD_JSON:-}" ] || [ "$CMD_JSON" = "null" ]; then continue; fi
+            EXE=$(echo "$CMD_JSON" | jq -r '.[0]')
+            mapfile -t CMD_ARGS < <(echo "$CMD_JSON" | jq -r '.[1:][]')
+            export DFTRACER_LOG_LEVEL=DEBUG
+            echo "Re-running with DEBUG: $EXE ${CMD_ARGS[*]}"
+            "$EXE" "${CMD_ARGS[@]}" || true
+          done
+        fi
+      fi
+      exit "$CTEST_RC"
+
+##############################################################################
+# valgrind-ci.yml -> valgrind gates (corona batch; system valgrind)
+##############################################################################
+valgrind:gates:
+  extends: .corona-batch
+  stage: test
+  <<: *push-mr-rules
+  variables:
+    INSTALL_MODE: pip
+  script:
+    - *corona-toolchain
+    - command -v valgrind && valgrind --version
+    - module load hdf5-parallel 2>/dev/null && DFTRACER_HDF5=1 || DFTRACER_HDF5=0
+    - python -m pip install pybind11 ninja "setuptools>=64" "setuptools-scm>=8"
+    - python -m pip install "pytest>=6.0" "numpy>=1.24.3" "pandas>=2.0.3"
+    - python -m pip install -r scripts/requirements-valgrind-runners.txt
+    - |
+      export CFLAGS="${CFLAGS:-} -g3 -fno-omit-frame-pointer"
+      export CXXFLAGS="${CXXFLAGS:-} -g3 -fno-omit-frame-pointer"
+      export DFTRACER_CMAKE_ARGS="-DHDF5_PREFER_PARALLEL=ON;-DDFTRACER_TEST_LOG_LEVEL=INFO"
+      export DFTRACER_PIP_NO_BUILD_ISOLATION=1
+      BUILD_FLAGS="--enable-tests --enable-mpi"
+      [ "$DFTRACER_HDF5" = "1" ] && BUILD_FLAGS="$BUILD_FLAGS --enable-hdf5"
+      ./autobuild.sh $BUILD_FLAGS
+      pip install -r test/py/requirements.txt
+    - |
+      DFTRACER_DIR=$(realpath $(find build -type d -name "dftracer.dftracer" | head -n 1))
+      VALGRIND_RC=0
+      python3 scripts/valgrind_ctest_runner.py \
+        --build-dir "$DFTRACER_DIR" \
+        --log-dir "$DFTRACER_DIR/valgrind-ctest-ci" \
+        --summary-json "$DFTRACER_DIR/valgrind-ctest-ci/summary.json" \
+        --log-level INFO \
+        --debug-rerun-on-failure \
+        --debug-log-level DEBUG \
+        --suppression "$PWD/test/valgrind/test_cpp_known_syscall.supp" || VALGRIND_RC=1
+      PY_VALGRIND_RC=0
+      PYTHONUNBUFFERED=1 python3 -u scripts/valgrind_ctest_python_runner.py \
+        --build-dir "$DFTRACER_DIR" \
+        --log-dir "$DFTRACER_DIR/valgrind-python-ctest-ci" \
+        --summary-json "$DFTRACER_DIR/valgrind-python-ctest-ci/summary.json" \
+        --log-level INFO \
+        --valgrind-track-origins no \
+        --valgrind-num-callers 20 \
+        --fail-on-project-leaks-only \
+        --project-frame-regex '(/dftracer/(src|include|python|scripts|test)/|libdftracer|dft_)' \
+        --suppression "$PWD/test/valgrind/test_cpp_known_syscall.supp" || PY_VALGRIND_RC=1
+      cat "$DFTRACER_DIR/valgrind-ctest-ci/summary.json" || true
+      cat "$DFTRACER_DIR/valgrind-python-ctest-ci/summary.json" || true
+      python3 - "$DFTRACER_DIR" "$DFTRACER_DIR/valgrind-ctest-ci/summary.json" "$DFTRACER_DIR/valgrind-python-ctest-ci/summary.json" <<'PY'
+      import json, subprocess, sys
+      from pathlib import Path
+      build_dir = Path(sys.argv[1]); common_summary = Path(sys.argv[2]); python_summary = Path(sys.argv[3])
+      if not common_summary.is_file() or not python_summary.is_file():
+        print("[valgrind-coverage] missing summary file"); sys.exit(1)
+      raw = subprocess.check_output(["ctest", "--show-only=json-v1"], cwd=build_dir, text=True)
+      ctest_total = len(json.loads(raw).get("tests", []))
+      common = json.loads(common_summary.read_text()); py = json.loads(python_summary.read_text())
+      common_selected = int(common.get("selected_tests", 0)); common_executed = int(common.get("valgrind_executed", 0))
+      common_skipped = int(common.get("wrapper_skipped", 0))
+      common_skipped_python = int(common.get("wrapper_skipped_python", common_skipped))
+      common_skipped_other = int(common.get("wrapper_skipped_other", max(0, common_skipped - common_skipped_python)))
+      py_selected = int(py.get("selected_tests", 0)); py_executed = int(py.get("valgrind_executed", 0))
+      errors = []
+      if common_selected != ctest_total: errors.append("non-python runner did not select all ctests")
+      if common_skipped_python != py_selected: errors.append("python-skipped != python selected")
+      if py_selected != py_executed: errors.append("python selected != executed")
+      if common_executed + py_executed + common_skipped_other != ctest_total: errors.append("combined executed != ctest total")
+      if errors:
+        print("[valgrind-coverage] FAIL: not all CTests were executed under valgrind")
+        for err in errors: print(f"[valgrind-coverage] {err}")
+        sys.exit(1)
+      print(f"[valgrind-coverage] PASS (total={ctest_total}, non-python={common_executed}, python={py_executed}, skipped-other={common_skipped_other})")
+      PY
+      if [ "$VALGRIND_RC" -ne 0 ]; then echo "Valgrind gate detected unsuppressed issues"; exit 1; fi
+      if [ "$PY_VALGRIND_RC" -ne 0 ]; then echo "Python valgrind gate detected unsuppressed issues"; exit 1; fi
+
+##############################################################################
+# hdf5-mpi-trace-ci.yml -> HDF5 + MPI trace verification. NOTE: the GitHub
+# spack-image matrix (mpich/openmpi x hdf5 1.12/1.14) is collapsed to the
+# single corona module combination (mvapich2/2.3.7 + hdf5-parallel) —
+# multi-version coverage stays on GitHub.
+##############################################################################
+hdf5-mpi-trace:
+  extends: .corona-batch
+  stage: test
+  <<: *push-mr-rules
+  variables:
+    DFTRACER_BUILD: "${CI_PROJECT_DIR}/dftracer-build"
+    DFTRACER_INSTALL: "${CI_PROJECT_DIR}/dftracer-install"
+  script:
+    - *corona-toolchain
+    - module load hdf5-parallel
+    - |
+      HDF5_DIR="${HDF5:-$(dirname "$(dirname "$(command -v h5pcc || command -v h5cc)")")}"
+      echo "HDF5_DIR=${HDF5_DIR}"
+      echo "MPI wrappers: $(which mpicc) $(which mpicxx)"
+      ./autobuild.sh \
+        --install-mode cmake \
+        --build-dir "${DFTRACER_BUILD}" \
+        --install-prefix "${DFTRACER_INSTALL}" \
+        --with-hdf5 "${HDF5_DIR}" \
+        --with-c-compiler mpicc \
+        --with-cxx-compiler mpicxx \
+        --enable-mpi \
+        --enable-tests \
+        --jobs 4
+    - |
+      HDF5_DIR="${HDF5:-$(dirname "$(dirname "$(command -v h5pcc || command -v h5cc)")")}"
+      VERIFY_TRACE_DIR="${DFTRACER_BUILD}/trace-verify"
+      VERIFY_DATA_DIR="${VERIFY_TRACE_DIR}/data"
+      mkdir -p "${VERIFY_DATA_DIR}"
+      PRELOAD_LIB=$(find "${DFTRACER_BUILD}" -name "libdftracer_preload_dbg.so" | head -1)
+      [ -n "${PRELOAD_LIB}" ] || { echo "ERROR: libdftracer_preload_dbg.so not found"; exit 1; }
+      TEST_BIN="${DFTRACER_BUILD}/bin/test_c_hdf5_mpi"
+      [ -x "${TEST_BIN}" ] || { echo "ERROR: test binary not found: ${TEST_BIN}"; exit 1; }
+      export DFTRACER_ENABLE=1 DFTRACER_INC_METADATA=1
+      export DFTRACER_LOG_FILE="${VERIFY_TRACE_DIR}/hdf5_mpi_verify"
+      export DFTRACER_DATA_DIR=/ DFTRACER_INIT=PRELOAD DFTRACER_TRACE_COMPRESSION=1 DFTRACER_BIND_SIGNALS=0
+      export LD_PRELOAD="${PRELOAD_LIB}"
+      export LD_LIBRARY_PATH="${HDF5_DIR}/lib:${HDF5_DIR}/lib64:${LD_LIBRARY_PATH:-}"
+      ulimit -c unlimited
+      # mvapich2's mpirun (hydra) needs no root/oversubscribe flags on corona
+      if command -v gdb >/dev/null 2>&1; then
+        timeout 240 mpirun -np 2 \
+          gdb -q -batch -ex run -ex "thread apply all bt full" -ex "quit" \
+          --args "${TEST_BIN}" "${VERIFY_DATA_DIR}" 2>&1 | tee "${VERIFY_TRACE_DIR}/gdb.log"
+        if grep -q "SIGSEGV\|Program terminated" "${VERIFY_TRACE_DIR}/gdb.log"; then
+          echo "ERROR: test_c_hdf5_mpi crashed, see backtrace above"; exit 1
+        fi
+      else
+        mpirun -np 2 "${TEST_BIN}" "${VERIFY_DATA_DIR}"
+      fi
+      unset LD_PRELOAD DFTRACER_INIT DFTRACER_ENABLE DFTRACER_DATA_DIR
+      TRACE_FILES=$(find "${VERIFY_TRACE_DIR}" -name "*.pfw.gz" 2>/dev/null)
+      [ -n "${TRACE_FILES}" ] || { echo "ERROR: No .pfw.gz trace files found"; ls -la "${VERIFY_TRACE_DIR}" || true; exit 1; }
+      python3 - "${VERIFY_TRACE_DIR}" << 'PYEOF'
+      import sys, gzip, json, glob, os
+      trace_dir = sys.argv[1]
+      files = list(set(glob.glob(os.path.join(trace_dir, "*.pfw.gz")) + glob.glob(os.path.join(trace_dir, "**", "*.pfw.gz"), recursive=True)))
+      if not files:
+          print("ERROR: no trace files found", flush=True); sys.exit(1)
+      TRACE_TYPE_HDF5 = 5
+      TRACE_TYPE_MPI = 10
+      hdf5_funcs, mpi_funcs = set(), set()
+      for path in files:
+          with gzip.open(path, "rt") as f:
+              for line in f:
+                  line = line.strip().rstrip(",")
+                  if not line or line in ("[", "]"): continue
+                  try:
+                      ev = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  t = ev.get("type", -1); name = ev.get("name", "")
+                  if t == TRACE_TYPE_HDF5: hdf5_funcs.add(name)
+                  elif t == TRACE_TYPE_MPI: mpi_funcs.add(name)
+      print(f"HDF5 functions intercepted: {sorted(hdf5_funcs)}")
+      print(f"MPI functions intercepted:  {sorted(mpi_funcs)}")
+      missing_hdf5 = {"H5Fcreate", "H5Dcreate2", "H5Dwrite", "H5Dread", "H5Fclose"} - hdf5_funcs
+      missing_mpi = {"MPI_File_open"} - mpi_funcs
+      ok = True
+      if missing_hdf5:
+          print(f"FAIL: missing HDF5 events: {sorted(missing_hdf5)}"); ok = False
+      else:
+          print("PASS: all required HDF5 events present")
+      if missing_mpi:
+          print(f"FAIL: missing MPI file I/O events: {sorted(missing_mpi)}"); ok = False
+      else:
+          print("PASS: MPI_File_open intercepted (MPIO driver active)")
+      sys.exit(0 if ok else 1)
+      PYEOF
+  artifacts:
+    when: on_failure
+    expire_in: 7 days
+    paths:
+      - dftracer-build/trace-verify/
+      - dftracer-build/**/Testing/Temporary/LastTest.log
+
+##############################################################################
+# benchmark.yml -> IOR benchmark (corona batch, module MPI instead of the
+# ubuntu openmpi packages; gated on src/test changes like the GitHub job).
+# The GitHub store-results job (pushes CSVs back to the PR branch) is
+# GitHub-only and replaced by artifacts.
+##############################################################################
+benchmark:
+  extends: .corona-batch
+  stage: benchmark
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: ["src/**/*", "test/**/*"]
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      changes: ["src/**/*", "test/**/*"]
+  variables:
+    IOR_REPO: "https://github.com/hpc/ior.git"
+    IOR_VERSION: "4.0.0"
+  script:
+    - *corona-toolchain
+    # install dftracer from the checked-out revision (GitHub cloned the PR branch)
+    - pip install .
+    - ln -sfn "$CI_PROJECT_DIR" dftracer-src
+    - rm -rf ior && git clone $IOR_REPO
+    - cd ior && git checkout tags/$IOR_VERSION -b $IOR_VERSION && ./bootstrap && ./configure && make -j && cd ..
+    - |
+      LIB_PATH=$(find venv -name 'libdftracer_preload.so' | head -n 1)
+      for mode in trace none profile selective; do
+        for ts in 4 1024; do
+          if [[ "$mode" == "trace" || "$mode" == "profile" ]]; then export LD_PRELOAD=$LIB_PATH; else unset LD_PRELOAD; fi
+          if [[ "$mode" == "profile" ]]; then export DFTRACER_ENABLE_AGGREGATION=ON; else unset DFTRACER_ENABLE_AGGREGATION; fi
+          if [[ "$mode" == "selective" ]]; then
+            export DFTRACER_ENABLE_AGGREGATION=1
+            export DFTRACER_AGGREGATION_TYPE=SELECTIVE
+            export DFTRACER_AGGREGATION_FILE=dftracer-src/test/yaml/benchmark-rules.yaml
+          else
+            unset DFTRACER_ENABLE_AGGREGATION DFTRACER_AGGREGATION_TYPE DFTRACER_AGGREGATION_FILE
+          fi
+          cmd=(./ior/src/ior -w -r -i 5 -t ${ts}k -b $((ts * 16))k -o testfile.dftracer -O summaryFormat=CSV -O summaryFile=case-${mode}-${ts}.csv)
+          echo "${cmd[@]}"
+          "${cmd[@]}"
+          unset LD_PRELOAD DFTRACER_ENABLE_AGGREGATION DFTRACER_AGGREGATION_TYPE DFTRACER_AGGREGATION_FILE
+          awk 'BEGIN{FS=OFS=","} NR==1{$(NF+1)="mode"} NR>1{$(NF+1)="'$mode'"} 1' case-${mode}-${ts}.csv > tmp && mv tmp case-${mode}-${ts}.csv
+        done
+      done
+      head -n 1 case-trace-4.csv > cases.csv
+      for f in case-*.csv; do tail -n +2 "$f" >> cases.csv; done
+      cat cases.csv
+    - pip install pandas numpy
+    - python dftracer-src/test/analysis_ior.py > overhead.csv
+    - cat overhead.csv
+  artifacts:
+    paths: [cases.csv, overhead.csv]
+    expire_in: 30 days
+
+##############################################################################
+# dlio-benchmark.yml -> DLIO integration (corona batch; workload matrix kept,
+# clang/LLVM python-binding detection dropped as on ci:build-test)
+##############################################################################
+dlio-benchmark:
+  extends: .corona-batch
+  stage: benchmark
+  <<: *push-mr-rules
+  parallel:
+    matrix:
+      - WORKLOAD: [bert_v100, cosmoflow_h100, dlrm, resnet50_tf, resnet50_h100, unet3d_h100]
+  variables:
+    INSTALL_MODE: pip
+    DLIO_LOG_LEVEL: info
+    VALGRIND_DLIO_TIMEOUT: "3600"
+    RDMAV_FORK_SAFE: "1"
+  script:
+    - *corona-toolchain
+    - command -v valgrind && valgrind --version
+    - command -v gdb && gdb --version
+    - module load hdf5-parallel 2>/dev/null && DFTRACER_HDF5=1 || DFTRACER_HDF5=0
+    - export RUNNER_TEMP="$CI_PROJECT_DIR/tmp" && mkdir -p "$RUNNER_TEMP"
+    - python -m pip install pybind11 ninja "setuptools>=64" "setuptools-scm>=8"
+    - python -m pip install "pytest>=6.0" "numpy>=1.24.3" "pandas>=2.0.3"
+    - python -m pip install -r scripts/requirements-valgrind-runners.txt
+    - |
+      export CFLAGS="${CFLAGS:-} -g3 -fno-omit-frame-pointer"
+      export CXXFLAGS="${CXXFLAGS:-} -g3 -fno-omit-frame-pointer"
+      export DFTRACER_CMAKE_ARGS="-DHDF5_PREFER_PARALLEL=ON;-DDFTRACER_TEST_LOG_LEVEL=INFO"
+      export DFTRACER_PIP_NO_BUILD_ISOLATION=1
+      python -m pip install "git+https://github.com/argonne-lcf/dlio_benchmark.git@main"
+      BUILD_FLAGS="--enable-mpi"
+      [ "$DFTRACER_HDF5" = "1" ] && BUILD_FLAGS="$BUILD_FLAGS --enable-hdf5"
+      ./autobuild.sh $BUILD_FLAGS
+    - |
+      python - <<'PY'
+      import ctypes, ctypes.util
+      lib = ctypes.util.find_library("mpi")
+      print(f"ctypes found MPI library: {lib}")
+      if not lib:
+          raise SystemExit("MPI runtime library not found")
+      ctypes.CDLL(lib)
+      print("MPI runtime load check passed")
+      PY
+    # generate data (dftracer disabled)
+    - |
+      DFTRACER_ENABLE=0 DFTRACER_INC_METADATA=0 python3 scripts/dlio_non_valgrind_runner.py \
+        --workload "${WORKLOAD}" \
+        --phase generate \
+        --dftracer-enable 0 \
+        --log-dir "$RUNNER_TEMP/dftracer-dlio-generate/${WORKLOAD}/logs" \
+        --run-root "$RUNNER_TEMP/dftracer-dlio-shared/${WORKLOAD}/run" \
+        --summary-json "$RUNNER_TEMP/dftracer-dlio-generate/${WORKLOAD}/logs/summary.json" \
+        --log-level INFO \
+        --gdb-log-level DEBUG
+    # train phase under valgrind, then without valgrind if it passed
+    - |
+      export DFTRACER_ENABLE=1 DFTRACER_INC_METADATA=1
+      VALGRIND_RC=0
+      python3 scripts/valgrind_dlio_runner.py \
+        --workload "${WORKLOAD}" \
+        --phase train \
+        --no-clean-run-root \
+        --timeout "${VALGRIND_DLIO_TIMEOUT}" \
+        --log-dir "$RUNNER_TEMP/dftracer-dlio-valgrind/${WORKLOAD}/logs" \
+        --run-root "$RUNNER_TEMP/dftracer-dlio-shared/${WORKLOAD}/run" \
+        --summary-json "$RUNNER_TEMP/dftracer-dlio-valgrind/${WORKLOAD}/logs/summary.json" \
+        --suppression "$PWD/test/valgrind/test_cpp_known_syscall.supp" \
+        --focus-dftracer-leaks-only \
+        --valgrind-track-origins no \
+        --valgrind-num-callers 20 \
+        --log-level INFO \
+        --gdb-log-level DEBUG || VALGRIND_RC=1
+      cat "$RUNNER_TEMP/dftracer-dlio-valgrind/${WORKLOAD}/logs/summary.json" || true
+      if [ "$VALGRIND_RC" -eq 0 ]; then
+        python3 scripts/dlio_non_valgrind_runner.py \
+          --workload "${WORKLOAD}" \
+          --phase train \
+          --no-clean-run-root \
+          --log-dir "$RUNNER_TEMP/dftracer-dlio-non-valgrind/${WORKLOAD}/logs" \
+          --run-root "$RUNNER_TEMP/dftracer-dlio-shared/${WORKLOAD}/run" \
+          --summary-json "$RUNNER_TEMP/dftracer-dlio-non-valgrind/${WORKLOAD}/logs/summary.json" \
+          --log-level INFO \
+          --gdb-log-level DEBUG
+        cat "$RUNNER_TEMP/dftracer-dlio-non-valgrind/${WORKLOAD}/logs/summary.json" || true
+      fi
+      if [ "$VALGRIND_RC" -ne 0 ]; then
+        echo "DLIO valgrind detected command failures or dftracer leak issues"; exit 1
+      fi
+
+##############################################################################
+# wheels.yml -> wheel builds. CANNOT run on corona shell/batch: cibuildwheel
+# needs docker + manylinux containers. Kept manual; assign a docker-capable
+# runner before triggering.
+##############################################################################
+wheels:
+  stage: publish
+  rules:
+    - when: manual
+      allow_failure: true
+  parallel:
+    matrix:
+      - PYTHON: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+  variables:
+    GLIBC: "2.28"
+    CIBW_CONTAINER_ENGINE: docker
+    DFTRACER_PODMAN_KEEP_STORAGE: "1"
+  timeout: 3h
+  script:
+    - python3 scripts/wheel/manifest.py --check
+    - scripts/wheel/fetch_deps.sh --verify
+    - scripts/wheel/build_wheels.sh --python "${PYTHON}" --glibc "${GLIBC}" --no-fetch --output wheelhouse
+  artifacts:
+    paths: [wheelhouse/*.whl]
+    expire_in: 30 days
+
+##############################################################################
+# python-publish.yml -> publish release to PyPI (manual, tags only). CANNOT
+# run on corona: needs PYPI_TOKEN and a docker-capable runner (cibuildwheel).
+##############################################################################
+python-publish:
+  stage: publish
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+      allow_failure: true
+  variables:
+    GLIBC: "2.28"
+    CIBW_CONTAINER_ENGINE: docker
+  timeout: 6h
+  script:
+    - scripts/wheel/fetch_deps.sh --verify
+    - for PY in 3.9 3.10 3.11 3.12 3.13 3.14; do scripts/wheel/build_wheels.sh --python "$PY" --glibc "${GLIBC}" --no-fetch --output dist; done
+    - python3 -m pip install --upgrade pip build twine
+    - python3 -m build --sdist --outdir dist .
+    - python3 -m twine check dist/*
+    - ls -l dist
+    - python3 -m twine upload -u __token__ -p "${PYPI_TOKEN}" dist/*
+
+##############################################################################
+# prerelease.yml -> publish .postN prerelease to PyPI (manual, develop).
+# CANNOT run on corona: needs PYPI_TOKEN and a docker-capable runner.
+##############################################################################
+prerelease:publish:
+  stage: publish
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: manual
+      allow_failure: true
+  variables:
+    GLIBC: "2.28"
+    DFTRACER_VERSION_SCHEME: post
+    CIBW_CONTAINER_ENGINE: docker
+  timeout: 6h
+  script:
+    - |
+      version="$(scripts/wheel/build_wheels.sh --list | awk '/wheel version/ {print $NF}')"
+      echo "wheel version: $version"
+      case "$version" in
+        *.post*) echo "publishing $version" ;;
+        *) echo "$version is a tagged release, leaving it to python-publish"; exit 0 ;;
+      esac
+      scripts/wheel/fetch_deps.sh --verify
+      for PY in 3.9 3.10 3.11 3.12 3.13 3.14; do scripts/wheel/build_wheels.sh --python "$PY" --glibc "${GLIBC}" --no-fetch --output dist; done
+      python3 -m pip install --upgrade pip build twine
+      SETUPTOOLS_SCM_PRETEND_VERSION="$version" python3 -m build --sdist --outdir dist .
+      python3 -m twine check dist/*
+      python3 -m twine upload --skip-existing -u __token__ -p "${PYPI_TOKEN}" dist/*
+
+##############################################################################
+# docker-publish.yml -> DockerHub image (manual, v* tags). CANNOT run on
+# corona: needs DOCKER_USERNAME / DOCKER_PASSWORD and a docker:dind-capable
+# runner (the only migrated job that keeps a docker image, since it is
+# inherently a docker workload). Multi-arch (amd64+arm64) via buildx+qemu,
+# best-effort translation of the GitHub buildx/metadata actions.
+##############################################################################
+docker-publish:
+  stage: publish
+  image: docker:latest
+  services: [docker:dind]
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v/'
+      when: manual
+      allow_failure: true
+  variables:
+    IMAGE_NAME: dftracer/dftracer
+  timeout: 4h
+  script:
+    - docker login -u "${DOCKER_USERNAME}" -p "${DOCKER_PASSWORD}" docker.io
+    - docker run --privileged --rm tonistiigi/binfmt --install all
+    - docker buildx create --use
+    - VERSION_TAG="${CI_COMMIT_TAG#v}"
+    - docker buildx build
+      --file infrastructure/docker/Dockerfile.prod
+      --platform linux/amd64,linux/arm64
+      --build-arg DFTRACER_VERSION=${VERSION_TAG}
+      --tag ${IMAGE_NAME}:${VERSION_TAG}
+      --tag ${IMAGE_NAME}:latest
+      --push .
+
+##############################################################################
+# GitLab Pages: build the existing Sphinx docs (kept ReadTheDocs-compatible)
+# on the corona batch runner (venv + sphinx, no docker image).
+##############################################################################
+pages:
+  extends: .corona-batch
+  stage: deploy
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_BRANCH == "gitlab-migration"'  # temporary: remove after merge to develop
+  script:
+    - *corona-toolchain
+    - pip install -r docs/requirements.txt
+    - sphinx-build -b html docs public
+  artifacts:
+    paths: [public]
