@@ -1,0 +1,96 @@
+name: Publish prerelease
+
+# Every merge into develop publishes a build from wheels.yml -- the same build and
+# validation the pull request ran -- versioned <last tag>.post<commits since tag>:
+#
+#   2.1.1        the tag
+#   2.1.1.post5  develop, 5 commits later
+#
+# A commit that is exactly a tag is skipped; that is a release and belongs to
+# python-publish.yml.
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'CMakeLists.txt'
+      - 'setup.py'
+      - 'pyproject.toml'
+      - 'VERSION'
+      - 'PACKAGE_VERSION'
+      - 'cmake/**'
+      - 'src/**'
+      - 'include/**'
+      - 'python/**'
+      - 'dependency/**'
+      - 'scripts/wheel/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialise rather than cancel: each develop commit gets its own postN, and
+# cancelling mid-upload could leave a release half published.
+concurrency:
+  group: prerelease-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check the commit is not a release
+    runs-on: ubuntu-24.04
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: check
+        env:
+          DFTRACER_VERSION_SCHEME: post
+        run: |
+          version="$(scripts/wheel/build_wheels.sh --list | awk '/wheel version/ {print $NF}')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "$version" in
+            *.post*)
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+              echo "publishing $version"
+              ;;
+            *)
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              echo "$version is a tagged release, leaving it to python-publish.yml"
+              ;;
+          esac
+
+  wheels:
+    name: Wheels
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    uses: ./.github/workflows/wheels.yml
+    with:
+      python_versions: '3.9,3.10,3.11,3.12,3.13,3.14'
+      glibc: '2.28'
+      version_scheme: 'post'
+
+  publish:
+    name: Publish to PyPI
+    needs: [check, wheels]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: 'wheel-*'
+          merge-multiple: true
+          path: dist
+
+      - name: List distributions
+        run: ls -l dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_TOKEN }}
+          # A re-run of the same commit would otherwise fail on an existing file.
+          skip-existing: true

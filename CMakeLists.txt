@@ -728,10 +728,18 @@ else()
                 list(PREPEND DEPENDENCY_LIBRARY_DIRS ${_dftracer_runtime_library_dirs})
         endif()
 
-        # Set RPATH to all dependency library dirs
+        # Set RPATH to all dependency library dirs, keeping whatever the caller
+        # asked for first. Relocatable builds (the manylinux wheels) pass
+        # -DCMAKE_INSTALL_RPATH='$ORIGIN:$ORIGIN/../lib64:...' so the installed
+        # binaries find their libraries relative to themselves; overwriting that
+        # here would leave them with build-tree paths only.
         list(REMOVE_DUPLICATES DEPENDENCY_LIBRARY_DIRS)
-        set(CMAKE_INSTALL_RPATH "${DEPENDENCY_LIBRARY_DIRS}")
-        set(CMAKE_BUILD_RPATH "${DEPENDENCY_LIBRARY_DIRS}")
+        set(_dftracer_caller_rpath "${CMAKE_INSTALL_RPATH}")
+        string(REPLACE ":" ";" _dftracer_caller_rpath "${_dftracer_caller_rpath}")
+        set(_dftracer_rpath ${_dftracer_caller_rpath} ${DEPENDENCY_LIBRARY_DIRS})
+        list(REMOVE_DUPLICATES _dftracer_rpath)
+        set(CMAKE_INSTALL_RPATH "${_dftracer_rpath}")
+        set(CMAKE_BUILD_RPATH "${_dftracer_rpath}")
         set(CMAKE_SKIP_BUILD_RPATH OFF)
         set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
         set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)

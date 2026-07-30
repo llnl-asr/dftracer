@@ -41,6 +41,19 @@ From PyPI (Recommended)
 
     pip install dftracer
 
+This installs a prebuilt wheel that traces POSIX and STDIO I/O. It requires
+nothing from the host, but it cannot trace MPI, HDF5 or HIP; for those see
+`Enabling MPI, HDF5 and HIP`_.
+
+Development builds are published from every merge into ``develop``, versioned
+``<last release>.postN``. They are prereleases, so pip only selects them when
+asked:
+
+.. code-block:: Bash
+
+    pip install --pre dftracer          # newest prerelease
+    pip install dftracer==2.1.0.post5   # a specific one
+
 .. attention::
 
     For pip installations, all libraries will be present within the site-packages/dftracer/lib.
@@ -70,6 +83,89 @@ From Github
 
     For pip installations, all libraries will be present within the site-packages/dftracer/lib.
     This enables clean management of pip installation and uninstallations.
+
+------------------------------------------
+Enabling MPI, HDF5 and HIP
+------------------------------------------
+
+MPI, HDF5 and HIP support are compile-time options, so they require a build
+against the libraries you run with. The prebuilt wheel cannot provide them:
+DFTracer intercepts calls into the MPI or HDF5 library the application loads, and
+the interception is generated for a specific implementation and version, so a
+wheel built elsewhere would trace nothing. A wheel tag cannot express "built
+against OpenMPI 5.0.6" either, which is why only the portable configuration is
+published.
+
+Build from the source distribution instead, the way ``mpi4py`` does:
+
+.. code-block:: Bash
+
+    # MPI and HDF5 must be discoverable by CMake (module load, spack load, ...)
+    DFTRACER_ENABLE_MPI=ON DFTRACER_ENABLE_HDF5=ON \
+      pip install --no-binary dftracer dftracer
+
+``--no-binary dftracer`` is what makes pip build from source rather than take the
+wheel; only DFTracer itself is built from source, its build tools still come as
+wheels. The same variables work for a checkout (``pip install .``), a release
+tarball, ``autobuild.sh`` and a plain CMake build.
+
+Commonly enabled options, all read from the environment by ``setup.py`` and
+passed to CMake. See `Build Variables`_ for the full list:
+
+.. table:: section - optional tracing features
+   :widths: auto
+
+   ================================== ===========================================================================
+   Environment Variable               Effect
+   ================================== ===========================================================================
+   DFTRACER_ENABLE_MPI                MPI rank in traces and MPI/MPI-IO interception (default OFF).
+   DFTRACER_ENABLE_HDF5               HDF5 interception (default OFF).
+   DFTRACER_ENABLE_HIP_TRACING        AMD GPU tracing; needs ROCm/rocprofiler-sdk (default OFF).
+   DFTRACER_ENABLE_FTRACING           Function tracing via ``-finstrument-functions`` (default OFF).
+   DFTRACER_ENABLE_DYNAMIC_DETECTION  Detect HWLOC, MPI and HIP at run time rather than link time (default OFF).
+   DFTRACER_DISABLE_HWLOC             HWLOC support; ``ON`` (disabled) by default.
+   DFTRACER_MPI_IMPL                  Override MPI implementation detection (default: auto-detect).
+   ================================== ===========================================================================
+
+Requirements
+*******************************
+
+* a C++17 compiler whose standard library provides ``std::filesystem``: GCC 9 or
+  newer. A system ``libstdc++`` older than the compiler on the ``PATH`` can
+  shadow the newer one and fail the link with undefined references to
+  ``std::filesystem``; loading a compiler module (for example
+  ``module load gcc/12.1.1``) resolves it.
+* CMake 3.24 or newer.
+* the development packages of whatever is enabled (MPI, HDF5, ROCm).
+
+DFTracer must be built against the same MPI and HDF5 the application uses.
+The build detects their versions and forwards them to brahma, which generates the
+matching interception:
+
+.. code-block:: Bash
+
+    -- [dftracer] dependency: MPI C probe: impl=MVAPICH brahma_version=200307
+    -- [dftracer] Forwarding BRAHMA_MPI_IMPL=MVAPICH to brahma
+
+Dependencies
+*******************************
+
+The C/C++ dependencies (cpp-logger, GOTCHA, brahma, yaml-cpp, libuv) are built
+automatically as part of the build. Their source archives ship inside the source
+distribution, so a source install needs no access to their repositories. When
+building from a git clone, fetch the archives that are not committed first:
+
+.. code-block:: Bash
+
+    scripts/wheel/fetch_deps.sh
+
+Verifying
+*******************************
+
+Run the application with ``DFTRACER_ENABLE=1`` and confirm the trace contains the
+categories you enabled (``MPI``, ``MPIIO``, ``HDF5``) rather than only ``POSIX``.
+An enabled feature that was linked against a mismatched library builds
+successfully but produces no events of that category.
 
 -----------------------------------------
 Build DFTracer with Spack

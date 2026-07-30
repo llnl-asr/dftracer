@@ -1,0 +1,7 @@
+# Public dependency archives are downloaded by scripts/wheel/fetch_deps.sh.
+# cpp-logger is committed because its repository is not publicly reachable.
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.zip
+!cpp-logger-*.tar.gz

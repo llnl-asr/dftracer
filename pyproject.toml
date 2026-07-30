@@ -48,11 +48,11 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
-  "pybind11", 
-  "setuptools>=64", 
-  "setuptools-scm>=8",
   "dftracer-utils>=0.0.10",
-  "pydftracer>=2.0.4"
+  "pydftracer>=2.0.4",
+  # pydftracer 2.0.4 imports typing_extensions unconditionally but only declares
+  # it for python_version < '3.10', so it has to be pulled in here.
+  "typing_extensions>=4.0"
 ]
 
 [project.urls]

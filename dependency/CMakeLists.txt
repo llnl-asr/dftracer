@@ -173,6 +173,20 @@ if(_dftracer_dep_hdf5_version_str)
     "-DBRAHMA_HDF5_VERSION_STRING:STRING=${_dftracer_dep_hdf5_version_str}")
 endif()
 
+# brahma fetches cpp-logger and gotcha itself. Its find_package() should resolve
+# both from the install prefix we populate first, but cpp-logger's repository is
+# private, so point brahma at the staged sources as a fallback instead of letting
+# it try a clone that cannot succeed.
+foreach(_staged_dep cpp-logger gotcha)
+  dftracer_stage_dependency_source(${_staged_dep} _staged_dir)
+  if(_staged_dir)
+    string(TOUPPER "${_staged_dep}" _staged_upper)
+    string(APPEND BRAHMA_CONFIGURE_ARGS
+      ";-DFETCHCONTENT_SOURCE_DIR_${_staged_upper}=${_staged_dir}")
+    message(STATUS "[${PROJECT_NAME}] brahma: ${_staged_dep} source staged at ${_staged_dir}")
+  endif()
+endforeach()
+
 find_package(brahma 5.1.0 QUIET)
 if(brahma_FOUND)
   message(STATUS "[${PROJECT_NAME}] found brahma already installed")
@@ -194,7 +208,9 @@ else()
     CMAKE_CACHE_ARGS
       ${_brahma_cmake_cache_args}
     BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --parallel
-    INSTALL_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target install --parallel
+    # --prefix for the same reason as dftracer_install_external_project: a stale
+    # sub-build keeps its cached CMAKE_INSTALL_PREFIX when configure is skipped.
+    INSTALL_COMMAND ${CMAKE_COMMAND} --install <BINARY_DIR> --prefix ${CMAKE_INSTALL_PREFIX}
     LOG_DOWNLOAD ON
   )
   include_directories(${CMAKE_INSTALL_PREFIX}/include)

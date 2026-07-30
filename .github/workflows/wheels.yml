@@ -1,0 +1,120 @@
+name: Wheels
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'CMakeLists.txt'
+      - 'setup.py'
+      - 'pyproject.toml'
+      - 'VERSION'
+      - 'PACKAGE_VERSION'
+      - 'cmake/**'
+      - 'src/**'
+      - 'include/**'
+      - 'python/**'
+      - 'dependency/**'
+      - 'scripts/wheel/**'
+      - '.github/workflows/wheels.yml'
+  workflow_dispatch:
+    inputs:
+      python_versions:
+        description: 'Python versions to build (comma separated)'
+        type: string
+        default: '3.9,3.10,3.11,3.12,3.13,3.14'
+      glibc:
+        description: 'manylinux glibc baseline'
+        type: string
+        default: '2.28'
+      version_scheme:
+        description: 'version for off-tag commits: post, postdev or dev'
+        type: string
+        default: 'post'
+  workflow_call:
+    inputs:
+      python_versions:
+        type: string
+        default: '3.9,3.10,3.11,3.12,3.13,3.14'
+      glibc:
+        type: string
+        default: '2.28'
+      version_scheme:
+        type: string
+        default: 'post'
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      pythons: ${{ steps.matrix.outputs.pythons }}
+      glibc: ${{ steps.matrix.outputs.glibc }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Resolve the interpreter matrix
+        id: matrix
+        env:
+          VERSIONS: ${{ inputs.python_versions || '3.9,3.10,3.11,3.12,3.13,3.14' }}
+          GLIBC: ${{ inputs.glibc || '2.28' }}
+        run: |
+          python3 -c "
+          import json, os
+          versions = [v.strip() for v in os.environ['VERSIONS'].split(',') if v.strip()]
+          print('pythons=' + json.dumps(versions))
+          " >> "$GITHUB_OUTPUT"
+          echo "glibc=$GLIBC" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the version
+        id: version
+        env:
+          DFTRACER_VERSION_SCHEME: ${{ inputs.version_scheme || 'post' }}
+        run: |
+          version="$(scripts/wheel/build_wheels.sh --list | awk '/wheel version/ {print $NF}')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: cp${{ matrix.python }} ${{ needs.plan.outputs.version }} (glibc ${{ needs.plan.outputs.glibc }})
+    needs: plan
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(needs.plan.outputs.pythons) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the manifest matches the CMake pins
+        run: python3 scripts/wheel/manifest.py --check
+
+      - name: Fetch the public dependency archives
+        run: scripts/wheel/fetch_deps.sh --verify
+
+      - name: Build and test wheel
+        env:
+          CIBW_CONTAINER_ENGINE: docker
+          DFTRACER_PODMAN_KEEP_STORAGE: "1"
+        run: |
+          scripts/wheel/build_wheels.sh \
+            --python "${{ matrix.python }}" \
+            --glibc "${{ needs.plan.outputs.glibc }}" \
+            --no-fetch \
+            --output wheelhouse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-cp${{ matrix.python }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
