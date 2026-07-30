@@ -54,6 +54,18 @@ pip install dftracer[dfanalyzer]
 # pip install dftracer[dfanalyzer_old]
 ```
 
+This installs a prebuilt wheel that traces POSIX and STDIO I/O. It needs nothing
+from the host, but it cannot trace MPI, HDF5 or HIP — see
+[With MPI, HDF5 or HIP support](#with-mpi-hdf5-or-hip-support).
+
+Development builds are published from every merge into `develop`, versioned
+`<last release>.postN`. They are prereleases, so `pip` only takes them when asked:
+
+```bash
+pip install --pre dftracer          # newest prerelease
+pip install dftracer==2.1.0.post5   # a specific one
+```
+
 ### From Github
 
 ```bash
@@ -75,7 +87,60 @@ git checkout tags/<Release> -b <Release>
 pip install .
 ```
 
-For detailed build instructions, click [here](https://dftracer.readthedocs.io/en/latest/build.html).
+### With MPI, HDF5 or HIP support
+
+These are compile-time options, so they need a build against the libraries you
+actually run with. The prebuilt wheel cannot carry them: DFTracer intercepts
+calls into the MPI/HDF5 library the application loads, and the interception is
+generated for a specific implementation and version, so a wheel built elsewhere
+would trace nothing. Build from the source distribution instead, the way
+`mpi4py` does:
+
+```bash
+# MPI and HDF5 must be discoverable by CMake (module load, spack load, ...)
+DFTRACER_ENABLE_MPI=ON DFTRACER_ENABLE_HDF5=ON \
+  pip install --no-binary dftracer dftracer
+```
+
+`--no-binary dftracer` is what makes `pip` build from source rather than take the
+wheel. Only `dftracer` itself is built from source; its build tools still come as
+wheels. The same works for a checkout (`pip install .`) or a release tarball.
+
+The options below are read from the environment by `setup.py` and passed to CMake.
+All default to `OFF` unless stated:
+
+| Variable | Effect |
+| --- | --- |
+| `DFTRACER_ENABLE_MPI` | MPI rank in traces and MPI/MPI-IO interception |
+| `DFTRACER_ENABLE_HDF5` | HDF5 interception |
+| `DFTRACER_ENABLE_HIP_TRACING` | AMD GPU tracing, needs ROCm/rocprofiler-sdk |
+| `DFTRACER_ENABLE_FTRACING` | function tracing via `-finstrument-functions` |
+| `DFTRACER_ENABLE_DYNAMIC_DETECTION` | detect HWLOC, MPI and HIP at run time instead of link time |
+| `DFTRACER_DISABLE_HWLOC` | HWLOC support, `ON` (disabled) by default |
+| `DFTRACER_MPI_IMPL` | override MPI implementation detection |
+| `DFTRACER_BUILD_TYPE` | `Release` (default) or `Debug` |
+
+Requirements for a source build: a C++17 compiler whose standard library
+provides `std::filesystem` (GCC 9 or newer; note that a system `libstdc++` older
+than the compiler on the `PATH` can shadow it and fail the link), CMake 3.24 or
+newer, and the development packages of whatever you enable.
+
+The C/C++ dependencies (cpp-logger, GOTCHA, brahma, yaml-cpp, libuv) are built
+automatically. Their source archives ship inside the source distribution, so a
+source install needs no access to their repositories. When building from a git
+clone, fetch the ones that are not committed first:
+
+```bash
+scripts/wheel/fetch_deps.sh
+```
+
+To confirm the build traces what you enabled, run your application with
+`DFTRACER_ENABLE=1` and check that the trace contains the matching categories
+(`MPI`, `MPIIO`, `HDF5`) and not only `POSIX`.
+
+For detailed build instructions see [docs/build.rst](docs/build.rst) in this
+repository, or the [rendered documentation](https://dftracer.readthedocs.io/en/latest/build.html)
+when it is reachable.
 
 ## Usage
 

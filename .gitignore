@@ -110,3 +110,6 @@ examples/dfanalyzer/outputs/
 *.pfw*
 .secrets.example
 logs/
+
+# cibuildwheel output
+wheelhouse/

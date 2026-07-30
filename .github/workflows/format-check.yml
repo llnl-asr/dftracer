@@ -1,8 +1,8 @@
 name: Check code formatting
 
+# Pull requests only: a merge into develop carries the content the pull request
+# already checked.
 on:
-  push:
-    branches: [ develop ]
   pull_request:
     branches: [ develop, stage-in ]
   workflow_dispatch:

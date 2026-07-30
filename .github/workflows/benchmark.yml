@@ -1,13 +1,8 @@
 name: Benchmark PR with IOR
 
+# Pull requests only: a merge into develop carries the content the pull request
+# already benchmarked.
 on:
-  push:
-    branches: [develop]
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - '.readthedocs.yaml'
-      - 'LICENSE'
   pull_request:
     types: [opened, synchronize, reopened]
     paths-ignore:
@@ -29,6 +24,9 @@ jobs:
     steps:
       - name: Checkout PR code
         uses: actions/checkout@v4
+        with:
+          # full history so the changed-file check below can diff against the base
+          fetch-depth: 0
 
       - name: Get PR branch and repo URL
         id: pr_info
@@ -46,18 +44,20 @@ jobs:
           echo "url=$url" >> $GITHUB_OUTPUT
           echo "==> Check for changes under src/ or test/"
 
-          # Gather changed filenames via GitHub API
+          # Gather changed filenames from git rather than the API: reading
+          # pulls/*/files needs pull-requests scope on the workflow token, and
+          # without it the error body reaches jq as a parse failure.
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            pr_number=$(jq -r .pull_request.number < "$GITHUB_EVENT_PATH")
-            files=$(curl -sS -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files" | jq -r '.[].filename')
+            git fetch --quiet origin "${{ github.base_ref }}"
+            files=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
           else
-            before=$(jq -r .before < "$GITHUB_EVENT_PATH")
-            after=$(jq -r .after < "$GITHUB_EVENT_PATH")
-            files=$(curl -sS -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/compare/${before}...${after}" | jq -r '.files[].filename')
+            before="${{ github.event.before }}"
+            if [ -n "$before" ] && git cat-file -e "$before^{commit}" 2>/dev/null; then
+              files=$(git diff --name-only "$before" "${GITHUB_SHA}")
+            else
+              # new branch or force push: no usable base, so treat it as relevant
+              files=$(git show --name-only --pretty=format: "${GITHUB_SHA}")
+            fi
           fi
 
           echo "Changed files:"

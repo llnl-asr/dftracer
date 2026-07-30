@@ -141,11 +141,14 @@ jobs:
             exit 1
           fi
 
-          # OpenMPI's mpirun refuses to run as root without this flag; MPICH's
-          # hydra-based mpirun has no such flag and errors out if given one.
-          MPIRUN_ROOT_FLAGS=""
+          # OpenMPI's mpirun refuses to run as root without --allow-run-as-root,
+          # and MPICH's hydra-based mpirun has no such flag and errors out if
+          # given one. OVERSUBSCRIBE is needed because PRRTE derives its slot
+          # count from the container's restricted cpuset, which is smaller than
+          # the two ranks this test needs ("not enough slots available").
+          MPIRUN_FLAGS=""
           if [ "${{ matrix.mpi }}" = "openmpi" ]; then
-            MPIRUN_ROOT_FLAGS="--allow-run-as-root"
+            MPIRUN_FLAGS="--allow-run-as-root --map-by :OVERSUBSCRIBE"
           fi
 
           export DFTRACER_ENABLE=1
@@ -174,7 +177,7 @@ jobs:
           # gdb in this container. Launch it through mpirun instead, wrapping
           # each rank with gdb.
           if command -v gdb >/dev/null 2>&1; then
-            timeout 240 mpirun ${MPIRUN_ROOT_FLAGS} -np 2 \
+            timeout 240 mpirun ${MPIRUN_FLAGS} -np 2 \
               gdb -q -batch \
               -ex run \
               -ex "thread apply all bt full" \
@@ -186,7 +189,7 @@ jobs:
               exit 1
             fi
           else
-            mpirun ${MPIRUN_ROOT_FLAGS} -np 2 "${TEST_BIN}" "${VERIFY_DATA_DIR}"
+            mpirun ${MPIRUN_FLAGS} -np 2 "${TEST_BIN}" "${VERIFY_DATA_DIR}"
           fi
           unset LD_PRELOAD DFTRACER_INIT DFTRACER_ENABLE DFTRACER_DATA_DIR
 

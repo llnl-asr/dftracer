@@ -1,81 +1,74 @@
-# This workflow will upload a Python Package using Twine when a release is created
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python#publishing-to-package-registries
-
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-
 name: Upload Python Package
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+
 permissions:
   contents: read
 
 jobs:
-  deploy:
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.9", "3.10", "3.11", "3.12"]
-        os: [ubuntu-22.04, ubuntu-24.04]
-    name: ${{ matrix.python }}-${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  wheels:
+    name: Wheels
+    uses: ./.github/workflows/wheels.yml
+    with:
+      python_versions: '3.9,3.10,3.11,3.12,3.13,3.14'
+      glibc: '2.28'
 
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v3
+      - uses: actions/checkout@v4
         with:
-          python-version: ${{ matrix.python }}
-      - name: Install dependencies
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # MANIFEST.in grafts dependency/, so fetching first makes the sdist
+      # self-contained: a source build needs no dependency downloads.
+      - name: Fetch the public dependency archives
+        run: scripts/wheel/fetch_deps.sh --verify
+
+      - name: Build sdist
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ca-certificates gpg wget
-          . /etc/os-release
-          wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
-          echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ ${VERSION_CODENAME} main" \
-            | sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y gcc g++ libtool-bin openmpi-bin libopenmpi-dev cmake
-          cmake --version
-          CMAKE_MIN_VERSION="3.24.0"
-          CMAKE_VERSION="$(cmake --version | awk '/^cmake version/{print $3}')"
-          if [ "$(printf '%s\n' "$CMAKE_MIN_VERSION" "$CMAKE_VERSION" | sort -V | head -n 1)" != "$CMAKE_MIN_VERSION" ]; then
-            echo "CMake ${CMAKE_VERSION} is too old; need >= ${CMAKE_MIN_VERSION} for cmake --fresh"
-            exit 1
-          fi
-          python -m pip install --upgrade pip
-          python -m pip install build wheel auditwheel pybind11 patchelf "setuptools>=64" "setuptools-scm>=8"
-      - name: Build wheel package
+          python -m pip install --upgrade pip build
+          python -m build --sdist --outdir dist .
+
+      - name: Check metadata
         run: |
-          export DFTRACER_WHEEL=1
-          python setup.py bdist_wheel
-          python setup.py sdist
-          gotcha_so=$(find . -name libgotcha.so.2)
-          path=`dirname $gotcha_so`
-          path=`dirname $path`
-          echo $path
-          export LD_LIBRARY_PATH=$PWD/$path/lib:$PWD/$path/lib64:$LD_LIBRARY_PATH
-          echo $LD_LIBRARY_PATH
-          auditwheel show dist/*.whl
-          platform=$(auditwheel show dist/*.whl | grep manylinux_ | awk -F'"' '{print $2}')
-          auditwheel show dist/*.whl | grep manylinux_
-          echo "Platform selected is $platform"
-          auditwheel repair --plat $platform dist/*.whl -w dist/
-          rm dist/*linux_x86_64.whl
-          rm dist/*.tar.gz
-      - name: Build source package
-        if: matrix.os == 'ubuntu-24.04' && matrix.python == '3.12'
-        run: |
-          export DFTRACER_WHEEL=1
-          python setup.py sdist
-      - name: Publish package
-        uses: pypa/gh-action-pypi-publish@27b31702a0e7fc50959f5ad993c78deac1bdfc29
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: [wheels, sdist]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: 'wheel-*'
+          merge-multiple: true
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+      - name: List distributions
+        run: ls -l dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
           password: ${{ secrets.PYPI_TOKEN }}
