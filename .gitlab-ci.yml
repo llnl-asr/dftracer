@@ -14,7 +14,7 @@
 #
 # Flux-allocation flow (canonical, from cpp-logger): the job runs on the
 # shell runner, creates ONE 1-node allocation with `flux batch`, grabs its id
-# with `flux job last`, and then runs EACH CI phase inside that same
+# via a unique job name, and then runs EACH CI phase inside that same
 # allocation through `flux proxy <jobid>`. The allocation is cancelled in
 # after_script. A normal push/MR pipeline runs a single `ci` job, so the
 # whole pipeline uses ONE allocation total; the benchmark jobs and publish
@@ -213,8 +213,12 @@ allocate:
     # flux alloc --bg submits the allocation and BLOCKS until it is granted
     # (no timeout — batch queues may take long), then returns leaving the
     # instance running in the background.
-    - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name=dftracer-ci
-    - JOBID=$(flux job last)
+    # Unique per-job name: `flux job last` is user-global and races with
+    # other pipelines running under the same LC account.
+    - ALLOC_NAME=dftracer-ci-$CI_PIPELINE_ID-$CI_JOB_ID
+    - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
+    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
+    - test -n "$JOBID"
     - echo "$JOBID" > .flux-jobid
     - echo "Created Flux allocation $JOBID (shared by all CI jobs)"
     - flux proxy "$JOBID" flux resource list
@@ -260,12 +264,17 @@ benchmark:
     IOR_REPO: "https://github.com/hpc/ior.git"
     IOR_VERSION: "4.0.0"
   script:
-    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name=dftracer-benchmark
-    - JOBID=$(flux job last)
+    # Unique per-job name: `flux job last` is user-global and races with
+    # other pipelines running under the same LC account.
+    - ALLOC_NAME=dftracer-benchmark-$CI_PIPELINE_ID-$CI_JOB_ID
+    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
+    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
+    - test -n "$JOBID"
+    - echo "$JOBID" > .flux-jobid
     - echo "Using Flux allocation $JOBID"
     - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/benchmark.sh
   after_script:
-    - JOBID=$(flux job last) && flux cancel "$JOBID" || true
+    - test -s .flux-jobid && flux cancel "$(cat .flux-jobid)" || true
   artifacts:
     paths: [cases.csv, overhead.csv]
     expire_in: 30 days
@@ -295,12 +304,17 @@ dlio-benchmark:
     VALGRIND_DLIO_TIMEOUT: "3600"
     RDMAV_FORK_SAFE: "1"
   script:
-    - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name=dftracer-dlio-$WORKLOAD
-    - JOBID=$(flux job last)
+    # Unique per-job name: `flux job last` is user-global and races with
+    # other pipelines running under the same LC account.
+    - ALLOC_NAME=dftracer-dlio-$WORKLOAD-$CI_PIPELINE_ID-$CI_JOB_ID
+    - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
+    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
+    - test -n "$JOBID"
+    - echo "$JOBID" > .flux-jobid
     - echo "Using Flux allocation $JOBID"
     - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/dlio-benchmark.sh
   after_script:
-    - JOBID=$(flux job last) && flux cancel "$JOBID" || true
+    - test -s .flux-jobid && flux cancel "$(cat .flux-jobid)" || true
 
 ##############################################################################
 # wheels.yml -> wheel builds (manual). cibuildwheel needs a container
@@ -321,11 +335,16 @@ wheels:
     DFTRACER_PODMAN_KEEP_STORAGE: "1"
   timeout: 3h
   script:
-    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name=dftracer-wheels
-    - JOBID=$(flux job last)
+    # Unique per-job name: `flux job last` is user-global and races with
+    # other pipelines running under the same LC account.
+    - ALLOC_NAME=dftracer-wheels-$CI_PIPELINE_ID-$CI_JOB_ID
+    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
+    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
+    - test -n "$JOBID"
+    - echo "$JOBID" > .flux-jobid
     - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/python:3.11 .gitlab/flux-ci/wheels.sh
   after_script:
-    - JOBID=$(flux job last) && flux cancel "$JOBID" || true
+    - test -s .flux-jobid && flux cancel "$(cat .flux-jobid)" || true
   artifacts:
     paths: [wheelhouse/*.whl]
     expire_in: 30 days
@@ -346,11 +365,16 @@ python-publish:
     CIBW_CONTAINER_ENGINE: docker
   timeout: 9h
   script:
-    - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name=dftracer-pypi
-    - JOBID=$(flux job last)
+    # Unique per-job name: `flux job last` is user-global and races with
+    # other pipelines running under the same LC account.
+    - ALLOC_NAME=dftracer-pypi-$CI_PIPELINE_ID-$CI_JOB_ID
+    - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
+    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
+    - test -n "$JOBID"
+    - echo "$JOBID" > .flux-jobid
     - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/python:3.11 .gitlab/flux-ci/python-publish.sh
   after_script:
-    - JOBID=$(flux job last) && flux cancel "$JOBID" || true
+    - test -s .flux-jobid && flux cancel "$(cat .flux-jobid)" || true
 
 ##############################################################################
 # prerelease.yml -> publish .postN prerelease to PyPI (manual, develop).
@@ -369,11 +393,16 @@ prerelease:publish:
     CIBW_CONTAINER_ENGINE: docker
   timeout: 9h
   script:
-    - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name=dftracer-prerelease
-    - JOBID=$(flux job last)
+    # Unique per-job name: `flux job last` is user-global and races with
+    # other pipelines running under the same LC account.
+    - ALLOC_NAME=dftracer-prerelease-$CI_PIPELINE_ID-$CI_JOB_ID
+    - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
+    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
+    - test -n "$JOBID"
+    - echo "$JOBID" > .flux-jobid
     - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/python:3.11 .gitlab/flux-ci/prerelease-publish.sh
   after_script:
-    - JOBID=$(flux job last) && flux cancel "$JOBID" || true
+    - test -s .flux-jobid && flux cancel "$(cat .flux-jobid)" || true
 
 ##############################################################################
 # docker-publish.yml -> DockerHub image (manual, v* tags). Keeps its docker
@@ -435,4 +464,4 @@ release-allocation:
     - if: '$CI_PIPELINE_SOURCE == "push"'
       when: always
   script:
-    - flux cancel "$(cat .flux-jobid)" || true
+    - test -s .flux-jobid && flux cancel "$(cat .flux-jobid)" || true
