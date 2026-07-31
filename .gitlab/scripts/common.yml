@@ -14,9 +14,9 @@
     GCC_MODULE: gcc/11.2.1
     ROCM_MODULE: rocm/6.4.3
     DATA_PATH: "/p/lustre3/haridev/gitlab-runner-data/"
-    LOG_STORE_DIR: "/p/lustre3/haridev/dftracer-traces-lfs" # per-user CI storage (was the shared 'iopp' space)
+    LOG_STORE_DIR: "/p/lustre3/iopp/dftracer-traces-lfs" # shared traces store (stays under iopp)
     CUSTOM_CI_OUTPUT_DIR: "/p/lustre3/haridev/gitlab-runner-outputs"
-    BASELINE_CSV: "/p/lustre3/haridev/dftracer-traces-lfs/v1.0.10.dev6/corona/trace_paths.csv"
+    BASELINE_CSV: "/p/lustre3/iopp/dftracer-traces-lfs/v1.0.10.dev6/corona/trace_paths.csv"
     CORES: 48
     GPUS: 8
     LARGE_QUEUE_WALLTIME: 480 # Walltime specifies the maximum runtime in minutes
@@ -37,9 +37,9 @@
     GCC_MODULE: cce/20.0.0
     ROCM_MODULE: rocm/6.4.3
     DATA_PATH: "/p/lustre5/haridev/gitlab-runner-data/"
-    LOG_STORE_DIR: "/p/lustre5/haridev/dftracer-traces-lfs" # per-user CI storage (was the shared 'iopp' space)
+    LOG_STORE_DIR: "/p/lustre5/iopp/dftracer-traces-lfs" # shared traces store (stays under iopp)
     CUSTOM_CI_OUTPUT_DIR: "/p/lustre5/haridev/gitlab-runner-outputs"
-    BASELINE_CSV: "/p/lustre5/haridev/dftracer-traces-lfs/trace_paths.csv"
+    BASELINE_CSV: "/p/lustre5/iopp/dftracer-traces-lfs/trace_paths.csv"
     SMALL_QUEUE_WALLTIME: 60
     LARGE_QUEUE: pbatch # 'pbatch' is a queue name for batch jobs
     SMALL_QUEUE: pdebug # 'pdebug' is a queue name for debugging jobs
