@@ -16,7 +16,11 @@ PODMAN_STORE=/var/tmp/$USER/podman-root
 PODMAN_RUNROOT=/var/tmp/$USER/podman-run
 mkdir -p "$PODMAN_STORE" "$PODMAN_RUNROOT"
 
+# --user 0:0 is REQUIRED: images with a non-root USER (e.g. brahma-ci) map to a
+# subuid under rootless podman and cannot read the bind-mounted checkout
+# ("Permission denied"). Container root maps to the host user, which owns them.
 podman --root "$PODMAN_STORE" --runroot "$PODMAN_RUNROOT" run --rm \
+  --user 0:0 \
   -v "$PWD:/ws" -w /ws \
   -e CI_PROJECT_DIR=/ws \
   -e PYPI_TOKEN -e DOCKER_USERNAME -e DOCKER_PASSWORD \
