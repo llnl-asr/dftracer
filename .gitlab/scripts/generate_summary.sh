@@ -102,7 +102,7 @@ fi
 
 log "generate_summary.sh completed."
 
-BASELINE=/p/lustre3/iopp/dftracer-traces-lfs/v1.0.10.dev6/corona/trace_paths.csv
+BASELINE=/p/lustre3/haridev/dftracer-traces-lfs/v1.0.10.dev6/corona/trace_paths.csv
 log "Starting comparison of summary files..."
 python .gitlab/scripts/compare_summary.py ${BASELINE} "$CSV_FILE" --output_file "$COMPARE_CSV_FILE"
 log "Comparison completed. Output written to $COMPARE_CSV_FILE"

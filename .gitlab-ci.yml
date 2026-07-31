@@ -59,8 +59,8 @@ workflow:
 
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
-  CUSTOM_CI_BUILDS_DIR: "/usr/workspace/iopp/gitlab-runner-builds"
-  CUSTOM_CI_ENV_DIR: "/usr/workspace/iopp/gitlab-runner-envs"
+  CUSTOM_CI_BUILDS_DIR: "/usr/workspace/haridev/gitlab-runner-builds"
+  CUSTOM_CI_ENV_DIR: "/usr/workspace/haridev/gitlab-runner-envs"
   DFTRACER_ENABLE_DYNAMIC_DETECTION: "ON"
   DFTRACER_DISABLE_HWLOC: "OFF"
   # Repository information
