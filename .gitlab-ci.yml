@@ -218,9 +218,10 @@ allocate:
     # flux alloc --bg submits the allocation and BLOCKS until it is granted
     # (no timeout — batch queues may take long), then returns leaving the
     # instance running in the background.
-    # Unique per-job name: `flux job last` is user-global and races with
-    # other pipelines running under the same LC account.
-    - ALLOC_NAME=dftracer-ci-$CI_PIPELINE_ID-$CI_JOB_ID
+    # ALLOC_NAME comes from .corona-flux and is the SAME in every job of this
+    # pipeline; do not redefine it here or `ci` cannot find the allocation.
+    # A retried `allocate` must not leave the previous attempt running.
+    - for id in $(flux jobs -n --name="$ALLOC_NAME" -o "{id}" 2>/dev/null); do echo "cancelling stale allocation $id"; flux cancel "$id" || true; done
     - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
     - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
     - test -n "$JOBID"
@@ -454,12 +455,14 @@ pages:
 release-allocation:
   extends: .corona-flux
   stage: cleanup
-  # Runs last: alloc → ci → pages → deallocate.
-  needs: [allocate, ci, {job: pages, optional: true}]
+  # No `needs:` on purpose: a job that declares `needs` is SKIPPED when one of
+  # them fails, which leaked the allocation on every failed pipeline. Plain
+  # stage ordering + `when: always` guarantees cleanup after success, failure,
+  # cancellation and manual reruns alike.
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: always
     - if: '$CI_PIPELINE_SOURCE == "push"'
       when: always
   script:
-    - flux cancel "$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)" || true
+    - for id in $(flux jobs -n --name="$ALLOC_NAME" -o "{id}" 2>/dev/null); do echo "cancelling $id"; flux cancel "$id" || true; done
