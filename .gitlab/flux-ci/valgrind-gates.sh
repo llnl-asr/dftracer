@@ -5,7 +5,8 @@ cd "$CI_PROJECT_DIR"
 export INSTALL_MODE=pip
 source .gitlab/flux-ci/toolchain.sh
 command -v valgrind && valgrind --version
-module load hdf5-parallel 2>/dev/null && DFTRACER_HDF5=1 || DFTRACER_HDF5=0
+# No LC modules inside the container: HDF5 comes from the image (libhdf5-mpich-dev).
+command -v h5pcc >/dev/null && DFTRACER_HDF5=1 || DFTRACER_HDF5=0
 python -m pip install pybind11 ninja "setuptools>=64" "setuptools-scm>=8"
 python -m pip install "pytest>=6.0" "numpy>=1.24.3" "pandas>=2.0.3"
 python -m pip install -r scripts/requirements-valgrind-runners.txt

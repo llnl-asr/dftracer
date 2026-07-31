@@ -11,7 +11,8 @@ export RDMAV_FORK_SAFE=1
 source .gitlab/flux-ci/toolchain.sh
 command -v valgrind && valgrind --version
 command -v gdb && gdb --version
-module load hdf5-parallel 2>/dev/null && DFTRACER_HDF5=1 || DFTRACER_HDF5=0
+# No LC modules inside the container: HDF5 comes from the image (libhdf5-mpich-dev).
+command -v h5pcc >/dev/null && DFTRACER_HDF5=1 || DFTRACER_HDF5=0
 export RUNNER_TEMP="$CI_PROJECT_DIR/tmp" && mkdir -p "$RUNNER_TEMP"
 python -m pip install pybind11 ninja "setuptools>=64" "setuptools-scm>=8"
 python -m pip install "pytest>=6.0" "numpy>=1.24.3" "pandas>=2.0.3"

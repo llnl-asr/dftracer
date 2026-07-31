@@ -1,12 +1,23 @@
-# Module toolchain + fresh python venv for the migrated corona jobs
-# (replaces the apt-get/PPA installs the GitHub ubuntu runners needed).
+# Toolchain setup for CI phases — now runs INSIDE a podman container
+# (ubuntu:22.04 or the brahma-ci image), so LC modules are no longer used.
 # Sourced by every phase script in this directory.
 set -eo pipefail
-source /etc/profile.d/z00_lmod.sh 2>/dev/null || true
-module load $GCC_MODULE $PYTHON_MODULE $MPI_MODULE
+
+# APT::Sandbox::User=root: rootless podman has no mapped _apt uid, so apts
+# privilege drop fails with "setgroups (22: Invalid argument)".
+export DEBIAN_FRONTEND=noninteractive
+if command -v apt-get >/dev/null; then
+  apt-get -o APT::Sandbox::User=root update -qq
+  apt-get -o APT::Sandbox::User=root install -y -qq \
+    build-essential cmake ninja-build git pkg-config \
+    python3 python3-pip python3-venv python3-dev \
+    libmpich-dev mpich libhdf5-mpich-dev valgrind gdb curl ca-certificates
+fi
+
 export CC=gcc CXX=g++
 gcc --version && python3 --version && (which mpicc || true)
-cmake --version || module load cmake || true
+cmake --version || true
+
 rm -rf venv && python3 -m venv venv
 export VENV_PATH=$PWD/venv
 source venv/bin/activate

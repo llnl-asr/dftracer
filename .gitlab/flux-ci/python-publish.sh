@@ -4,7 +4,7 @@
 set -eo pipefail
 cd "$CI_PROJECT_DIR"
 source /etc/profile.d/z00_lmod.sh 2>/dev/null || true
-module load $PYTHON_MODULE || true
+# Python is provided by the container image.
 scripts/wheel/fetch_deps.sh --verify
 for PY in 3.9 3.10 3.11 3.12 3.13 3.14; do scripts/wheel/build_wheels.sh --python "$PY" --glibc "${GLIBC}" --no-fetch --output dist; done
 python3 -m pip install --upgrade pip build twine

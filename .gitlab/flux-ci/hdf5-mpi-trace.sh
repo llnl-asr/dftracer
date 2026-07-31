@@ -8,7 +8,7 @@ cd "$CI_PROJECT_DIR"
 export DFTRACER_BUILD="${DFTRACER_BUILD:-${CI_PROJECT_DIR}/dftracer-build}"
 export DFTRACER_INSTALL="${DFTRACER_INSTALL:-${CI_PROJECT_DIR}/dftracer-install}"
 source .gitlab/flux-ci/toolchain.sh
-module load hdf5-parallel
+# HDF5 is provided by the container image (spack/apt), not LC modules.
 HDF5_DIR="${HDF5:-$(dirname "$(dirname "$(command -v h5pcc || command -v h5cc)")")}"
 echo "HDF5_DIR=${HDF5_DIR}"
 echo "MPI wrappers: $(which mpicc) $(which mpicxx)"

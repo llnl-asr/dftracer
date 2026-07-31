@@ -4,7 +4,7 @@
 set -eo pipefail
 cd "$CI_PROJECT_DIR"
 source /etc/profile.d/z00_lmod.sh 2>/dev/null || true
-module load $PYTHON_MODULE || true
+# Python is provided by the container image.
 version="$(scripts/wheel/build_wheels.sh --list | awk '/wheel version/ {print $NF}')"
 echo "wheel version: $version"
 case "$version" in

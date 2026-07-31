@@ -229,12 +229,13 @@ ci:
   timeout: 9h
   script:
     - JOBID=$(cat .flux-jobid)
-    # Each CI phase runs on the shared allocation via flux proxy.
-    - flux proxy "$JOBID" bash -lc "bash .gitlab/flux-ci/format-check.sh"
-    - flux proxy "$JOBID" bash -lc "bash .gitlab/flux-ci/build-test.sh"
-    - flux proxy "$JOBID" bash -lc "bash .gitlab/flux-ci/valgrind-gates.sh"
-    - flux proxy "$JOBID" bash -lc "bash .gitlab/flux-ci/hdf5-mpi-trace.sh"
-    - flux proxy "$JOBID" bash -lc "bash .gitlab/flux-ci/docs.sh"
+    # Each phase runs ON the allocated node (flux run) inside a podman
+    # container using the same image as the corresponding GitHub workflow.
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/format-check.sh
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/build-test.sh
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/valgrind-gates.sh
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/hdevarajan92/brahma-ci:latest .gitlab/flux-ci/hdf5-mpi-trace.sh
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/python:3.11 .gitlab/flux-ci/docs.sh
   artifacts:
     when: always
     paths:
@@ -262,7 +263,7 @@ benchmark:
     - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name=dftracer-benchmark
     - JOBID=$(flux job last)
     - echo "Using Flux allocation $JOBID"
-    - flux proxy "$JOBID" bash -lc "bash .gitlab/flux-ci/benchmark.sh"
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/benchmark.sh
   after_script:
     - JOBID=$(flux job last) && flux cancel "$JOBID" || true
   artifacts:
@@ -297,7 +298,7 @@ dlio-benchmark:
     - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name=dftracer-dlio-$WORKLOAD
     - JOBID=$(flux job last)
     - echo "Using Flux allocation $JOBID"
-    - flux proxy "$JOBID" bash -lc "bash .gitlab/flux-ci/dlio-benchmark.sh"
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/dlio-benchmark.sh
   after_script:
     - JOBID=$(flux job last) && flux cancel "$JOBID" || true
 
@@ -322,7 +323,7 @@ wheels:
   script:
     - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name=dftracer-wheels
     - JOBID=$(flux job last)
-    - flux proxy "$JOBID" bash -lc "bash .gitlab/flux-ci/wheels.sh"
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/python:3.11 .gitlab/flux-ci/wheels.sh
   after_script:
     - JOBID=$(flux job last) && flux cancel "$JOBID" || true
   artifacts:
@@ -347,7 +348,7 @@ python-publish:
   script:
     - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name=dftracer-pypi
     - JOBID=$(flux job last)
-    - flux proxy "$JOBID" bash -lc "bash .gitlab/flux-ci/python-publish.sh"
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/python:3.11 .gitlab/flux-ci/python-publish.sh
   after_script:
     - JOBID=$(flux job last) && flux cancel "$JOBID" || true
 
@@ -370,7 +371,7 @@ prerelease:publish:
   script:
     - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name=dftracer-prerelease
     - JOBID=$(flux job last)
-    - flux proxy "$JOBID" bash -lc "bash .gitlab/flux-ci/prerelease-publish.sh"
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/python:3.11 .gitlab/flux-ci/prerelease-publish.sh
   after_script:
     - JOBID=$(flux job last) && flux cancel "$JOBID" || true
 
@@ -426,7 +427,8 @@ pages:
 release-allocation:
   extends: .corona-flux
   stage: cleanup
-  needs: [allocate, ci]
+  # Runs last: alloc → ci → pages → deallocate.
+  needs: [allocate, ci, {job: pages, optional: true}]
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: always
