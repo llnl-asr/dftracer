@@ -245,9 +245,9 @@ ci:
     - test -n "$JOBID"
     # Each phase runs ON the allocated node (flux run) inside a podman
     # container using the same image as the corresponding GitHub workflow.
-    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/format-check.sh
-    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/build-test.sh
-    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/valgrind-gates.sh
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:24.04 .gitlab/flux-ci/format-check.sh
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:24.04 .gitlab/flux-ci/build-test.sh
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:24.04 .gitlab/flux-ci/valgrind-gates.sh
     - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/hdevarajan92/brahma-ci:latest .gitlab/flux-ci/hdf5-mpi-trace.sh
     - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/python:3.11 .gitlab/flux-ci/docs.sh
   artifacts:
@@ -281,7 +281,7 @@ benchmark:
     - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
     - test -n "$JOBID"
     - echo "Using Flux allocation $JOBID"
-    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/benchmark.sh
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:24.04 .gitlab/flux-ci/benchmark.sh
   after_script:
     - flux cancel "$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)" || true
   artifacts:
@@ -320,7 +320,7 @@ dlio-benchmark:
     - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
     - test -n "$JOBID"
     - echo "Using Flux allocation $JOBID"
-    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/dlio-benchmark.sh
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:24.04 .gitlab/flux-ci/dlio-benchmark.sh
   after_script:
     - flux cancel "$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)" || true
 

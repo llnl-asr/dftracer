@@ -9,7 +9,7 @@ export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null; then
   apt-get -o APT::Sandbox::User=root update -qq
   apt-get -o APT::Sandbox::User=root install -y -qq \
-    build-essential cmake ninja-build git openssh-client pkg-config \
+    build-essential cmake ninja-build git openssh-client pkg-config jq \
     python3 python3-pip python3-venv python3-dev \
     libmpich-dev mpich libhdf5-mpich-dev valgrind gdb curl ca-certificates
 fi
