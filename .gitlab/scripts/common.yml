@@ -2,6 +2,14 @@
   id_tokens:
     SITE_ID_TOKEN:
       aud: https://lc.llnl.gov/gitlab
+  before_script:
+    # GitLab does not expand shell variables inside `variables:` — a literal
+    # "$USER" there would reach the job unexpanded (or empty). These paths are
+    # therefore built here, in the job shell, where $USER is the account the
+    # runner executes as. LUSTRE_ROOT comes from the per-system template.
+    - export DATA_PATH="$LUSTRE_ROOT/$USER/gitlab-runner-data/"
+    - export CUSTOM_CI_OUTPUT_DIR="$LUSTRE_ROOT/$USER/gitlab-runner-outputs"
+    - echo "per-user CI storage - DATA_PATH=$DATA_PATH CUSTOM_CI_OUTPUT_DIR=$CUSTOM_CI_OUTPUT_DIR"
 
 .corona:
   extends: .lc
@@ -13,9 +21,8 @@
     MPI_MODULE: mvapich2/2.3.7
     GCC_MODULE: gcc/11.2.1
     ROCM_MODULE: rocm/6.4.3
-    DATA_PATH: "/p/lustre3/haridev/gitlab-runner-data/"
+    LUSTRE_ROOT: "/p/lustre3"
     LOG_STORE_DIR: "/p/lustre3/iopp/dftracer-traces-lfs" # shared traces store (stays under iopp)
-    CUSTOM_CI_OUTPUT_DIR: "/p/lustre3/haridev/gitlab-runner-outputs"
     BASELINE_CSV: "/p/lustre3/iopp/dftracer-traces-lfs/v1.0.10.dev6/corona/trace_paths.csv"
     CORES: 48
     GPUS: 8
@@ -36,9 +43,8 @@
     MPI_MODULE: cray-mpich/9.0.1 # OpenMPI is a popular open-source MPI implementation
     GCC_MODULE: cce/20.0.0
     ROCM_MODULE: rocm/6.4.3
-    DATA_PATH: "/p/lustre5/haridev/gitlab-runner-data/"
+    LUSTRE_ROOT: "/p/lustre5"
     LOG_STORE_DIR: "/p/lustre5/iopp/dftracer-traces-lfs" # shared traces store (stays under iopp)
-    CUSTOM_CI_OUTPUT_DIR: "/p/lustre5/haridev/gitlab-runner-outputs"
     BASELINE_CSV: "/p/lustre5/iopp/dftracer-traces-lfs/trace_paths.csv"
     SMALL_QUEUE_WALLTIME: 60
     LARGE_QUEUE: pbatch # 'pbatch' is a queue name for batch jobs

@@ -59,8 +59,14 @@ workflow:
 
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
-  CUSTOM_CI_BUILDS_DIR: "/usr/workspace/haridev/gitlab-runner-builds"
-  CUSTOM_CI_ENV_DIR: "/usr/workspace/haridev/gitlab-runner-envs"
+  # Jacamar reads these while preparing the environment, before any job shell
+  # exists, so $USER cannot be used here. $GITLAB_USER_LOGIN is a GitLab
+  # predefined variable (the account that triggered the pipeline) and IS
+  # expanded by the runner; on LC it matches the account Jacamar runs the job
+  # as. Jacamar additionally appends /<user>/builds under this base, so the
+  # per-user split holds even if the two ever diverge.
+  CUSTOM_CI_BUILDS_DIR: "/usr/workspace/$GITLAB_USER_LOGIN/gitlab-runner-builds"
+  CUSTOM_CI_ENV_DIR: "/usr/workspace/$GITLAB_USER_LOGIN/gitlab-runner-envs"
   DFTRACER_ENABLE_DYNAMIC_DETECTION: "ON"
   DFTRACER_DISABLE_HWLOC: "OFF"
   # Repository information
