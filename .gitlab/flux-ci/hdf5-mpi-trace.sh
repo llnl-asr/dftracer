@@ -31,22 +31,25 @@ TEST_BIN="${DFTRACER_BUILD}/bin/test_c_hdf5_mpi"
 [ -x "${TEST_BIN}" ] || { echo "ERROR: test binary not found: ${TEST_BIN}"; exit 1; }
 export DFTRACER_ENABLE=1 DFTRACER_INC_METADATA=1
 export DFTRACER_LOG_FILE="${VERIFY_TRACE_DIR}/hdf5_mpi_verify"
-export DFTRACER_DATA_DIR=/ DFTRACER_INIT=PRELOAD DFTRACER_TRACE_COMPRESSION=1 DFTRACER_BIND_SIGNALS=0
-export LD_PRELOAD="${PRELOAD_LIB}"
+export DFTRACER_DATA_DIR=/ DFTRACER_TRACE_COMPRESSION=1 DFTRACER_BIND_SIGNALS=0
 export LD_LIBRARY_PATH="${HDF5_DIR}/lib:${HDF5_DIR}/lib64:${LD_LIBRARY_PATH:-}"
 ulimit -c unlimited
+# Preload the rank only. Exporting it would also trace mpirun/hydra and gdb,
+# whose signal handlers deadlock inside the tracer.
+PRELOAD_ENV=(env "LD_PRELOAD=${PRELOAD_LIB}" DFTRACER_INIT=PRELOAD)
 # mvapich2's mpirun (hydra) needs no root/oversubscribe flags on corona
 if command -v gdb >/dev/null 2>&1; then
-  timeout 240 mpirun -np 2 \
-    gdb -q -batch -ex run -ex "thread apply all bt full" -ex "quit" \
+  timeout 240 mpirun -np 2 --bind-to core \
+    gdb -q -batch -ex "set exec-wrapper ${PRELOAD_ENV[*]}" \
+    -ex run -ex "thread apply all bt full" -ex "quit" \
     --args "${TEST_BIN}" "${VERIFY_DATA_DIR}" 2>&1 | tee "${VERIFY_TRACE_DIR}/gdb.log"
   if grep -q "SIGSEGV\|Program terminated" "${VERIFY_TRACE_DIR}/gdb.log"; then
     echo "ERROR: test_c_hdf5_mpi crashed, see backtrace above"; exit 1
   fi
 else
-  mpirun -np 2 "${TEST_BIN}" "${VERIFY_DATA_DIR}"
+  mpirun -np 2 --bind-to core "${PRELOAD_ENV[@]}" "${TEST_BIN}" "${VERIFY_DATA_DIR}"
 fi
-unset LD_PRELOAD DFTRACER_INIT DFTRACER_ENABLE DFTRACER_DATA_DIR
+unset DFTRACER_ENABLE DFTRACER_DATA_DIR
 TRACE_FILES=$(find "${VERIFY_TRACE_DIR}" -name "*.pfw.gz" 2>/dev/null)
 [ -n "${TRACE_FILES}" ] || { echo "ERROR: No .pfw.gz trace files found"; ls -la "${VERIFY_TRACE_DIR}" || true; exit 1; }
 python3 - "${VERIFY_TRACE_DIR}" << 'PYEOF'

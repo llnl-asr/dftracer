@@ -25,10 +25,17 @@ BUILD_FLAGS="--enable-tests --enable-mpi"
 ./autobuild.sh $BUILD_FLAGS
 pip install -r test/py/requirements.txt
 # ctest (with DEBUG rerun of failures, as on GitHub)
-DFTRACER_DIR=$(realpath $(find build -type d -name "dftracer.dftracer" | head -n 1))
-[ -d "$DFTRACER_DIR" ] || { echo "No DFTRACER build directory found"; exit 1; }
+# Match the running interpreter: build/ persists between pipelines, so a tree
+# left by another python version would otherwise be picked and ctest would
+# report success having registered no tests at all.
+PY_ABI=cpython-$(python -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')
+DFTRACER_DIR=$(realpath "$(find build -type d -name "dftracer.dftracer" -path "*${PY_ABI}*" | head -n 1)")
+[ -d "$DFTRACER_DIR" ] || { echo "No DFTRACER build directory found for ${PY_ABI}"; exit 1; }
 cd "$DFTRACER_DIR"
 export DFTRACER_BIND_SIGNALS=1
+TEST_COUNT=$(ctest --show-only=json-v1 | jq '.tests | length')
+[ "${TEST_COUNT:-0}" -gt 0 ] || { echo "No tests registered in $DFTRACER_DIR"; exit 1; }
+echo "Running ${TEST_COUNT} tests from ${DFTRACER_DIR}"
 set +e
 ctest --output-on-failure
 CTEST_RC=$?
