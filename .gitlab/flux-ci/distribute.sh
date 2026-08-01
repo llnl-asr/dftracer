@@ -5,17 +5,21 @@
 set -eo pipefail
 cd "$CI_PROJECT_DIR"
 
+# The wheels directory is shared with the other dftracer packages, so one
+# --find-links resolves a build and its dependencies together. Everything here
+# is therefore scoped to $PKG: another package's files are not ours to prune.
+PKG=dftracer
 DIST_ROOT="${DFTRACER_DIST_ROOT:-/usr/workspace/dldl/dftracer/distributions}"
 KEEP_PRERELEASES="${DFTRACER_DIST_KEEP:-3}"
 WHEEL_DIR="${DIST_ROOT}/wheels"
-DOC_DIR="${DIST_ROOT}/docs/dftracer"
+DOC_DIR="${DIST_ROOT}/docs/${PKG}"
 
 # The login umask is 0077, which would publish files only the account that
 # built them can open.
 umask 0007
 
-ls wheelhouse/*.whl >/dev/null 2>&1 || { echo "ERROR: no wheels in wheelhouse/"; exit 1; }
-version=$(basename "$(ls wheelhouse/*.whl | head -1)" | cut -d- -f2)
+ls wheelhouse/${PKG}-*.whl >/dev/null 2>&1 || { echo "ERROR: no ${PKG} wheels in wheelhouse/"; exit 1; }
+version=$(basename "$(ls wheelhouse/${PKG}-*.whl | head -1)" | cut -d- -f2)
 [ -n "${version}" ] || { echo "ERROR: could not read version from wheel name"; exit 1; }
 echo "publishing ${version} to ${DIST_ROOT}"
 
@@ -29,8 +33,8 @@ for d in "${DIST_ROOT}" "${DIST_ROOT}/docs" "${WHEEL_DIR}" "${DOC_DIR}"; do
 done
 # Same directory as the wheels: --no-binary ignores wheels, so the tarball
 # only resolves if it is on the --find-links path too.
-cp -f wheelhouse/*.whl "${WHEEL_DIR}/"
-cp -f wheelhouse/*.tar.gz "${WHEEL_DIR}/" 2>/dev/null || true
+cp -f wheelhouse/${PKG}-*.whl "${WHEEL_DIR}/"
+cp -f wheelhouse/${PKG}-*.tar.gz "${WHEEL_DIR}/" 2>/dev/null || true
 
 if [ -d public ]; then
   rm -rf "${DOC_DIR}/${version}.tmp"
@@ -42,10 +46,10 @@ else
 fi
 
 # Prune by version, never a tagged release. sort -V is not PEP 440 ordering.
-python3 - "$WHEEL_DIR" "$DOC_DIR" "$KEEP_PRERELEASES" <<'PYEOF'
+python3 - "$WHEEL_DIR" "$DOC_DIR" "$KEEP_PRERELEASES" "$PKG" <<'PYEOF'
 import os, re, sys, shutil
 
-wheel_dir, doc_dir, keep = sys.argv[1], sys.argv[2], int(sys.argv[3])
+wheel_dir, doc_dir, keep, pkg = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
 
 def key(v):
     # (release tuple, is_final, post, dev) - enough for X.Y.Z[.postN][.devN]
@@ -62,6 +66,8 @@ def prerelease(v):
 # Grouped by version so an sdist never outlives its wheels.
 wheel_versions = {}
 for f in os.listdir(wheel_dir):
+    if not f.startswith(pkg + "-"):
+        continue
     if f.endswith(".whl"):
         v = f.split("-")[1]
     elif f.endswith(".tar.gz"):
