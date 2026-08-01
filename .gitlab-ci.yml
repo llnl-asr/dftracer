@@ -23,8 +23,9 @@
 # `flux proxy ... bash -lc`).
 #
 # Required CI/CD variables (Settings > CI/CD > Variables) for the manual
-# publish jobs (leave unset if you never run them):
-#   PYPI_TOKEN       - PyPI API token (python-publish, prerelease:publish)
+# publish jobs (leave unset if you never run them). Nothing here publishes to
+# PyPI: GitLab only publishes to the dldl workspace, and PyPI stays with the
+# GitHub workflows.
 #   DOCKER_USERNAME  - DockerHub username (docker-publish)
 #   DOCKER_PASSWORD  - DockerHub password/token (docker-publish)
 #
@@ -39,22 +40,26 @@
 #   hdf5-mpi-trace-ci   -> ci (phase .gitlab/flux-ci/hdf5-mpi-trace.sh;
 #                          spack-image matrix collapsed to the corona
 #                          hdf5-parallel + mvapich2 modules)
-#   docs (ReadTheDocs)  -> ci (phase .gitlab/flux-ci/docs.sh) + pages
+#   docs (ReadTheDocs)  -> ci (phase .gitlab/flux-ci/docs.sh) + distribute
+#                          (published to the dldl workspace, not GitLab Pages)
 #   benchmark.yml       -> benchmark (IOR; manual; the store-results job that
 #                          pushes CSVs back to the GitHub PR branch is
 #                          GitHub-only and replaced by artifacts)
 #   dlio-benchmark.yml  -> dlio-benchmark (manual; matrix of workloads)
-#   wheels.yml          -> wheels (manual; cibuildwheel needs a container
-#                          engine on the node)
-#   prerelease.yml      -> prerelease:publish (manual, develop)
-#   python-publish.yml  -> python-publish (manual, tags)
+#   wheels.yml          -> wheels (merge requests and develop; cibuildwheel
+#                          needs a container engine on the node)
+#   prerelease.yml      -> not migrated (PyPI publishing stays on GitHub)
+#   python-publish.yml  -> not migrated (PyPI publishing stays on GitHub)
 #   docker-publish.yml  -> docker-publish (manual, v* tags; docker:dind)
 
+# A branch push pipelines alongside the merge request's, taking every
+# allocation twice.
 workflow:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "web"'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == "develop"'
     - when: never
 
 variables:
@@ -113,6 +118,25 @@ stages:
 .web-only-rules: &web-only-rules
   rules:
     - if: '$CI_PIPELINE_SOURCE == "web"'
+
+# Anything that cannot change what a build or a wheel produces is left out, so
+# a docs-only change costs nothing but the docs job.
+.code-paths: &code-paths
+  - CMakeLists.txt
+  - setup.py
+  - pyproject.toml
+  - PACKAGE_VERSION
+  - VERSION
+  - src/**/*
+  - include/**/*
+  - test/**/*
+  - cmake/**/*
+  - dependency/**/*
+  - python/**/*
+  - scripts/**/*
+  - tools/**/*
+  - .gitlab-ci.yml
+  - .gitlab/**/*
 
 # Migrated GitHub jobs: push + merge request pipelines.
 .push-mr-rules: &push-mr-rules
@@ -238,7 +262,12 @@ ci:
   extends: .corona-flux
   stage: test
   needs: [allocate]
-  <<: *push-mr-rules
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: *code-paths
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"'
+      changes: *code-paths
   timeout: 9h
   script:
     - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
@@ -249,11 +278,9 @@ ci:
     - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/build-test.sh
     - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/ubuntu:22.04 .gitlab/flux-ci/valgrind-gates.sh
     - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/hdevarajan92/brahma-ci:latest .gitlab/flux-ci/hdf5-mpi-trace.sh
-    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/python:3.11 .gitlab/flux-ci/docs.sh
   artifacts:
     when: always
     paths:
-      - public
       - dftracer-build/trace-verify/
 
 ##############################################################################
@@ -325,23 +352,47 @@ dlio-benchmark:
     - flux cancel "$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)" || true
 
 ##############################################################################
-# wheels.yml -> wheel builds (manual). cibuildwheel needs a container
-# engine; runs in its own Flux allocation when triggered.
+# Sphinx docs. Split out of `ci` so a docs-only change does not pay for a
+# build, a test run or a wheel.
+##############################################################################
+docs:
+  extends: .corona-flux
+  stage: test
+  needs: [allocate]
+  <<: *push-mr-rules
+  script:
+    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
+    - test -n "$JOBID"
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/python:3.11 .gitlab/flux-ci/docs.sh
+  artifacts:
+    paths: [public]
+
+##############################################################################
+# wheels.yml -> wheel builds. One allocation for the whole interpreter list;
+# a parallel matrix would take one per interpreter.
 ##############################################################################
 wheels:
   extends: .corona-flux
   stage: publish
   rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: *code-paths
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    # No changes filter here: whatever develop publishes has to be a matched
+    # set, or the docs would carry a version with no wheels behind it.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"'
     - when: manual
       allow_failure: true
-  parallel:
-    matrix:
-      - PYTHON: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
   variables:
     ALLOC_NAME: "dftracer-wheels-$CI_JOB_ID"
+    PYTHON: "3.9,3.10,3.11,3.12,3.13,3.14"
     GLIBC: "2.28"
-    CIBW_CONTAINER_ENGINE: docker
-    DFTRACER_PODMAN_KEEP_STORAGE: "1"
+    # Only podman is on the nodes. DFTRACER_PODMAN_KEEP_STORAGE stays unset so
+    # the image store lands on local disk, not the NFS home, which cannot hold
+    # image-layer xattrs.
+    CIBW_CONTAINER_ENGINE: podman
   timeout: 3h
   script:
     # Unique per-job name: `flux job last` is user-global and races with
@@ -349,65 +400,13 @@ wheels:
     - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
     - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
     - test -n "$JOBID"
-    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/python:3.11 .gitlab/flux-ci/wheels.sh
+    # Not run-in-podman.sh: cibuildwheel drives podman, and that image has none.
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/wheels.sh
   after_script:
     - flux cancel "$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)" || true
   artifacts:
     paths: [wheelhouse/*.whl]
     expire_in: 30 days
-
-##############################################################################
-# python-publish.yml -> publish release to PyPI (manual, tags only). Needs
-# PYPI_TOKEN; runs in its own Flux allocation when triggered.
-##############################################################################
-python-publish:
-  extends: .corona-flux
-  stage: publish
-  rules:
-    - if: '$CI_COMMIT_TAG'
-      when: manual
-      allow_failure: true
-  variables:
-    ALLOC_NAME: "dftracer-pypi-$CI_JOB_ID"
-    GLIBC: "2.28"
-    CIBW_CONTAINER_ENGINE: docker
-  timeout: 9h
-  script:
-    # Unique per-job name: `flux job last` is user-global and races with
-    # other pipelines running under the same LC account.
-    - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
-    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
-    - test -n "$JOBID"
-    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/python:3.11 .gitlab/flux-ci/python-publish.sh
-  after_script:
-    - flux cancel "$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)" || true
-
-##############################################################################
-# prerelease.yml -> publish .postN prerelease to PyPI (manual, develop).
-# Needs PYPI_TOKEN; runs in its own Flux allocation when triggered.
-##############################################################################
-prerelease:publish:
-  extends: .corona-flux
-  stage: publish
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "develop"'
-      when: manual
-      allow_failure: true
-  variables:
-    ALLOC_NAME: "dftracer-prerelease-$CI_JOB_ID"
-    GLIBC: "2.28"
-    DFTRACER_VERSION_SCHEME: post
-    CIBW_CONTAINER_ENGINE: docker
-  timeout: 9h
-  script:
-    # Unique per-job name: `flux job last` is user-global and races with
-    # other pipelines running under the same LC account.
-    - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
-    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
-    - test -n "$JOBID"
-    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/flux-ci/run-in-podman.sh docker.io/library/python:3.11 .gitlab/flux-ci/prerelease-publish.sh
-  after_script:
-    - flux cancel "$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)" || true
 
 ##############################################################################
 # docker-publish.yml -> DockerHub image (manual, v* tags). Keeps its docker
@@ -440,20 +439,23 @@ docker-publish:
       --push .
 
 ##############################################################################
-# GitLab Pages: republishes the docs artifact built by the `ci` job
-# (shell runner, no allocation).
+# Publishes to the dldl workspace. No pages job: Pages is unreachable from LC.
 ##############################################################################
-pages:
+distribute:
   extends: .corona-flux
   stage: deploy
-  needs: [ci]
+  # ci is optional only because a docs-only change does not run it; when it is
+  # in the pipeline it must pass, or a failed build would publish.
+  needs:
+    - docs
+    - wheels
+    - job: ci
+      optional: true
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop"'
-    - if: '$CI_COMMIT_BRANCH == "gitlab-migration"'  # temporary: remove after merge to develop
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"'
   script:
-    - echo "Publishing docs built by the ci job"
-  artifacts:
-    paths: [public]
+    - bash .gitlab/flux-ci/distribute.sh
 
 ##############################################################################
 # Releases the pipeline-global Flux allocation (runs even on failure).
