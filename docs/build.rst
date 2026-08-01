@@ -46,19 +46,35 @@ nothing from the host, but it cannot trace MPI, HDF5 or HIP; for those see
 `Enabling MPI, HDF5 and HIP`_.
 
 Development builds are published from every merge into ``develop``, versioned
-``<last release>.postN``, as both wheels and a source distribution, so a
-prerelease can also be rebuilt with MPI or HDF5 support. pip only selects them
-when asked:
+``<last release>.postN.dev0``, as both wheels and a source distribution, so a
+prerelease can also be rebuilt with MPI or HDF5 support. The ``.dev0`` makes
+them PEP 440 pre-releases, so pip only selects them when asked:
 
 .. code-block:: Bash
 
-    pip install --pre dftracer          # newest prerelease
-    pip install dftracer==2.1.0.post5   # a specific one
+    pip install --pre dftracer               # newest prerelease
+    pip install dftracer==2.1.0.post5.dev0   # a specific one
 
 .. attention::
 
     For pip installations, all libraries will be present within the site-packages/dftracer/lib.
     This enables clean management of pip installation and uninstallations.
+
+On LLNL LC (dldl group)
+************************
+
+Wheels and the matching source distribution are published to the group
+workspace, so no PyPI access is needed:
+
+.. code-block:: Bash
+
+    DFT_DIST=/usr/workspace/dldl/dftracer/distributions
+    pip install dftracer --find-links $DFT_DIST/wheels        # last release
+    pip install --pre dftracer --find-links $DFT_DIST/wheels  # develop build
+
+HTML docs for each version are published alongside them, under
+``$DFT_DIST/docs/dftracer/``, with ``latest`` and ``dev`` symlinks. Every
+tagged release is kept; the last three develop builds are kept with them.
 
 From source
 ************
@@ -109,6 +125,18 @@ Build from the source distribution instead, the way ``mpi4py`` does:
 wheel; only DFTracer itself is built from source, its build tools still come as
 wheels. The same variables work for a checkout (``pip install .``), a release
 tarball, ``autobuild.sh`` and a plain CMake build.
+
+.. attention::
+
+    On LC corona, load ``gcc/11.2.1`` or newer first. The default
+    ``gcc/10.3.1`` fails to link with ``undefined reference to
+    std::filesystem::...``.
+
+    ``DFTRACER_ENABLE_HDF5=ON`` does not build against the LC ``hdf5-parallel``
+    and ``hdf5-serial`` modules: they are HDF5 1.14.0, whose ``H5Apublic.h``
+    declares ``H5Aread_async`` with an undefined ``chid_t`` type, an upstream
+    typo fixed in 1.14.1. Any C++ build including ``hdf5.h`` fails. Use a spack
+    or self-built HDF5 instead.
 
 Commonly enabled options, all read from the environment by ``setup.py`` and
 passed to CMake. See `Build Variables`_ for the full list:

@@ -234,7 +234,7 @@ fi
 
 # Rootless podman defaults its storage to $HOME, which on NFS/Lustre cannot hold
 # the xattrs image layers need ("lsetxattr: operation not supported").
-STATE_DIR="${DFTRACER_WHEEL_STATE:-${TMPDIR:-/tmp}/$USER/dftracer-wheels}"
+STATE_DIR="${DFTRACER_WHEEL_STATE:-${TMPDIR:-/tmp}/${USER:-$(id -un)}/dftracer-wheels}"
 mkdir -p "$STATE_DIR"
 
 CONTAINER_ENGINE="${CIBW_CONTAINER_ENGINE:-podman}"

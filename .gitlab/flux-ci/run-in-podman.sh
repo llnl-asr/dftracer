@@ -28,5 +28,5 @@ podman --root "$PODMAN_STORE" --runroot "$PODMAN_RUNROOT" run --rm \
   -v "$HOME/.ssh:/root/.ssh:ro" \
   -e GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
   -e CI_PROJECT_DIR=/ws \
-  -e PYPI_TOKEN -e DOCKER_USERNAME -e DOCKER_PASSWORD \
+  -e DOCKER_USERNAME -e DOCKER_PASSWORD \
   "$IMAGE" bash "$@"

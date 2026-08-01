@@ -84,6 +84,35 @@ while read -r name archive sha url; do
     continue
   fi
 
+  # git+<url>@<ref>: cloned here on the runner, which can reach czgitlab, and
+  # handed to the wheel build as an archive, which cannot.
+  case "$url" in
+    git+*)
+      repo="${url#git+}"
+      ref="${repo##*@}"
+      repo="${repo%@*}"
+      echo "[$name] cloning $ref"
+      tmp="$dest.part"
+      work="$(mktemp -d)"
+      if git clone --quiet --depth 1 --branch "$ref" "$repo" "$work/src" 2>/dev/null &&
+        git -C "$work/src" archive --format=tar.gz \
+          --prefix="${archive%.tar.gz}/" -o "$tmp" HEAD; then
+        rm -rf "$work"
+        if check_sha "$tmp" "$sha"; then
+          mv "$tmp" "$dest"
+        else
+          rm -f "$tmp"
+          missing=1
+        fi
+      else
+        rm -rf "$work" "$tmp"
+        echo "  FAILED to clone $repo at $ref" >&2
+        missing=1
+      fi
+      continue
+      ;;
+  esac
+
   src="$url"
   if [ -n "$MIRROR" ]; then
     if [ -d "$MIRROR" ]; then

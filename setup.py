@@ -23,15 +23,17 @@ PLAT_TO_CMAKE = {
 def myversion_func(version: ScmVersion) -> str:
     """Version a commit as the tag it follows, plus its distance from it.
 
-    An exact tag gives 2.1.1; N commits later gives 2.1.1.postN, matching what
-    the wheels and sdist published from develop are named. setuptools-scm's own
-    "post-release" scheme cannot be used directly: it appends .post0 to a tagged
-    commit, so releases would be 2.1.1.post0.
+    An exact tag gives 2.1.1; N commits later gives 2.1.1.postN.dev0. The
+    .postN orders the build after the tag and the .dev0 keeps it a pre-release,
+    so only `pip install --pre` reaches a develop build. setuptools-scm's own
+    "post-release" scheme appends .post0 to a tagged commit.
     """
     from setuptools_scm.version import only_version
 
     if version.distance and version.distance > 0:
-        return version.format_next_version(only_version, fmt="{tag}.post{distance}")
+        return version.format_next_version(
+            only_version, fmt="{tag}.post{distance}.dev0"
+        )
     return version.format_next_version(only_version, fmt="{tag}")
 
 
