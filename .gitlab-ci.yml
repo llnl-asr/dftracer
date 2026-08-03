@@ -64,6 +64,9 @@ workflow:
 
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
+  # build_wheels.sh versions from `git describe`. The default shallow fetch
+  # hides the tags once develop moves past them.
+  GIT_DEPTH: 0
   # Jacamar reads these while preparing the environment, before any job shell
   # exists, so $USER cannot be used here. $GITLAB_USER_LOGIN is a GitLab
   # predefined variable (the account that triggered the pipeline) and IS
