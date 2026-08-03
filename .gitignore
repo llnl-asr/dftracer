@@ -111,5 +111,9 @@ examples/dfanalyzer/outputs/
 .secrets.example
 logs/
 
+# any build and install folder
+*build*/
+*install*/
+
 # cibuildwheel output
 wheelhouse/
