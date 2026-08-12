@@ -294,13 +294,29 @@ multiplexing, and ``DFTRACER_PAPI_SAMPLE_INTERVAL_MS`` overrides the sampling
 interval in milliseconds. When it is unset or set to ``0``, PAPI sampling inherits
 the main ``DFTRACER_TRACE_INTERVAL_MS`` value.
 
-Counters are chosen at build time. ``cmake/probes/papi_probe.c`` works out which
-PAPI presets the build machine can program at the same time and bakes the answer
-into ``dftracer_config.hpp`` as ``DFTRACER_PAPI_DETECTED_EVENTS``; a run uses that
-list directly and does no discovery of its own. Set ``DFTRACER_PAPI_EVENTS`` to a
-comma-separated list to pin the counters explicitly for a run. Counters the run
-host will not program -- a CPU different from the build host, or one counter slot
-too many -- are skipped with a warning rather than failing the run.
+Counters are chosen at build time, and everything the machine offers is taken.
+``cmake/probes/papi_probe.c`` walks the whole PAPI preset table, keeps every
+preset the CPU implements and PAPI will program, and bakes the list into
+``dftracer_config.hpp`` as ``DFTRACER_PAPI_DETECTED_EVENTS``; a run uses it
+directly and does no discovery of its own. Nothing is hand-picked, because which
+presets exist varies enormously between CPUs: on an AMD MI300A node only 17 of
+the 108 presets are available and not one of them is a cache counter, so a fixed
+list would mostly miss.
+
+Where there are more counters than hardware slots, DFTracer multiplexes so all of
+them are still collected. Multiplexed readings are extrapolated from a time slice
+rather than counted exactly, so they are estimates and can occasionally move
+backwards; each record carries ``multiplex`` in ``args`` to say which it is. The
+build log reports the gap::
+
+    -- [DFTRACER] detected 17 PAPI counters (7 fit in 5 hardware slots, the rest
+       need multiplexing): PAPI_BR_UCN,PAPI_BR_CN,...
+
+Set ``DFTRACER_PAPI_EVENTS`` to a comma-separated list to pin the counters
+explicitly for a run, and ``DFTRACER_PAPI_MULTIPLEX=1`` to force multiplexing even
+when everything would fit. Counters the run host will not program -- a CPU
+different from the build host -- are skipped with a warning rather than failing
+the run.
 
 Because the list is fixed at build time, building on a login node and running on a
 compute node with a different CPU can leave counters on the table. Build on the

@@ -724,12 +724,20 @@ else()
                                 if(_papi_probe_line_count GREATER 1)
                                         list(GET _papi_probe_lines 1 DFTRACER_PAPI_HW_COUNTERS)
                                 endif()
+                                if(_papi_probe_line_count GREATER 2)
+                                        list(GET _papi_probe_lines 2 DFTRACER_PAPI_FITTING_COUNTERS)
+                                endif()
                                 string(STRIP "${DFTRACER_PAPI_DETECTED_EVENTS}"
                                         DFTRACER_PAPI_DETECTED_EVENTS)
                                 string(STRIP "${DFTRACER_PAPI_HW_COUNTERS}"
                                         DFTRACER_PAPI_HW_COUNTERS)
+                                string(STRIP "${DFTRACER_PAPI_FITTING_COUNTERS}"
+                                        DFTRACER_PAPI_FITTING_COUNTERS)
+                                string(REPLACE "," ";" _papi_detected_list
+                                        "${DFTRACER_PAPI_DETECTED_EVENTS}")
+                                list(LENGTH _papi_detected_list _papi_detected_count)
                                 message(STATUS
-                                        "[DFTRACER] detected PAPI counters: ${DFTRACER_PAPI_DETECTED_EVENTS}")
+                                        "[DFTRACER] detected ${_papi_detected_count} PAPI counters (${DFTRACER_PAPI_FITTING_COUNTERS} fit in ${DFTRACER_PAPI_HW_COUNTERS} hardware slots, the rest need multiplexing): ${DFTRACER_PAPI_DETECTED_EVENTS}")
                         else()
                                 message(STATUS
                                         "-- [DFTRACER] PAPI counter probe did not run; using portable default counters")
@@ -746,6 +754,9 @@ else()
         endif()
         if(NOT DFTRACER_PAPI_HW_COUNTERS)
                 set(DFTRACER_PAPI_HW_COUNTERS 0)
+        endif()
+        if(NOT DFTRACER_PAPI_FITTING_COUNTERS)
+                set(DFTRACER_PAPI_FITTING_COUNTERS 0)
         endif()
 
         find_package(ZLIB REQUIRED)

@@ -65,6 +65,9 @@ class PAPICounterFunction : public dftracer::GenericFunction {
 
   std::atomic<bool> enabled;
   std::atomic<bool> library_ready;
+  // Time-share the counters. Turned on when more counters were detected than
+  // the CPU has slots, which is the only way to collect them all.
+  bool multiplex_active;
   std::atomic<int> index;
 
   // Owned exclusively by the sampler thread.

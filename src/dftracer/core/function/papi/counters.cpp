@@ -92,6 +92,7 @@ PAPICounterFunction::PAPICounterFunction()
       event_list(),
       enabled(false),
       library_ready(false),
+      multiplex_active(false),
       index(0),
       event_set(PAPI_NULL),
       last_values(),
@@ -109,35 +110,66 @@ PAPICounterFunction::PAPICounterFunction()
 
 PAPICounterFunction::~PAPICounterFunction() { finalize(); }
 
-// PAPI presets are named by family (PAPI_L1_DCM, PAPI_BR_MSP, ...), so the
-// prefix is enough to group them. The category becomes the record's "cat",
-// letting a reader select e.g. all cache counters without knowing every preset
-// name. Longer prefixes must be tested before shorter ones.
+// Group a preset into a family for the record's "cat", so a reader can select
+// e.g. every cache counter without knowing each preset name. Derived from the
+// naming scheme of the PAPI preset table; longer prefixes are tested first, and
+// anything unrecognised falls back to "PAPI" rather than being guessed at.
 std::string PAPICounterFunction::event_category(const std::string &event_name) {
   struct Prefix {
     const char *prefix;
     const char *category;
   };
   static const Prefix kPrefixes[] = {
+      // Cycles and instruction counts.
       {"PAPI_TOT_CYC", "CYCLE"},
       {"PAPI_REF_CYC", "CYCLE"},
       {"PAPI_TOT_INS", "INSTRUCTION"},
+      {"PAPI_TOT_IIS", "INSTRUCTION"},
+      {"PAPI_INT_INS", "INSTRUCTION"},
+      {"PAPI_SYC_INS", "INSTRUCTION"},
+      {"PAPI_HW_INT", "INTERRUPT"},
+      // Floating point and vector. The FPU sub-counters (multiply, add,
+      // divide, square root, FMA, inverse) are named per operation, so each
+      // needs its own prefix.
+      {"PAPI_FMA_INS", "FLOP"},
+      {"PAPI_FML_INS", "FLOP"},
+      {"PAPI_FAD_INS", "FLOP"},
+      {"PAPI_FDV_INS", "FLOP"},
+      {"PAPI_FSQ_INS", "FLOP"},
+      {"PAPI_FNV_INS", "FLOP"},
+      {"PAPI_FPU_IDL", "STALL"},
+      {"PAPI_FP_STAL", "STALL"},
+      {"PAPI_FP_", "FLOP"},
+      {"PAPI_SP_", "FLOP"},
+      {"PAPI_DP_", "FLOP"},
+      {"PAPI_VEC_", "FLOP"},
+      // Cache and coherency.
       {"PAPI_L1_", "CACHE"},
       {"PAPI_L2_", "CACHE"},
       {"PAPI_L3_", "CACHE"},
-      {"PAPI_CA_", "CACHE"},
+      {"PAPI_CA_", "COHERENCY"},
+      {"PAPI_PRF_DM", "PREFETCH"},
+      // Address translation.
       {"PAPI_TLB_", "TLB"},
+      // Branches.
+      {"PAPI_BTAC_M", "BRANCH"},
+      {"PAPI_BRU_IDL", "STALL"},
       {"PAPI_BR_", "BRANCH"},
-      {"PAPI_FP_", "FLOP"},
-      {"PAPI_DP_", "FLOP"},
-      {"PAPI_SP_", "FLOP"},
-      {"PAPI_VEC_", "FLOP"},
-      {"PAPI_LD_", "MEMORY"},
-      {"PAPI_SR_", "MEMORY"},
-      {"PAPI_LST_", "MEMORY"},
+      // Loads, stores and memory stalls.
+      {"PAPI_LST_INS", "MEMORY"},
+      {"PAPI_LD_INS", "MEMORY"},
+      {"PAPI_SR_INS", "MEMORY"},
+      {"PAPI_MEM_SCY", "STALL"},
+      {"PAPI_MEM_RCY", "STALL"},
+      {"PAPI_MEM_WCY", "STALL"},
       {"PAPI_MEM_", "MEMORY"},
+      {"PAPI_CSR_", "SYNC"},
+      // Issue and completion stalls.
       {"PAPI_STL_", "STALL"},
-      {"PAPI_RES_", "STALL"},
+      {"PAPI_FUL_", "STALL"},
+      {"PAPI_RES_STL", "STALL"},
+      {"PAPI_FXU_IDL", "STALL"},
+      {"PAPI_LSU_IDL", "STALL"},
   };
   for (const auto &entry : kPrefixes) {
     if (event_name.rfind(entry.prefix, 0) == 0) return entry.category;
@@ -177,7 +209,7 @@ bool PAPICounterFunction::bind_to_process(int set) const {
         retval, PAPI_strerror(retval));
   }
 
-  if (config->papi_multiplex) {
+  if (multiplex_active) {
     retval = PAPI_set_multiplex(set);
     if (retval != PAPI_OK) {
       log_papi_status("PAPI_set_multiplex", retval);
@@ -200,14 +232,6 @@ bool PAPICounterFunction::initialize_library() {
     return false;
   }
 
-  if (config->papi_multiplex) {
-    retval = PAPI_multiplex_init();
-    if (retval != PAPI_OK) {
-      config->papi_multiplex = false;
-      log_papi_status("PAPI_multiplex_init", retval);
-    }
-  }
-
   // Which counters to use is decided at build time by cmake/probes/papi_probe.c
   // and baked into dftracer_config.hpp, so nothing is enumerated here.
   // DFTRACER_PAPI_EVENTS overrides it for a specific run.
@@ -217,6 +241,27 @@ bool PAPICounterFunction::initialize_library() {
   if (events.empty()) {
     DFTRACER_LOG_WARN("PAPI tracing disabled: no counters configured", "");
     return false;
+  }
+
+  // More counters than the CPU has slots can only be collected by time-sharing
+  // them. Values then become scaled estimates rather than exact counts, so this
+  // is only turned on when it is the difference between collecting a counter
+  // and dropping it.
+  int hw_counters = DFTRACER_PAPI_HW_COUNTERS;
+  multiplex_active =
+      config->papi_multiplex ||
+      (hw_counters > 0 && static_cast<int>(events.size()) > hw_counters);
+  if (multiplex_active) {
+    int retval = PAPI_multiplex_init();
+    if (retval != PAPI_OK) {
+      multiplex_active = false;
+      log_papi_status("PAPI_multiplex_init", retval);
+    } else if (!config->papi_multiplex) {
+      DFTRACER_LOG_INFO(
+          "PAPI multiplexing enabled: %d counters requested but only %d "
+          "hardware slots; values are scaled estimates",
+          static_cast<int>(events.size()), hw_counters);
+    }
   }
   return true;
 }
@@ -445,6 +490,9 @@ void PAPICounterFunction::emit_sample() {
     auto metadata = new Metadata();
     metadata->insert_or_assign("value", value);
     metadata->insert_or_assign("delta", delta);
+    // Multiplexed readings are extrapolated from a time slice, so mark them:
+    // they are estimates and can even move backwards.
+    metadata->insert_or_assign("multiplex", multiplex_active ? 1 : 0);
 
     int current_index = index.fetch_add(1, std::memory_order_relaxed);
     buffer_manager->log_counter_event(

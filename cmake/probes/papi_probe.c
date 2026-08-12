@@ -1,102 +1,88 @@
-/* Build-time probe: works out which PAPI counters this machine can actually
- * count together, so the answer can be baked into dftracer_config.hpp instead
- * of being rediscovered on every run.
+/* Build-time probe: finds every PAPI counter this machine can actually count,
+ * so the answer can be baked into dftracer_config.hpp instead of being
+ * rediscovered on every run.
  *
- * Enumerating the available presets is not enough on its own: a CPU typically
- * exposes far more presets than it has counter slots, and some presets cannot
- * be programmed alongside others. So each candidate is added to a real event
- * set and kept only if it sticks.
+ * No counter is singled out. The probe walks the whole preset table and keeps
+ * each one the CPU implements and PAPI will program, which is the only way to
+ * be complete: which presets exist varies enormously between CPUs. On an AMD
+ * MI300A node, for instance, 17 of the 108 presets are available and not one of
+ * them is a cache counter, so any hand-picked list would mostly miss.
  *
- * Prints one line to stdout: the surviving counters, comma separated, followed
- * by a line with the number of hardware counters. Exits non-zero if PAPI is
- * unusable here, in which case CMake falls back to a portable default.
+ * "Available" (PAPI_event_info_t.count > 0) is necessary but not sufficient --
+ * a preset can be listed and still refuse to be programmed -- so every
+ * candidate is also added to a real event set on its own.
+ *
+ * Prints three lines to stdout:
+ *   1. every countable counter, comma separated
+ *   2. the number of hardware counter slots
+ *   3. how many of those counters fit in one event set without multiplexing
+ * Exits non-zero if PAPI is unusable here, in which case CMake falls back to a
+ * portable default.
  */
 #include <papi.h>
 #include <stdio.h>
 #include <string.h>
 
-#define MAX_EVENTS 64
-
-/* Counters worth a scarce hardware slot, most useful first. Keep in step with
- * kPreferredEvents in src/dftracer/core/function/papi/counters.cpp. */
-static const char *kPreferred[] = {
-    "PAPI_TOT_CYC", "PAPI_TOT_INS", "PAPI_LST_INS", "PAPI_FP_OPS",
-    "PAPI_L1_DCM",  "PAPI_L2_TCM",  "PAPI_L3_TCM",  "PAPI_BR_MSP",
-    "PAPI_TLB_DM",  "PAPI_LD_INS",  "PAPI_SR_INS",  "PAPI_BR_INS",
-};
-static const int kNumPreferred =
-    (int)(sizeof(kPreferred) / sizeof(kPreferred[0]));
+/* The preset table is ~108 entries; leave room for every one of them. */
+#define MAX_EVENTS 256
 
 int main(void) {
-  char candidates[MAX_EVENTS][PAPI_MAX_STR_LEN];
-  int num_candidates = 0;
-  int i;
+  char countable[MAX_EVENTS][PAPI_MAX_STR_LEN];
+  int num_countable = 0;
+  int code, rv, i;
 
   if (PAPI_library_init(PAPI_VER_CURRENT) != PAPI_VER_CURRENT) {
     fprintf(stderr, "papi_probe: PAPI_library_init failed\n");
     return 1;
   }
 
-  /* Preferred counters first ... */
-  for (i = 0; i < kNumPreferred && num_candidates < MAX_EVENTS; ++i) {
-    if (PAPI_query_named_event(kPreferred[i]) == PAPI_OK) {
-      strncpy(candidates[num_candidates], kPreferred[i], PAPI_MAX_STR_LEN - 1);
-      candidates[num_candidates][PAPI_MAX_STR_LEN - 1] = '\0';
-      num_candidates++;
-    }
-  }
-
-  /* ... then whatever else this CPU reports as available. */
-  {
-    int code = 0 | PAPI_PRESET_MASK;
-    int rv = PAPI_enum_event(&code, PAPI_ENUM_FIRST);
-    while (rv == PAPI_OK && num_candidates < MAX_EVENTS) {
-      PAPI_event_info_t info;
-      if (PAPI_get_event_info(code, &info) == PAPI_OK && info.count > 0 &&
-          info.symbol[0] != '\0') {
-        int seen = 0;
-        for (i = 0; i < num_candidates; ++i) {
-          if (strcmp(candidates[i], info.symbol) == 0) {
-            seen = 1;
-            break;
-          }
+  /* Every preset the CPU implements and PAPI will program. */
+  code = 0 | PAPI_PRESET_MASK;
+  rv = PAPI_enum_event(&code, PAPI_ENUM_FIRST);
+  while (rv == PAPI_OK && num_countable < MAX_EVENTS) {
+    PAPI_event_info_t info;
+    if (PAPI_get_event_info(code, &info) == PAPI_OK && info.count > 0 &&
+        info.symbol[0] != '\0') {
+      int set = PAPI_NULL;
+      if (PAPI_create_eventset(&set) == PAPI_OK) {
+        PAPI_assign_eventset_component(set, 0);
+        if (PAPI_add_named_event(set, info.symbol) == PAPI_OK) {
+          strncpy(countable[num_countable], info.symbol, PAPI_MAX_STR_LEN - 1);
+          countable[num_countable][PAPI_MAX_STR_LEN - 1] = '\0';
+          num_countable++;
         }
-        if (!seen) {
-          strncpy(candidates[num_candidates], info.symbol,
-                  PAPI_MAX_STR_LEN - 1);
-          candidates[num_candidates][PAPI_MAX_STR_LEN - 1] = '\0';
-          num_candidates++;
-        }
+        PAPI_cleanup_eventset(set);
+        PAPI_destroy_eventset(&set);
       }
-      rv = PAPI_enum_event(&code, PAPI_PRESET_ENUM_AVAIL);
     }
+    rv = PAPI_enum_event(&code, PAPI_PRESET_ENUM_AVAIL);
   }
 
-  /* Keep only the ones that can be programmed at the same time. */
+  if (num_countable == 0) {
+    fprintf(stderr, "papi_probe: no counter could be programmed\n");
+    return 1;
+  }
+
+  for (i = 0; i < num_countable; ++i) {
+    if (i > 0) printf(",");
+    printf("%s", countable[i]);
+  }
+  printf("\n%d\n", PAPI_num_counters());
+
+  /* How many fit at once. Counting more than this needs multiplexing, which
+   * DFTracer enables for itself; reported so the build log shows the gap. */
   {
     int set = PAPI_NULL;
-    int kept = 0;
-    if (PAPI_create_eventset(&set) != PAPI_OK) {
-      fprintf(stderr, "papi_probe: PAPI_create_eventset failed\n");
-      return 1;
+    int fitting = 0;
+    if (PAPI_create_eventset(&set) == PAPI_OK) {
+      PAPI_assign_eventset_component(set, 0);
+      for (i = 0; i < num_countable; ++i) {
+        if (PAPI_add_named_event(set, countable[i]) == PAPI_OK) fitting++;
+      }
+      PAPI_cleanup_eventset(set);
+      PAPI_destroy_eventset(&set);
     }
-    if (PAPI_assign_eventset_component(set, 0) != PAPI_OK) {
-      fprintf(stderr, "papi_probe: PAPI_assign_eventset_component failed\n");
-      return 1;
-    }
-    for (i = 0; i < num_candidates; ++i) {
-      if (PAPI_add_named_event(set, candidates[i]) != PAPI_OK) continue;
-      if (kept > 0) printf(",");
-      printf("%s", candidates[i]);
-      kept++;
-    }
-    printf("\n%d\n", PAPI_num_counters());
-    PAPI_cleanup_eventset(set);
-    PAPI_destroy_eventset(&set);
-    if (kept == 0) {
-      fprintf(stderr, "papi_probe: no counter could be programmed\n");
-      return 1;
-    }
+    printf("%d\n", fitting);
   }
   return 0;
 }
