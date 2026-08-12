@@ -150,8 +150,9 @@ passed to CMake. See `Build Variables`_ for the full list:
    DFTRACER_ENABLE_MPI                MPI rank in traces and MPI/MPI-IO interception (default OFF).
    DFTRACER_ENABLE_HDF5               HDF5 interception (default OFF).
    DFTRACER_ENABLE_HIP_TRACING        AMD GPU tracing; needs ROCm/rocprofiler-sdk (default OFF).
+   DFTRACER_ENABLE_PAPI_TRACING       PAPI hardware counter sampling; needs libpapi-dev (default OFF).
    DFTRACER_ENABLE_FTRACING           Function tracing via ``-finstrument-functions`` (default OFF).
-   DFTRACER_ENABLE_DYNAMIC_DETECTION  Detect HWLOC, MPI and HIP at run time rather than link time (default OFF).
+   DFTRACER_ENABLE_DYNAMIC_DETECTION  Detect HWLOC, MPI, HIP and PAPI at run time rather than link time (default OFF).
    DFTRACER_DISABLE_HWLOC             HWLOC support; ``ON`` (disabled) by default.
    DFTRACER_MPI_IMPL                  Override MPI implementation detection (default: auto-detect).
    ================================== ===========================================================================

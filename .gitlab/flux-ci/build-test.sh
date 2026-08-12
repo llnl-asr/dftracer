@@ -22,12 +22,45 @@ export DFTRACER_CMAKE_ARGS="-DHDF5_PREFER_PARALLEL=ON;-DDFTRACER_TEST_LOG_LEVEL=
 export DFTRACER_PIP_NO_BUILD_ISOLATION=1
 BUILD_FLAGS="--enable-tests --enable-mpi"
 [ "$DFTRACER_HDF5" = "1" ] && BUILD_FLAGS="$BUILD_FLAGS --enable-hdf5"
+# PAPI counters, when the image provides the headers. Detected the same way as
+# HDF5 rather than assumed, so the phase still builds on an image without it.
+[ -f /usr/include/papi.h ] && DFTRACER_PAPI=1 || DFTRACER_PAPI=0
+# An "if" rather than "test && assign": under set -e the latter aborts the
+# phase when the test is false.
+if [ "$DFTRACER_PAPI" = "1" ]; then
+  BUILD_FLAGS="$BUILD_FLAGS --enable-papi"
+fi
 ./autobuild.sh $BUILD_FLAGS
 pip install -r test/py/requirements.txt
 # ctest (with DEBUG rerun of failures, as on GitHub)
 # Match the running interpreter: build/ persists between pipelines, so a tree
 # left by another python version would otherwise be picked and ctest would
 # report success having registered no tests at all.
+# PAPI end-to-end: run the standalone example and confirm the trace really
+# carries advancing counters. check_papi_trace.py fails a frozen counter, which
+# is what a broken sampler looks like -- a plain "the name appears" check would
+# pass on garbage.
+if [ "$DFTRACER_PAPI" = "1" ]; then
+  PAPI_BUILD_DIR=$(realpath "$(find build -type d -name "dftracer.dftracer" | head -n 1)")
+  if [ -d "$PAPI_BUILD_DIR" ]; then
+    pushd examples/papi_standalone
+    make clean
+    make run-single \
+      DFTRACER_INCLUDEDIR="$PWD/../../include" \
+      CPP_LOGGER_INCLUDEDIR="$PWD/../../include" \
+      DFTRACER_LIBDIR="$PAPI_BUILD_DIR/../lib64"
+    python3 ../../scripts/check_papi_trace.py \
+      traces/*.pfw.gz \
+      --min-events 10 \
+      --require-papi-event PAPI_TOT_CYC \
+      --require-papi-event PAPI_TOT_INS \
+      --min-papi-lines 2
+    popd
+  else
+    echo "No DFTracer build directory found; skipping PAPI e2e validation"
+  fi
+fi
+
 PY_ABI=cpython-$(python -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')
 DFTRACER_DIR=$(realpath "$(find build -type d -name "dftracer.dftracer" -path "*${PY_ABI}*" | head -n 1)")
 [ -d "$DFTRACER_DIR" ] || { echo "No DFTRACER build directory found for ${PY_ABI}"; exit 1; }
