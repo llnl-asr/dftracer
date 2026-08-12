@@ -958,6 +958,7 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/service/telemetry/memory_collector.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/service/telemetry/io_collector.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/service/telemetry/network_collector.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/service/telemetry/omnistat_collector.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/service/telemetry/telemetry_factory.cpp)
 
         add_library(${PROJECT_NAME}_service_telemetry STATIC ${DFTRACER_SERVICE_TELEMETRY_SRC})

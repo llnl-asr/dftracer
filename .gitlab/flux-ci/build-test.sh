@@ -40,15 +40,35 @@ pip install -r test/py/requirements.txt
 # carries advancing counters. check_papi_trace.py fails a frozen counter, which
 # is what a broken sampler looks like -- a plain "the name appears" check would
 # pass on garbage.
+#
+# The include and library directories are discovered rather than guessed: the
+# example needs cpp-logger's headers and DFTracer's generated
+# dftracer_config.hpp, and neither lives in the source tree.
 if [ "$DFTRACER_PAPI" = "1" ]; then
-  PAPI_BUILD_DIR=$(realpath "$(find build -type d -name "dftracer.dftracer" | head -n 1)")
-  if [ -d "$PAPI_BUILD_DIR" ]; then
+  # Look in the install prefix first: that is where the build puts the
+  # dependencies, and it avoids trawling the multi-GB venv.
+  papi_find() {
+    for root in "$CI_PROJECT_DIR/install" "$CI_PROJECT_DIR/build" "$CI_PROJECT_DIR"; do
+      [ -d "$root" ] || continue
+      found=$(find "$root" "$@" -print -quit 2>/dev/null || true)
+      if [ -n "$found" ]; then echo "$found"; return; fi
+    done
+  }
+  PAPI_LOGGER_HEADER=$(papi_find -path "*cpp-logger/logger.h")
+  PAPI_CONFIG_HEADER=$(papi_find -path "*dftracer/core/dftracer_config.hpp")
+  PAPI_CORE_LIB=$(papi_find -name "libdftracer_core.so")
+  if [ -n "$PAPI_LOGGER_HEADER" ] && [ -n "$PAPI_CONFIG_HEADER" ] && [ -n "$PAPI_CORE_LIB" ]; then
+    # <inc>/cpp-logger/logger.h -> <inc>, and likewise for the config header.
+    PAPI_LOGGER_INC=$(dirname "$(dirname "$PAPI_LOGGER_HEADER")")
+    PAPI_DFT_INC=$(dirname "$(dirname "$(dirname "$PAPI_CONFIG_HEADER")")")
+    PAPI_LIBDIR=$(dirname "$PAPI_CORE_LIB")
+    echo "PAPI e2e: dftracer include=$PAPI_DFT_INC cpp-logger include=$PAPI_LOGGER_INC lib=$PAPI_LIBDIR"
     pushd examples/papi_standalone
     make clean
     make run-single \
-      DFTRACER_INCLUDEDIR="$PWD/../../include" \
-      CPP_LOGGER_INCLUDEDIR="$PWD/../../include" \
-      DFTRACER_LIBDIR="$PAPI_BUILD_DIR/../lib64"
+      DFTRACER_INCLUDEDIR="$PAPI_DFT_INC" \
+      CPP_LOGGER_INCLUDEDIR="$PAPI_LOGGER_INC" \
+      DFTRACER_LIBDIR="$PAPI_LIBDIR"
     python3 ../../scripts/check_papi_trace.py \
       traces/*.pfw.gz \
       --min-events 10 \
@@ -57,7 +77,9 @@ if [ "$DFTRACER_PAPI" = "1" ]; then
       --min-papi-lines 2
     popd
   else
-    echo "No DFTracer build directory found; skipping PAPI e2e validation"
+    echo "PAPI e2e skipped: could not locate cpp-logger headers, the generated"
+    echo "dftracer_config.hpp or libdftracer_core.so under $CI_PROJECT_DIR"
+    exit 1
   fi
 fi
 

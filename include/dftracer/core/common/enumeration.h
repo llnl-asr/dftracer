@@ -54,6 +54,7 @@ enum TraceEventType : uint8_t {
   TRACE_TYPE_CPP_APP = 9,
   TRACE_TYPE_MPI = 10,
   TRACE_TYPE_PAPI = 11,
+  TRACE_TYPE_OMNISTAT = 12,
   // Append new types above. Sentinel only, never serialized.
   TRACE_TYPE_MAX
 };
@@ -82,6 +83,8 @@ inline const char* to_string(const TraceEventType& type) {
       return "MPI";
     case TraceEventType::TRACE_TYPE_PAPI:
       return "PAPI";
+    case TraceEventType::TRACE_TYPE_OMNISTAT:
+      return "OMNISTAT";
     default:
       return "UNKNOWN";
   }
