@@ -46,6 +46,19 @@ class CMakeExtension(Extension):
         self.sourcedir = os.fspath(Path(sourcedir).resolve())
 
 
+def split_cmake_args(value):
+    """Split DFTRACER_CMAKE_ARGS into individual cmake arguments.
+
+    The variable is documented (and used by autobuild.sh and CI) as
+    semicolon-separated, because cmake arguments routinely contain paths and
+    list values with spaces. Splitting on whitespace instead handed cmake the
+    whole string as a single -D argument, so everything after the first flag
+    was silently swallowed as part of that flag's value -- which is how
+    -DDFTRACER_ENABLE_PAPI_TRACING=ON ended up never reaching cmake.
+    """
+    return [item.strip() for item in value.split(";") if item.strip()]
+
+
 class CMakeBuild(build_ext):
     def build_extension(self, ext: CMakeExtension) -> None:
         # Check if we should only install dependencies
@@ -167,9 +180,7 @@ class CMakeBuild(build_ext):
         # In this example, we pass in the version to C++. You might not need to.
         cmake_args += [f"-DEXAMPLE_VERSION_INFO={self.distribution.get_version()}"]
         if "DFTRACER_CMAKE_ARGS" in os.environ:
-            cmake_args += [
-                item for item in os.environ["DFTRACER_CMAKE_ARGS"].split() if item
-            ]
+            cmake_args += split_cmake_args(os.environ["DFTRACER_CMAKE_ARGS"])
 
         # Use CMake's generator-agnostic parallel flag and default to all cores.
         parallel_jobs = (
@@ -224,9 +235,7 @@ class CMakeBuild(build_ext):
         ]
 
         if "DFTRACER_CMAKE_ARGS" in os.environ:
-            cmake_args += [
-                item for item in os.environ["DFTRACER_CMAKE_ARGS"].split() if item
-            ]
+            cmake_args += split_cmake_args(os.environ["DFTRACER_CMAKE_ARGS"])
 
         subprocess.run(
             ["cmake", ext.sourcedir, *cmake_args], cwd=build_temp, check=True

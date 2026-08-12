@@ -4,6 +4,7 @@
 #include <dftracer/core/common/dftracer_main.h>
 #include <dftracer/core/finstrument/functions.h>
 #include <dftracer/core/function/hip/intercept.h>
+#include <dftracer/core/function/papi/counters.h>
 #include <dftracer/core/utils/posix_bypass.h>
 #include <dftracer/core/utils/stdio_bypass.h>
 #include <pthread.h>
@@ -88,6 +89,8 @@ bool dftracer::DFTracerCore::log(ConstEventNameType event_name,
   DFTRACER_LOG_DEBUG("DFTracerCore::log");
   if (this->is_initialized && conf->enable) {
     if (logger != nullptr) {
+      // PAPI counters are deliberately not sampled here: they are read on the
+      // sampler's own libuv timer thread, so this path stays free of PAPI work.
       logger->log(event_name, category, type, start_time, duration, metadata);
       return true;
     } else {
@@ -113,6 +116,12 @@ bool dftracer::DFTracerCore::finalize() {
   DFTRACER_LOG_DEBUG("DFTracerCore::finalize");
   if (this->is_initialized && conf->enable) {
     DFTRACER_LOG_INFO("Calling finalize on pid %d", this->process_id);
+    auto trie = dftracer::Singleton<Trie>::get_instance();
+    if (trie != nullptr) {
+      DFTRACER_LOG_INFO("Release Prefix Tree");
+      trie->finalize();
+      dftracer::Singleton<Trie>::finalize();
+    }
     if (bind) {
 #ifdef DFTRACER_FTRACING_ENABLE
       auto function_instance = dftracer::Function::get_instance();
@@ -160,12 +169,13 @@ bool dftracer::DFTracerCore::finalize() {
 #endif
       }
     }
-    auto trie = dftracer::Singleton<Trie>::get_instance();
-    if (trie != nullptr) {
-      DFTRACER_LOG_INFO("Release Prefix Tree");
-      trie->finalize();
-      dftracer::Singleton<Trie>::finalize();
+#ifdef DFTRACER_PAPI_TRACING_ENABLE
+    auto papi_instance =
+        dftracer::Singleton<dftracer::PAPICounterFunction>::get_instance();
+    if (papi_instance != nullptr) {
+      papi_instance->finalize();
     }
+#endif
     if (logger != nullptr) {
       logger->finalize();
       dftracer::Singleton<DFTLogger>::finalize();
@@ -454,6 +464,21 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char* _log_file,
       }
 #endif
     }
+#ifdef DFTRACER_PAPI_TRACING_ENABLE
+    // Hardware counters are independent of whether I/O interception is bound,
+    // so the sampler starts for API-only apps too, not just LD_PRELOAD runs.
+    {
+      auto papi_instance =
+          dftracer::Singleton<dftracer::PAPICounterFunction>::get_instance();
+      if (papi_instance != nullptr) {
+        if (conf->papi_tracing) {
+          papi_instance->initialize();
+        } else {
+          papi_instance->finalize();
+        }
+      }
+    }
+#endif
     if (!this->log_file_prefix.empty())
       setenv("DFTRACER_LOG_FILE", this->log_file_prefix.c_str(), 1);
     if (!this->data_dirs.empty())

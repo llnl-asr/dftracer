@@ -35,6 +35,14 @@
 #cmakedefine DFTRACER_FTRACING_ENABLE 1
 #cmakedefine DFTRACER_HWLOC_ENABLE 1
 #cmakedefine DFTRACER_HIP_TRACING_ENABLE 1
+#cmakedefine DFTRACER_PAPI_TRACING_ENABLE 1
+
+// Counters this machine could actually program together, worked out by
+// cmake/probes/papi_probe.c at build time. Used as the runtime default so a
+// run does not have to rediscover them; DFTRACER_PAPI_EVENTS still overrides.
+// DFTRACER_PAPI_HW_COUNTERS is 0 when the probe could not run.
+#define DFTRACER_PAPI_DETECTED_EVENTS "@DFTRACER_PAPI_DETECTED_EVENTS@"
+#define DFTRACER_PAPI_HW_COUNTERS @DFTRACER_PAPI_HW_COUNTERS@
 
 #define DFTRACER_LOGGER_CPP_LOGGER 1
 #define DFTRACER_LOGGER_LEVEL_TRACE 1

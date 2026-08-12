@@ -53,6 +53,7 @@ enum TraceEventType : uint8_t {
   TRACE_TYPE_FINSTRUMENT = 8,
   TRACE_TYPE_CPP_APP = 9,
   TRACE_TYPE_MPI = 10,
+  TRACE_TYPE_PAPI = 11,
   // Append new types above. Sentinel only, never serialized.
   TRACE_TYPE_MAX
 };
@@ -79,6 +80,8 @@ inline const char* to_string(const TraceEventType& type) {
       return "CPP_APP";
     case TraceEventType::TRACE_TYPE_MPI:
       return "MPI";
+    case TraceEventType::TRACE_TYPE_PAPI:
+      return "PAPI";
     default:
       return "UNKNOWN";
   }
@@ -100,7 +103,11 @@ inline void convert(const int& s, TraceEventType& type) {
 enum TracePhaseType : uint8_t {
   TRACE_PHASE_UNKNOWN = 0,
   TRACE_PHASE_COMPLETE = 1,    // "X" -- individual events
-  TRACE_PHASE_COUNTER = 2,     // "C" -- time series counters, from psutil
+  // "C" -- time series counters. The producer is in the "type" column, e.g.
+  // TRACE_TYPE_PSUTIL for node telemetry or TRACE_TYPE_PAPI for hardware
+  // counters, so the phase only records the shape: a reading at a timestamp,
+  // with no duration.
+  TRACE_PHASE_COUNTER = 2,
   TRACE_PHASE_AGGREGATED = 3,  // "A" -- aggregated events
   TRACE_PHASE_METADATA = 4,    // "M" -- metadata records
   // Append new phases above. Sentinel only, never serialized.

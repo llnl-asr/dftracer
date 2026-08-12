@@ -198,11 +198,13 @@ set(DFTRACER_ROCPROFILER_VERSION_PATCH 0)
 if(DFTRACER_ENABLE_HIP_TRACING)
         set(DFTRACER_HIP_TRACING_ENABLE 1)
 endif()
-
-option(DFTRACER_ENABLE_MPI "Enable MPI" OFF)
-
-if(DFTRACER_ENABLE_MPI)
-        set(DFTRACER_MPI_ENABLE 1)
+option (DFTRACER_ENABLE_PAPI_TRACING "Enable PAPI counter tracing" OFF)
+if (DFTRACER_ENABLE_PAPI_TRACING)
+        set(DFTRACER_PAPI_TRACING_ENABLE 1)
+endif()
+option (DFTRACER_ENABLE_MPI "Enable MPI" OFF)
+if (DFTRACER_ENABLE_MPI)
+    set(DFTRACER_MPI_ENABLE 1)
 endif()
 
 set(DFTRACER_MPI_IMPL "" CACHE STRING
@@ -341,6 +343,18 @@ else()
         # callers to pass LDFLAGS=-ldl themselves.
         set(DEPENDENCY_LIB ${CMAKE_EXE_LINKER_FLAGS} $ENV{LDFLAGS} -lpthread ${CMAKE_DL_LIBS})
         set(DEPENDENCY_LIBRARY_DIRS "")
+
+        set(DFTRACER_CPP_LOGGER_HINTS
+                ${CMAKE_CURRENT_SOURCE_DIR}/install
+                ${CMAKE_CURRENT_SOURCE_DIR}/install/lib64/cmake/cpp-logger
+                ${CMAKE_CURRENT_SOURCE_DIR}/build-local-deps/src/cpp-logger-build/install
+                ${CMAKE_CURRENT_SOURCE_DIR}/build-local-deps/src/cpp-logger-build)
+        foreach(_cpp_logger_hint ${DFTRACER_CPP_LOGGER_HINTS})
+                if(EXISTS "${_cpp_logger_hint}")
+                        list(APPEND CMAKE_PREFIX_PATH "${_cpp_logger_hint}")
+                endif()
+        endforeach()
+        list(REMOVE_DUPLICATES CMAKE_PREFIX_PATH)
 
         find_package(cpp-logger 2.0.0 REQUIRED)
 
@@ -676,6 +690,64 @@ else()
                 endif()
         endif()
 
+        find_package(PAPI QUIET)
+        if (PAPI_FOUND AND (DFTRACER_ENABLE_PAPI_TRACING OR DFTRACER_ENABLE_DYNAMIC_DETECTION))
+                set(DFTRACER_PAPI_TRACING_ENABLE 1)
+                include_directories(${PAPI_INCLUDE_DIRS})
+                set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${PAPI_LIBRARIES})
+                if (DEFINED PAPI_LIBRARY_DIRS)
+                        list(APPEND DEPENDENCY_LIBRARY_DIRS ${PAPI_LIBRARY_DIRS})
+                endif()
+                message(STATUS "[DFTRACER] found PAPI at ${PAPI_INCLUDE_DIRS}")
+
+                # Work out at build time which counters this machine can count
+                # together, and bake the answer into dftracer_config.hpp so the
+                # runtime has a ready-made default instead of rediscovering it.
+                # Skipped when cross compiling, where the probe cannot run.
+                if(CMAKE_CROSSCOMPILING)
+                        message(STATUS
+                                "-- [DFTRACER] cross compiling; using portable default PAPI counters")
+                else()
+                        try_run(DFTRACER_PAPI_PROBE_RUN DFTRACER_PAPI_PROBE_BUILD
+                                ${CMAKE_BINARY_DIR}/papi_probe
+                                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/probes/papi_probe.c
+                                LINK_LIBRARIES ${PAPI_LIBRARIES}
+                                CMAKE_FLAGS
+                                        "-DINCLUDE_DIRECTORIES=${PAPI_INCLUDE_DIRS}"
+                                RUN_OUTPUT_VARIABLE DFTRACER_PAPI_PROBE_OUTPUT)
+                        if(DFTRACER_PAPI_PROBE_BUILD AND
+                           DFTRACER_PAPI_PROBE_RUN EQUAL 0)
+                                string(REGEX REPLACE "\r?\n" ";"
+                                        _papi_probe_lines "${DFTRACER_PAPI_PROBE_OUTPUT}")
+                                list(GET _papi_probe_lines 0 DFTRACER_PAPI_DETECTED_EVENTS)
+                                list(LENGTH _papi_probe_lines _papi_probe_line_count)
+                                if(_papi_probe_line_count GREATER 1)
+                                        list(GET _papi_probe_lines 1 DFTRACER_PAPI_HW_COUNTERS)
+                                endif()
+                                string(STRIP "${DFTRACER_PAPI_DETECTED_EVENTS}"
+                                        DFTRACER_PAPI_DETECTED_EVENTS)
+                                string(STRIP "${DFTRACER_PAPI_HW_COUNTERS}"
+                                        DFTRACER_PAPI_HW_COUNTERS)
+                                message(STATUS
+                                        "[DFTRACER] detected PAPI counters: ${DFTRACER_PAPI_DETECTED_EVENTS}")
+                        else()
+                                message(STATUS
+                                        "-- [DFTRACER] PAPI counter probe did not run; using portable default counters")
+                        endif()
+                endif()
+        else()
+                message(STATUS "-- [DFTRACER] PAPI is not found.")
+        endif()
+
+        # Portable fallback when the probe could not run. Every x86 and ARM PMU
+        # DFTracer targets implements these two.
+        if(NOT DFTRACER_PAPI_DETECTED_EVENTS)
+                set(DFTRACER_PAPI_DETECTED_EVENTS "PAPI_TOT_CYC,PAPI_TOT_INS")
+        endif()
+        if(NOT DFTRACER_PAPI_HW_COUNTERS)
+                set(DFTRACER_PAPI_HW_COUNTERS 0)
+        endif()
+
         find_package(ZLIB REQUIRED)
 
         if(ZLIB_FOUND)
@@ -753,6 +825,7 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/stdio.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/finstrument/functions.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/hip/intercept.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/papi/counters.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/posix_bypass.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/stdio_bypass.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/dftracer.cpp
@@ -800,6 +873,7 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/logging.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/generic_function.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/hip/intercept.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/papi/counters.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/singleton.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/configuration_manager.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/aggregator.h
@@ -1442,6 +1516,7 @@ else()
                 DFTRACER_LIBDIR_AS_LIB
                 DFTRACER_USE_CLANG_LIBCXX
                 DFTRACER_WARNINGS_AS_ERRORS
+                DFTRACER_PAPI_TRACING_ENABLE
         )
         string(APPEND _str
                 "\n== End DFTRACER Configuration Summary ==\n")
