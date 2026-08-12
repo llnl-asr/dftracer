@@ -119,15 +119,24 @@ std::string PAPICounterFunction::event_category(const std::string &event_name) {
     const char *category;
   };
   static const Prefix kPrefixes[] = {
-      {"PAPI_TOT_CYC", "CYCLE"},       {"PAPI_REF_CYC", "CYCLE"},
-      {"PAPI_TOT_INS", "INSTRUCTION"}, {"PAPI_L1_", "CACHE"},
-      {"PAPI_L2_", "CACHE"},           {"PAPI_L3_", "CACHE"},
-      {"PAPI_CA_", "CACHE"},           {"PAPI_TLB_", "TLB"},
-      {"PAPI_BR_", "BRANCH"},          {"PAPI_FP_", "FLOP"},
-      {"PAPI_DP_", "FLOP"},            {"PAPI_SP_", "FLOP"},
-      {"PAPI_VEC_", "FLOP"},           {"PAPI_LD_", "MEMORY"},
-      {"PAPI_SR_", "MEMORY"},          {"PAPI_LST_", "MEMORY"},
-      {"PAPI_MEM_", "MEMORY"},         {"PAPI_STL_", "STALL"},
+      {"PAPI_TOT_CYC", "CYCLE"},
+      {"PAPI_REF_CYC", "CYCLE"},
+      {"PAPI_TOT_INS", "INSTRUCTION"},
+      {"PAPI_L1_", "CACHE"},
+      {"PAPI_L2_", "CACHE"},
+      {"PAPI_L3_", "CACHE"},
+      {"PAPI_CA_", "CACHE"},
+      {"PAPI_TLB_", "TLB"},
+      {"PAPI_BR_", "BRANCH"},
+      {"PAPI_FP_", "FLOP"},
+      {"PAPI_DP_", "FLOP"},
+      {"PAPI_SP_", "FLOP"},
+      {"PAPI_VEC_", "FLOP"},
+      {"PAPI_LD_", "MEMORY"},
+      {"PAPI_SR_", "MEMORY"},
+      {"PAPI_LST_", "MEMORY"},
+      {"PAPI_MEM_", "MEMORY"},
+      {"PAPI_STL_", "STALL"},
       {"PAPI_RES_", "STALL"},
   };
   for (const auto &entry : kPrefixes) {
@@ -203,7 +212,8 @@ bool PAPICounterFunction::initialize_library() {
   // and baked into dftracer_config.hpp, so nothing is enumerated here.
   // DFTRACER_PAPI_EVENTS overrides it for a specific run.
   auto configured = normalize_events(config->papi_events);
-  events = configured.empty() ? normalize_events(build_time_events()) : configured;
+  events =
+      configured.empty() ? normalize_events(build_time_events()) : configured;
   if (events.empty()) {
     DFTRACER_LOG_WARN("PAPI tracing disabled: no counters configured", "");
     return false;

@@ -102,7 +102,7 @@ inline void convert(const int& s, TraceEventType& type) {
 // On-disk format: append-only, never renumber or reuse a value.
 enum TracePhaseType : uint8_t {
   TRACE_PHASE_UNKNOWN = 0,
-  TRACE_PHASE_COMPLETE = 1,    // "X" -- individual events
+  TRACE_PHASE_COMPLETE = 1,  // "X" -- individual events
   // "C" -- time series counters. The producer is in the "type" column, e.g.
   // TRACE_TYPE_PSUTIL for node telemetry or TRACE_TYPE_PAPI for hardware
   // counters, so the phase only records the shape: a reading at a timestamp,

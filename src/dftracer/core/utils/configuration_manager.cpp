@@ -66,7 +66,7 @@ bool dftracer::Singleton<
 
 namespace {
 
-void trim_in_place(std::string &value) {
+void trim_in_place(std::string& value) {
   auto first = value.find_first_not_of(" \t\n\r");
   if (first == std::string::npos) {
     value.clear();
@@ -76,7 +76,7 @@ void trim_in_place(std::string &value) {
   value = value.substr(first, last - first + 1);
 }
 
-std::vector<std::string> parse_list_value(const std::string &value) {
+std::vector<std::string> parse_list_value(const std::string& value) {
   std::vector<std::string> items;
   std::string current;
   for (char ch : value) {
@@ -97,11 +97,11 @@ std::vector<std::string> parse_list_value(const std::string &value) {
   return items;
 }
 
-void load_list_value(const YAML::Node &node, std::vector<std::string> &target) {
+void load_list_value(const YAML::Node& node, std::vector<std::string>& target) {
   if (!node) return;
   target.clear();
   if (node.IsSequence()) {
-    for (const auto &item : node) {
+    for (const auto& item : node) {
       auto value = item.as<std::string>();
       if (!value.empty()) target.push_back(value);
     }

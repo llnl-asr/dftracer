@@ -1,7 +1,5 @@
 #include <dftracer/dftracer.h>
-
 #include <papi.h>
-
 #include <unistd.h>
 
 #include <cstdio>
@@ -29,7 +27,8 @@ bool verify_papi_runtime() {
   int counters = PAPI_num_counters();
   if (counters <= 0) {
     std::fprintf(stderr,
-                 "PAPI runtime is available but exposes %d hardware counters on this node; cannot validate DFTracer PAPI sampling here.\n",
+                 "PAPI runtime is available but exposes %d hardware counters "
+                 "on this node; cannot validate DFTracer PAPI sampling here.\n",
                  counters);
     return false;
   }
@@ -92,9 +91,10 @@ int main(int argc, char **argv) {
   int inner_loops = (argc > 4) ? std::atoi(argv[4]) : 8;
 
   if (steps <= 0 || elements == 0 || inner_loops <= 0) {
-    std::fprintf(stderr,
-                 "usage: %s [trace_prefix] [steps>0] [elements>0] [inner_loops>0]\n",
-                 argv[0]);
+    std::fprintf(
+        stderr,
+        "usage: %s [trace_prefix] [steps>0] [elements>0] [inner_loops>0]\n",
+        argv[0]);
     return 1;
   }
 
@@ -107,9 +107,10 @@ int main(int argc, char **argv) {
   {
     DFTracer setup("single_node_setup", CPP_LOG_CATEGORY, DF_DATA_EVENT);
     setup.update("steps", steps);
-    setup.update("elements", static_cast<int>(elements > static_cast<size_t>(2147483647)
-                                                   ? 2147483647
-                                                   : elements));
+    setup.update("elements",
+                 static_cast<int>(elements > static_cast<size_t>(2147483647)
+                                      ? 2147483647
+                                      : elements));
     setup.update("inner_loops", inner_loops);
   }
 

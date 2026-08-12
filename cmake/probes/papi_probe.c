@@ -24,7 +24,8 @@ static const char *kPreferred[] = {
     "PAPI_L1_DCM",  "PAPI_L2_TCM",  "PAPI_L3_TCM",  "PAPI_BR_MSP",
     "PAPI_TLB_DM",  "PAPI_LD_INS",  "PAPI_SR_INS",  "PAPI_BR_INS",
 };
-static const int kNumPreferred = (int)(sizeof(kPreferred) / sizeof(kPreferred[0]));
+static const int kNumPreferred =
+    (int)(sizeof(kPreferred) / sizeof(kPreferred[0]));
 
 int main(void) {
   char candidates[MAX_EVENTS][PAPI_MAX_STR_LEN];
@@ -55,10 +56,14 @@ int main(void) {
           info.symbol[0] != '\0') {
         int seen = 0;
         for (i = 0; i < num_candidates; ++i) {
-          if (strcmp(candidates[i], info.symbol) == 0) { seen = 1; break; }
+          if (strcmp(candidates[i], info.symbol) == 0) {
+            seen = 1;
+            break;
+          }
         }
         if (!seen) {
-          strncpy(candidates[num_candidates], info.symbol, PAPI_MAX_STR_LEN - 1);
+          strncpy(candidates[num_candidates], info.symbol,
+                  PAPI_MAX_STR_LEN - 1);
           candidates[num_candidates][PAPI_MAX_STR_LEN - 1] = '\0';
           num_candidates++;
         }

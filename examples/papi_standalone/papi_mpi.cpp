@@ -1,7 +1,5 @@
-#include <mpi.h>
-
 #include <dftracer/dftracer.h>
-
+#include <mpi.h>
 #include <unistd.h>
 
 #include <cstdio>
@@ -39,7 +37,8 @@ void rank_compute(std::vector<double> &buffer, int step, int loops, int rank,
   }
 }
 
-double collective_reduce(double local_value, int step, int rank, int world_size) {
+double collective_reduce(double local_value, int step, int rank,
+                         int world_size) {
   DFTRACER_CPP_FUNCTION();
 
   DFTracer region("allreduce_phase", CPP_LOG_CATEGORY, DF_DATA_EVENT);
@@ -89,7 +88,8 @@ int main(int argc, char **argv) {
   if (steps <= 0 || elements_per_rank == 0 || loops <= 0) {
     if (rank == 0) {
       std::fprintf(stderr,
-                   "usage: %s [trace_prefix] [steps>0] [elements_per_rank>0] [loops>0]\n",
+                   "usage: %s [trace_prefix] [steps>0] [elements_per_rank>0] "
+                   "[loops>0]\n",
                    argv[0]);
     }
     MPI_Finalize();
@@ -97,8 +97,9 @@ int main(int argc, char **argv) {
   }
 
   char rank_trace_prefix[1024];
-  std::snprintf(rank_trace_prefix, sizeof(rank_trace_prefix), "%s-rank-%04d-pid-%d",
-                trace_prefix.c_str(), rank, static_cast<int>(getpid()));
+  std::snprintf(rank_trace_prefix, sizeof(rank_trace_prefix),
+                "%s-rank-%04d-pid-%d", trace_prefix.c_str(), rank,
+                static_cast<int>(getpid()));
 
   DFTRACER_CPP_INIT_NO_BIND(rank_trace_prefix, nullptr, nullptr);
 
@@ -108,14 +109,14 @@ int main(int argc, char **argv) {
     setup.update("world_size", world_size);
     setup.update("steps", steps);
     setup.update("loops", loops);
-    setup.update("elements_per_rank",
-                 static_cast<int>(elements_per_rank > static_cast<size_t>(2147483647)
-                                      ? 2147483647
-                                      : elements_per_rank));
+    setup.update(
+        "elements_per_rank",
+        static_cast<int>(elements_per_rank > static_cast<size_t>(2147483647)
+                             ? 2147483647
+                             : elements_per_rank));
   }
 
-  std::vector<double> buffer(elements_per_rank,
-                             static_cast<double>(rank + 1));
+  std::vector<double> buffer(elements_per_rank, static_cast<double>(rank + 1));
   double global_accumulator = 0.0;
   int folded_checksum = 0;
 
@@ -123,9 +124,8 @@ int main(int argc, char **argv) {
     rank_compute(buffer, step, loops, rank, world_size);
 
     int local_checksum = fold_local_checksum(buffer, rank, step);
-    double global_value =
-        collective_reduce(static_cast<double>(local_checksum), step, rank,
-                          world_size);
+    double global_value = collective_reduce(static_cast<double>(local_checksum),
+                                            step, rank, world_size);
     global_accumulator += global_value;
 
     {
@@ -134,9 +134,10 @@ int main(int argc, char **argv) {
       step_summary.update("step", step);
       step_summary.update("rank", rank);
       step_summary.update("local_checksum", local_checksum);
-      step_summary.update("global_checksum_mod",
-                          static_cast<int>(static_cast<long long>(global_value) %
-                                           2147483629LL));
+      step_summary.update(
+          "global_checksum_mod",
+          static_cast<int>(static_cast<long long>(global_value) %
+                           2147483629LL));
     }
 
     folded_checksum ^= local_checksum;
@@ -147,9 +148,10 @@ int main(int argc, char **argv) {
     DFTracer final_region("mpi_finalize", CPP_LOG_CATEGORY, DF_DATA_EVENT);
     final_region.update("rank", rank);
     final_region.update("folded_checksum", folded_checksum);
-    final_region.update("global_accum_mod",
-                        static_cast<int>(static_cast<long long>(global_accumulator) %
-                                         2147483629LL));
+    final_region.update(
+        "global_accum_mod",
+        static_cast<int>(static_cast<long long>(global_accumulator) %
+                         2147483629LL));
   }
 
   DFTRACER_CPP_FINI();
