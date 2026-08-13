@@ -43,6 +43,8 @@ class HIPFunction : public dftracer::GenericFunction {
   // handle to rocprofiler_start_context().
   rocprofiler_buffer_id_t client_buffer = {0};
   rocprofiler_context_id_t client_ctx = {0};
+  // Guards against the double teardown described in finalize().
+  bool finalized = false;
   std::unordered_map<rocprofiler_kernel_id_t, kernel_symbol_data_t>
       client_kernels;
 
@@ -142,14 +144,39 @@ class HIPFunction : public dftracer::GenericFunction {
 
   void finalize() override {
     DFTRACER_LOG_DEBUG("Finalizing HIPFunction instance");
-    // Same reasoning as initialize(): if the application never touched the GPU,
-    // tool_init never ran and there is nothing to stop or flush. Calling these
-    // on a zero id just produces spurious CONTEXT_NOT_FOUND/BUFFER_NOT_FOUND.
-    if (client_ctx.handle != 0) {
-      rocprofiler_stop_context(client_ctx);
+
+    // Only ever tear down once. Now that dftracer registers through the
+    // exported rocprofiler_configure symbol, rocprofiler owns the tool lifetime
+    // and calls tool_fini() during its own atexit shutdown -- while the
+    // application ALSO reaches here via DFTRACER_*_FINI. Running the teardown
+    // twice double-frees rocprofiler-side state and segfaults at exit, which
+    // truncates the gzip trace stream mid-write (measured: 11 of 16 ranks left
+    // unreadable "Compressed file ended before the end-of-stream marker").
+    if (finalized) {
+      DFTRACER_LOG_DEBUG("HIP Intercept already finalized; skipping");
+      return;
     }
+    finalized = true;
+
+    // If rocprofiler has already finalized, its context/buffer objects are gone
+    // and touching them is a use-after-free.
+    int roc_finalized = 0;
+    if (rocprofiler_is_finalized(&roc_finalized) ==
+            ROCPROFILER_STATUS_SUCCESS &&
+        roc_finalized != 0) {
+      DFTRACER_LOG_DEBUG(
+          "HIP Intercept: rocprofiler already finalized; nothing to flush");
+      return;
+    }
+
+    // As in initialize(): a zero id means tool_init never ran (no GPU touched).
+    // Flush BEFORE stopping, so records still buffered when the context stops
+    // are handed to the tracing callback while the logger is alive.
     if (client_buffer.handle != 0) {
       rocprofiler_flush_buffer(client_buffer);
+    }
+    if (client_ctx.handle != 0) {
+      rocprofiler_stop_context(client_ctx);
     }
   }
 };
