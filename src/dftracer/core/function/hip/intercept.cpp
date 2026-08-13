@@ -719,10 +719,12 @@ int HIPFunction::tool_init(rocprofiler_client_finalize_t fini_func,
 
   status = rocprofiler_start_context(function->client_ctx);
   if (status != ROCPROFILER_STATUS_SUCCESS) {
-    DFTRACER_LOG_ERROR("HIP Intercept context start failed: status, %d\n",
-                       status);
+    DFTRACER_LOG_ERROR(
+        "HIP Intercept context start failed in tool_init(): status %d (%s)\n",
+        status, rocprofiler_get_status_name(status));
     return -1;
   }
+  DFTRACER_LOG_DEBUG("HIP Intercept context started from tool_init");
   return 0;
 }
 
