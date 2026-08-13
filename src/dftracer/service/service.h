@@ -3,6 +3,7 @@
 
 #include <dftracer/core/common/cpp_typedefs.h>
 #include <dftracer/core/common/datastructure.h>
+#include <dftracer/core/common/event_loop.h>
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/singleton.h>
 #include <dftracer/core/df_logger.h>
@@ -10,7 +11,6 @@
 #include <dftracer/service/common/datastructure.h>
 #include <dftracer/service/telemetry/telemetry_factory.h>
 #include <unistd.h>
-#include <uv.h>
 
 #include <atomic>
 #include <csignal>
@@ -77,7 +77,7 @@ class DFTracerService {
   // Destructor: ensures the service is stopped and resources are cleaned up
   ~DFTracerService() { stop(); }
 
-  // Starts the libuv event loop for periodic metric collection
+  // Starts the shared event loop and samples every collector on it
   void start() {
     if (running.load(std::memory_order_relaxed)) {
       return;
@@ -92,9 +92,14 @@ class DFTracerService {
     auto libuv_threads = std::to_string(conf->libuv_thread_count);
     setenv("UV_THREADPOOL_SIZE", libuv_threads.c_str(), 1);
 
+    event_loop = dftracer::Singleton<dftracer::EventLoop>::get_instance();
+    if (event_loop == nullptr) {
+      throw std::runtime_error(
+          "DFTracerService could not obtain the event loop.");
+    }
+
     collector_tasks.clear();
     collector_tasks.reserve(telemetry_collectors.size());
-
     for (auto& collector : telemetry_collectors) {
       auto task = std::make_unique<CollectorTask>();
       task->service = this;
@@ -102,36 +107,25 @@ class DFTracerService {
       collector_tasks.push_back(std::move(task));
     }
 
-    pending_work_count.store(0, std::memory_order_relaxed);
-    stop_requested = false;
     running = true;
 
-    if (!loop_initialized) {
-      uv_loop_init(&loop);
-      loop_initialized = true;
-    }
+    // Job schedulers (Flux, Slurm) send SIGTERM, not SIGINT, when cancelling a
+    // job or cgroup, so without both a cancellation would kill the daemon
+    // without flushing and compressing its trace buffer.
+    event_loop->add_signal(SIGINT, [this]() { request_stop(); });
+    event_loop->add_signal(SIGTERM, [this]() { request_stop(); });
 
-    signal_handle.data = this;
-    uv_signal_init(&loop, &signal_handle);
-    uv_signal_start(&signal_handle, DFTracerService::on_signal, SIGINT);
-
-    // Also treat SIGTERM as a graceful-shutdown request: job schedulers
-    // (Flux, Slurm) send SIGTERM (not SIGINT) when cancelling a job/cgroup,
-    // so without this handler a job cancellation kills the daemon without
-    // flushing/compressing its trace buffer.
-    sigterm_handle.data = this;
-    uv_signal_init(&loop, &sigterm_handle);
-    uv_signal_start(&sigterm_handle, DFTracerService::on_signal, SIGTERM);
-
+    // One timer per collector: a collector that is slow to read does not push
+    // the others off their interval. First tick immediately, so even a run that
+    // lasts less than one interval carries a sample of the node.
     for (auto& task : collector_tasks) {
-      task->timer.data = task.get();
-      task->work_req.data = task.get();
-      uv_timer_init(&loop, &task->timer);
-      uv_timer_start(&task->timer, DFTracerService::on_collector_tick, 0,
-                     interval);
+      CollectorTask* raw = task.get();
+      event_loop->add_timer(interval, 0,
+                            [this, raw]() { queue_capture(*raw); });
     }
 
-    uv_run(&loop, UV_RUN_DEFAULT);
+    // The service's main thread has nothing else to do, so it drives the loop.
+    event_loop->run();
     finalize_service();
   }
 
@@ -145,149 +139,62 @@ class DFTracerService {
   struct CollectorTask {
     DFTracerService* service = nullptr;
     TelemetryCollector* collector = nullptr;
-    uv_timer_t timer;
-    uv_work_t work_req;
-    bool in_flight = false;
+    // Set while a capture of this collector is on the threadpool, so a tick
+    // that arrives before the last one finished is dropped rather than queuing
+    // a second read of the same source.
+    std::atomic<bool> in_flight{false};
   };
 
   std::shared_ptr<DFTLogger> logger;  // Logger instance
   std::atomic<int> index;     // Event index counter across libuv worker threads
   unsigned int interval;      // Interval between metric collections (ms)
   std::atomic<bool> running;  // Flag to control metric capture
-  uv_loop_t loop;             // Single libuv event loop
-  uv_signal_t signal_handle;  // Signal handler for SIGINT
-  uv_signal_t sigterm_handle;  // Signal handler for SIGTERM
-  bool loop_initialized = false;
   bool stop_requested = false;
   bool finalized = false;
-  std::atomic<int> pending_work_count{0};
+  std::shared_ptr<dftracer::EventLoop> event_loop;
   std::shared_ptr<dftracer::BufferManager> buffer_manager;  // Buffer manager
   std::vector<std::unique_ptr<TelemetryCollector>>
       telemetry_collectors;  // Telemetry collectors for system metrics
   std::vector<std::unique_ptr<CollectorTask>> collector_tasks;
 
-  static void on_signal(uv_signal_t* handle, int signum) {
-    if ((signum != SIGINT && signum != SIGTERM) || handle == nullptr ||
-        handle->data == nullptr) {
-      return;
-    }
-    auto* service = static_cast<DFTracerService*>(handle->data);
-    service->request_stop();
-  }
-
-  static void on_collector_tick(uv_timer_t* handle) {
-    if (handle == nullptr || handle->data == nullptr) {
-      return;
-    }
-    auto* task = static_cast<CollectorTask*>(handle->data);
-    if (task->service == nullptr || task->collector == nullptr) {
-      return;
-    }
-    task->service->queue_capture(*task);
-  }
-
-  static void on_capture_work(uv_work_t* req) {
-    if (req == nullptr || req->data == nullptr) {
-      return;
-    }
-    auto* task = static_cast<CollectorTask*>(req->data);
-    if (task->service == nullptr || task->collector == nullptr) {
-      return;
-    }
-    if (!task->service->running.load(std::memory_order_relaxed)) {
-      return;
-    }
-    TimeResolution time = task->service->logger->get_time();
-    task->collector->capture(task->service->buffer_manager,
-                             task->service->logger, task->service->index, time);
-  }
-
-  static void on_capture_after_work(uv_work_t* req, int /*status*/) {
-    if (req == nullptr || req->data == nullptr) {
-      return;
-    }
-    auto* task = static_cast<CollectorTask*>(req->data);
-    task->in_flight = false;
-
-    auto* service = task->service;
-    if (service == nullptr) {
-      return;
-    }
-
-    int remaining =
-        service->pending_work_count.fetch_sub(1, std::memory_order_relaxed) - 1;
-    if (!service->running.load(std::memory_order_relaxed) && remaining == 0) {
-      service->stop_loop_if_idle();
-    }
-  }
-
   void queue_capture(CollectorTask& task) {
-    if (!running.load(std::memory_order_relaxed) || task.in_flight) {
+    if (!running.load(std::memory_order_relaxed)) {
       return;
     }
-    int ret =
-        uv_queue_work(&loop, &task.work_req, DFTracerService::on_capture_work,
-                      DFTracerService::on_capture_after_work);
-    if (ret == 0) {
-      task.in_flight = true;
-      pending_work_count.fetch_add(1, std::memory_order_relaxed);
-    }
-  }
-
-  void stop_loop_if_idle() {
-    if (running.load(std::memory_order_relaxed)) {
-      return;
-    }
-    if (pending_work_count.load(std::memory_order_relaxed) != 0) {
-      return;
-    }
-    if (!loop_initialized) {
-      return;
-    }
-    uv_stop(&loop);
-  }
-
-  void close_runtime_handles() {
-    if (!loop_initialized) {
+    if (task.in_flight.exchange(true, std::memory_order_acq_rel)) {
       return;
     }
 
-    uv_signal_stop(&signal_handle);
-    uv_close(reinterpret_cast<uv_handle_t*>(&signal_handle), nullptr);
-
-    uv_signal_stop(&sigterm_handle);
-    uv_close(reinterpret_cast<uv_handle_t*>(&sigterm_handle), nullptr);
-
-    for (auto& task : collector_tasks) {
-      uv_timer_stop(&task->timer);
-      uv_close(reinterpret_cast<uv_handle_t*>(&task->timer), nullptr);
-      task->in_flight = false;
+    CollectorTask* raw = &task;
+    bool queued = event_loop->queue_work(
+        [this, raw]() {
+          if (!running.load(std::memory_order_relaxed)) return;
+          TimeResolution time = logger->get_time();
+          raw->collector->capture(buffer_manager, logger, index, time);
+        },
+        [raw]() { raw->in_flight.store(false, std::memory_order_release); });
+    if (!queued) {
+      task.in_flight.store(false, std::memory_order_release);
     }
   }
 
   void request_stop() {
-    bool was_running = running.exchange(false, std::memory_order_relaxed);
-    if (!was_running && stop_requested) {
+    running.store(false, std::memory_order_relaxed);
+    if (stop_requested) {
       return;
     }
-    if (!stop_requested) {
-      close_runtime_handles();
-      stop_requested = true;
+    stop_requested = true;
+    // Closes the timers and signal handlers, so the loop falls out once the
+    // captures already on the threadpool have finished. Nothing is abandoned
+    // mid-write.
+    if (event_loop != nullptr) {
+      event_loop->stop();
     }
-    stop_loop_if_idle();
   }
 
   void finalize_service() {
     if (finalized) {
       return;
-    }
-
-    if (loop_initialized) {
-      while (uv_loop_alive(&loop)) {
-        uv_run(&loop, UV_RUN_DEFAULT);
-      }
-      uv_loop_close(&loop);
-      loop_initialized = false;
     }
 
     for (auto& collector : telemetry_collectors) {

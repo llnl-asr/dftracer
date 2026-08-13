@@ -10,11 +10,12 @@
 #ifdef DFTRACER_PAPI_TRACING_ENABLE
 
 #include <dftracer/core/buffer/buffer.h>
+#include <dftracer/core/common/event_loop.h>
+#include <dftracer/core/common/singleton.h>
 #include <dftracer/core/function/generic_function.h>
 #include <dftracer/core/utils/configuration_manager.h>
 #include <papi.h>
 #include <sys/types.h>
-#include <uv.h>
 
 #include <atomic>
 #include <future>
@@ -83,12 +84,13 @@ class PAPICounterFunction : public dftracer::GenericFunction {
   ProcessID process_id;
   ThreadID thread_id;
 
-  // libuv sampler thread. loop_ready tells finalize() the loop exists and can
-  // be woken; it is set by the sampler and read by whoever finalizes.
+  // The sampler thread runs the process's one event loop: PAPI only lets the
+  // thread that created an event set read or tear it down, so the loop has to
+  // live on the same thread as the counters rather than the other way round.
+  // loop_ready tells finalize() the loop is armed and can be stopped; it is set
+  // by the sampler and read by whoever finalizes.
   std::thread sampler_thread;
-  uv_loop_t loop;
-  uv_timer_t timer;
-  uv_async_t stop_signal;
+  std::shared_ptr<dftracer::EventLoop> event_loop;
   std::atomic<bool> sampler_running;
   std::atomic<bool> loop_ready;
   // Lets initialize() block until the sampler is actually counting. Inherited
@@ -104,9 +106,6 @@ class PAPICounterFunction : public dftracer::GenericFunction {
 
   void run_sampler();
   void emit_sample();
-
-  static void on_timer(uv_timer_t *handle);
-  static void on_stop(uv_async_t *handle);
 
   // Parse the build-time list "FAMILY:ev[,ev...][;FAMILY:...]" into the flat
   // counter list plus the family layout used when writing samples out.

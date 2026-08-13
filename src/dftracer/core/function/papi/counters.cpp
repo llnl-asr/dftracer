@@ -390,8 +390,15 @@ void PAPICounterFunction::run_sampler() {
   }
   library_ready.store(true);
 
-  if (uv_loop_init(&loop) != 0) {
-    DFTRACER_LOG_WARN("PAPI sampler could not initialize its libuv loop", "");
+  uint64_t interval_ms = static_cast<uint64_t>(config->papi_sample_interval_ms);
+  if (interval_ms == 0) interval_ms = 1000;
+
+  event_loop = dftracer::Singleton<dftracer::EventLoop>::get_instance();
+  if (event_loop == nullptr ||
+      !event_loop->add_timer(interval_ms, interval_ms,
+                             [this]() { this->emit_sample(); })) {
+    DFTRACER_LOG_WARN("PAPI sampler could not arm its timer on the event loop",
+                      "");
     stop_counters();
     library_ready.store(false);
     sampler_running.store(false);
@@ -399,48 +406,23 @@ void PAPICounterFunction::run_sampler() {
     PAPI_unregister_thread();
     return;
   }
-
-  timer.data = this;
-  stop_signal.data = this;
-  uv_timer_init(&loop, &timer);
-  uv_async_init(&loop, &stop_signal, PAPICounterFunction::on_stop);
-
-  uint64_t interval_ms = static_cast<uint64_t>(config->papi_sample_interval_ms);
-  if (interval_ms == 0) interval_ms = 1000;
-  uv_timer_start(&timer, PAPICounterFunction::on_timer, interval_ms,
-                 interval_ms);
   loop_ready.store(true);
 
   // Counting is live and the loop is armed: the application may proceed.
   notify_ready();
 
-  uv_run(&loop, UV_RUN_DEFAULT);
+  // This thread created the event set, so it has to be the one that runs the
+  // loop: PAPI only lets the creating thread read and tear an event set down.
+  event_loop->run();
 
   // Final read so the last interval is not lost, then tear down on the same
-  // thread that created the event set, as PAPI requires.
+  // thread, still as PAPI requires.
   emit_sample();
   stop_counters();
   library_ready.store(false);
-
-  uv_close(reinterpret_cast<uv_handle_t *>(&timer), nullptr);
-  uv_close(reinterpret_cast<uv_handle_t *>(&stop_signal), nullptr);
-  uv_run(&loop, UV_RUN_DEFAULT);
-  uv_loop_close(&loop);
   loop_ready.store(false);
 
   PAPI_unregister_thread();
-}
-
-void PAPICounterFunction::on_timer(uv_timer_t *handle) {
-  if (handle == nullptr || handle->data == nullptr) return;
-  static_cast<PAPICounterFunction *>(handle->data)->emit_sample();
-}
-
-void PAPICounterFunction::on_stop(uv_async_t *handle) {
-  if (handle == nullptr || handle->data == nullptr) return;
-  auto *self = static_cast<PAPICounterFunction *>(handle->data);
-  uv_timer_stop(&self->timer);
-  uv_stop(&self->loop);
 }
 
 void PAPICounterFunction::emit_sample() {
@@ -487,8 +469,8 @@ void PAPICounterFunction::finalize() {
 
   // Wake the loop so it can drain, emit a last sample and tear its event set
   // down. If the loop never came up, the sampler is already on its way out.
-  if (loop_ready.load()) {
-    uv_async_send(&stop_signal);
+  if (loop_ready.load() && event_loop != nullptr) {
+    event_loop->stop();
   }
   if (sampler_thread.joinable()) {
     sampler_thread.join();

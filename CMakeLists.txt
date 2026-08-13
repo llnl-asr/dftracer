@@ -936,6 +936,7 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/stdio_bypass.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/dftracer.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/dftracer_main.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/event_loop.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/configuration_manager.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/md5.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/df_logger.cpp
@@ -977,6 +978,7 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/stdio.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/dftracer_main.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/logging.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/event_loop.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/generic_function.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/hip/intercept.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/papi/counters.h
