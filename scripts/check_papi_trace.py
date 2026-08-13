@@ -37,6 +37,17 @@ def parse_args() -> argparse.Namespace:
         help="Minimum number of PAPI counter records for the required events",
     )
     parser.add_argument(
+        "--skip-if-no-counters",
+        action="store_true",
+        help=(
+            "Exit successfully when the trace carries no PAPI records at all. "
+            "For environments that cannot program hardware counters -- a "
+            "container whose seccomp profile blocks perf_event_open, for "
+            "instance -- where their absence says nothing about DFTracer. A "
+            "trace that does have counters is still checked in full."
+        ),
+    )
+    parser.add_argument(
         "--allow-static-counters",
         action="store_true",
         help=(
@@ -116,6 +127,16 @@ def main() -> int:
         return 1
 
     total_papi_lines = sum(papi_hits.values()) if papi_hits else 0
+
+    # Checked before the minimum-count gate below, which would otherwise fire
+    # first and fail the run.
+    if args.skip_if_no_counters and required_events and total_papi_lines == 0:
+        print(
+            "no PAPI records in the trace; skipping counter validation "
+            "(this environment cannot program hardware counters)"
+        )
+        return 0
+
     if required_events and total_papi_lines < args.min_papi_lines:
         print(
             f"expected at least {args.min_papi_lines} PAPI-tagged events, found {total_papi_lines}",
