@@ -292,10 +292,94 @@ Build Variables
 These build variables can be set with cmake as ``-DDISABLE_HWLOC=OFF`` or as environment variables ``export DFTRACER_DISABLE_HWLOC=OFF``
 
 When DFTracer is built with PAPI support, runtime counter sampling can be enabled with
-``DFTRACER_ENABLE_PAPI_TRACING=1``. ``DFTRACER_PAPI_MULTIPLEX=1`` enables PAPI
-multiplexing, and ``DFTRACER_PAPI_SAMPLE_INTERVAL_MS`` overrides the sampling
-interval in milliseconds. When it is unset or set to ``0``, PAPI sampling inherits
-the main ``DFTRACER_TRACE_INTERVAL_MS`` value.
+``DFTRACER_ENABLE_PAPI_TRACING=1``. ``DFTRACER_PAPI_SAMPLE_INTERVAL_MS`` overrides the
+sampling interval in milliseconds. When it is unset or set to ``0``, PAPI sampling
+inherits the main ``DFTRACER_TRACE_INTERVAL_MS`` value.
+
+Choosing the counters
+.....................
+
+Name the counters you want, either with an environment variable:
+
+.. code-block:: bash
+
+   export DFTRACER_PAPI_EVENTS="PAPI_TOT_INS,PAPI_TOT_CYC,PAPI_BR_NTK"
+
+or in the YAML configuration:
+
+.. code-block:: yaml
+
+   features:
+     papi:
+       enable: true
+       interval: 200
+       events:
+         - PAPI_TOT_INS
+         - PAPI_TOT_CYC
+         - PAPI_BR_NTK
+
+With neither set, DFTracer uses the counters its build-time probe found for the
+machine. ``papi_avail`` lists what is available.
+
+Exact counts versus estimates
+.............................
+
+A CPU has a small number of hardware counter registers -- five on an AMD MI300A,
+which ``papi_avail`` reports as ``Number Hardware Counters``. What happens next
+depends only on whether your selection fits:
+
+* **It fits.** Every counter is read exactly, and nothing is time-shared. This
+  holds even if ``DFTRACER_PAPI_MULTIPLEX=1`` is set, which is ignored in that
+  case: multiplexing a selection the hardware can hold would trade exact counts
+  for estimates and buy nothing.
+* **It does not fit.** PAPI time-shares the counters and scales each reading up
+  by the fraction of time it was actually counting. Every such reading is an
+  estimate. DFTracer says so at startup:
+
+  .. code-block:: text
+
+     PAPI: 17 counters were requested but this machine has 5 hardware counters,
+     so they are time-shared and every multiplexed reading is a scaled estimate
+     (measured error 1% to 6%, worse on a workload with phases). For exact
+     counts, name a set of counters that fits in DFTRACER_PAPI_EVENTS and take
+     one run per set.
+
+Records carry ``multiplex: 1`` when their family was time-shared and ``0`` when
+it was counted exactly, so a trace says which of its own numbers are estimates.
+
+The error is not a fixed small percentage. Measured against an exact baseline on
+an MI300A it was under 1% on a steady loop but 5-6% on a workload alternating
+between floating-point and branch-heavy phases -- and biased in a consistent
+direction rather than averaging out. **To measure exactly, name a set of counters
+that fits and take one run per set.** There is no way to count more counters
+than the hardware has in a single run without estimating.
+
+Note that "fits" is not simply "no more names than registers": presets can share
+native events, so seven branch counters may fit in five registers while a
+different four do not. DFTracer tests the real hardware rather than counting
+names, so a selection is only time-shared when it genuinely has to be.
+
+Counters that cannot be time-shared
+...................................
+
+Some PAPI presets are one native event subtracted from another -- ``PAPI_BR_NTK``
+is ``RETIRED_BRANCH_INSTRUCTIONS`` minus ``RETIRED_TAKEN_BRANCH_INSTRUCTIONS``.
+Time-sharing counts the two in different slices and scales them independently, so
+subtracting two ~1% estimates of two nearly equal large numbers leaves only the
+error. On an MI300A ``PAPI_BR_NTK`` reads ``64000010`` when its set fits and
+``-191117`` when the same set is multiplexed -- a negative count of branches.
+
+DFTracer therefore drops subtractive presets from a family it has to time-share,
+and says which:
+
+.. code-block:: text
+
+   PAPI counter PAPI_BR_NTK is one native event subtracted from another and the
+   PAPI family does not fit this machine; dropping it, because time-sharing the
+   two would report impossible values such as a negative count
+
+Select a set that fits to get them. Additive presets such as ``PAPI_FP_INS`` are
+kept: summing two estimates preserves the relative error and cannot change sign.
 
 Counters are chosen at build time, and everything the machine offers is taken.
 ``cmake/probes/papi_probe.c`` walks the whole PAPI preset table, keeps every

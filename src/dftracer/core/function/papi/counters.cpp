@@ -137,6 +137,53 @@ PAPICounterFunction::parse_groups(const std::string &value) {
   return parsed;
 }
 
+// A preset PAPI computes by SUBTRACTING one native event from another --
+// PAPI_BR_NTK is RETIRED_BRANCH_INSTRUCTIONS minus
+// RETIRED_TAKEN_BRANCH_INSTRUCTIONS, for instance.
+//
+// Only the subtractive ones matter here. Multiplexing counts each native in a
+// different time slice and scales it independently, so subtracting two ~1%
+// estimates of two nearly equal large numbers leaves nothing but the error:
+// measured on an MI300A, PAPI_BR_NTK reads 64000010 when its set fits the
+// hardware and -191117 when the same set is multiplexed, a negative count of
+// branches. A DERIVED_ADD preset such as PAPI_FP_INS is not affected in the
+// same way -- summing two estimates keeps the same relative error and cannot
+// change sign -- so those are kept and simply share the family's estimate
+// quality.
+static bool is_subtractive_derived_event(const std::string &name) {
+  PAPI_event_info_t info;
+  int code = 0;
+  if (PAPI_event_name_to_code(const_cast<char *>(name.c_str()), &code) !=
+      PAPI_OK) {
+    return false;
+  }
+  if (PAPI_get_event_info(code, &info) != PAPI_OK) return false;
+  if (info.count <= 1) return false;
+  return strstr(info.derived, "SUB") != nullptr;
+}
+
+// How many of `events` the hardware will actually count together, found by
+// adding them one at a time to a throwaway event set.
+//
+// Counting names against PAPI_num_hwctrs() is not the same question and gets
+// the wrong answer in both directions: on an MI300A with 5 counters, six branch
+// events fit in one set (they share natives) while a different four do not.
+static size_t count_fitting(const std::vector<std::string> &events) {
+  int set = PAPI_NULL;
+  if (PAPI_create_eventset(&set) != PAPI_OK) return 0;
+  if (PAPI_assign_eventset_component(set, 0) != PAPI_OK) {
+    PAPI_destroy_eventset(&set);
+    return 0;
+  }
+  size_t fitting = 0;
+  for (const auto &name : events) {
+    if (PAPI_add_named_event(set, name.c_str()) == PAPI_OK) fitting++;
+  }
+  PAPI_cleanup_eventset(set);
+  PAPI_destroy_eventset(&set);
+  return fitting;
+}
+
 // Bind an event set to the whole process: component first (PAPI_attach and
 // PAPI_set_multiplex both fail with PAPI_ECMP otherwise), then attach to the
 // thread-group leader, then ask for inheritance so threads the application
@@ -198,35 +245,136 @@ bool PAPICounterFunction::initialize_library() {
   auto configured = normalize_events(config->papi_events);
   if (configured.empty()) {
     groups = parse_groups(DFTRACER_PAPI_DETECTED_EVENTS);
+    DFTRACER_LOG_INFO(
+        "PAPI: using the counters found for this machine at build time; set "
+        "DFTRACER_PAPI_EVENTS to choose your own",
+        "");
   } else {
     // An explicit list carries no family information; it becomes one family.
+    // This is the way to get exact counts: name no more counters than the
+    // machine can hold, and take one run per set you care about.
     CounterGroup group;
     group.category = "PAPI";
     group.events = configured;
     groups.assign(1, group);
+    std::ostringstream chosen;
+    for (size_t i = 0; i < configured.size(); ++i) {
+      if (i > 0) chosen << ',';
+      chosen << configured[i];
+    }
+    DFTRACER_LOG_INFO("PAPI: DFTRACER_PAPI_EVENTS selected %d counters: %s",
+                      (int)configured.size(), chosen.str().c_str());
   }
   if (groups.empty()) {
     DFTRACER_LOG_WARN("PAPI tracing disabled: no counters configured", "");
     return false;
   }
 
-  // A family that does not fit the hardware is time-shared. Doing this per
-  // family rather than across all counters leaves the small families exact;
-  // only the oversized ones become scaled estimates.
-  int hw_counters = DFTRACER_PAPI_HW_COUNTERS;
+  // Decide per family whether it has to be time-shared, by asking the hardware
+  // rather than by counting names: a family fits only if every one of its
+  // counters can be added to one event set.
+  //
+  // Time-sharing is not a preference here. The counters are attached to the
+  // process with PAPI_INHERIT_ALL, and an event set can only be started while
+  // it fits, so multiplexing is the only way to observe more counters than the
+  // machine has registers in a single run. Rotating whole event sets instead
+  // does not work: inheritance binds a set to the threads that exist when it
+  // starts, so a set first started later reads essentially nothing (measured on
+  // an MI300A: 1070 against 17,554,403,015 for a set started before the
+  // threads).
+  // First question, and the one that decides everything: does the whole
+  // selection fit at once? Per-family fitting is not enough -- the registers
+  // are shared by every started event set, so if the total exceeds them the
+  // families beyond the budget fail to start at all and their counters are
+  // simply missing from the trace.
+  std::vector<std::string> everything;
+  size_t total_events = 0;
+  for (const auto &group : groups) {
+    everything.insert(everything.end(), group.events.begin(),
+                      group.events.end());
+    total_events += group.events.size();
+  }
+  const bool all_fit = count_fitting(everything) == total_events;
+
+  if (all_fit) {
+    // Nothing is time-shared when everything fits, whatever was configured:
+    // multiplexing a selection the hardware can hold outright would trade exact
+    // counts for estimates and buy nothing.
+    for (auto &group : groups) group.multiplexed = false;
+    if (config->papi_multiplex) {
+      DFTRACER_LOG_INFO(
+          "PAPI: DFTRACER_PAPI_MULTIPLEX is set but all %d counters fit this "
+          "machine, so they are counted exactly instead",
+          (int)total_events);
+    }
+    DFTRACER_LOG_INFO("PAPI: %d counters fit the hardware; counts are exact",
+                      (int)total_events);
+    return true;
+  }
+
   bool any_multiplexed = false;
   for (auto &group : groups) {
-    group.multiplexed = config->papi_multiplex ||
-                        (hw_counters > 0 &&
-                         static_cast<int>(group.events.size()) > hw_counters);
-    if (group.multiplexed) any_multiplexed = true;
+    const size_t fitting = count_fitting(group.events);
+    group.multiplexed = fitting < group.events.size();
+
+    if (group.multiplexed) {
+      any_multiplexed = true;
+      // Derived presets are dropped rather than time-shared: a scaled estimate
+      // of each native makes their combination meaningless, not merely
+      // imprecise. Select a set of counters that fits if you need them.
+      std::vector<std::string> keep;
+      for (const auto &event : group.events) {
+        if (is_subtractive_derived_event(event)) {
+          // ERROR, not WARN: a release build compiles WARN and INFO out
+          // entirely, and silently dropping a counter the user asked for is
+          // exactly the thing they must be told about.
+          DFTRACER_LOG_ERROR(
+              "PAPI counter %s is one native event subtracted from another "
+              "and the %s family does not fit this machine; dropping it, "
+              "because time-sharing the two would report impossible values "
+              "such as a negative count",
+              event.c_str(), group.category.c_str());
+          continue;
+        }
+        keep.push_back(event);
+      }
+      group.events = std::move(keep);
+    }
   }
+  groups.erase(std::remove_if(groups.begin(), groups.end(),
+                              [](const CounterGroup &group) {
+                                return group.events.empty();
+                              }),
+               groups.end());
+  if (groups.empty()) {
+    DFTRACER_LOG_WARN("PAPI tracing disabled: no counters left to collect", "");
+    return false;
+  }
+
   if (any_multiplexed) {
     int retval = PAPI_multiplex_init();
     if (retval != PAPI_OK) {
       log_papi_status("PAPI_multiplex_init", retval);
       for (auto &group : groups) group.multiplexed = false;
+      any_multiplexed = false;
     }
+  }
+
+  // Say plainly that the numbers are estimates, and how to get exact ones. The
+  // error is not a fixed small percentage: measured against an exact baseline
+  // it was under 1% on a steady loop but 5-6% on a workload that alternates
+  // phases, and biased in a consistent direction rather than noisy.
+  if (any_multiplexed) {
+    // ERROR for the same reason: this is the caveat that decides whether the
+    // numbers in the trace can be quoted, and it has to survive a release
+    // build, where DFTRACER_LOG_WARN is a no-op.
+    DFTRACER_LOG_ERROR(
+        "PAPI: %d counters were requested but this machine has %d hardware "
+        "counters, so they are time-shared and every multiplexed reading is a "
+        "scaled estimate (measured error 1%% to 6%%, worse on a workload with "
+        "phases). For exact counts, name a set of counters that fits in "
+        "DFTRACER_PAPI_EVENTS and take one run per set.",
+        (int)total_events, DFTRACER_PAPI_HW_COUNTERS);
   }
   return true;
 }
