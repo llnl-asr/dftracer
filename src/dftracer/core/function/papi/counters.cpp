@@ -87,16 +87,10 @@ PAPICounterFunction::PAPICounterFunction()
           dftracer::Singleton<dftracer::ConfigurationManager>::get_instance()),
       buffer_manager(
           dftracer::Singleton<dftracer::BufferManager>::get_instance()),
-      events(),
-      categories(),
-      event_list(),
+      groups(),
       enabled(false),
       library_ready(false),
-      multiplex_active(false),
       index(0),
-      event_set(PAPI_NULL),
-      last_values(),
-      current_values(),
       process_id(0),
       thread_id(0),
       sampler_thread(),
@@ -110,71 +104,37 @@ PAPICounterFunction::PAPICounterFunction()
 
 PAPICounterFunction::~PAPICounterFunction() { finalize(); }
 
-// Group a preset into a family for the record's "cat", so a reader can select
-// e.g. every cache counter without knowing each preset name. Derived from the
-// naming scheme of the PAPI preset table; longer prefixes are tested first, and
-// anything unrecognised falls back to "PAPI" rather than being guessed at.
-std::string PAPICounterFunction::event_category(const std::string &event_name) {
-  struct Prefix {
-    const char *prefix;
-    const char *category;
-  };
-  static const Prefix kPrefixes[] = {
-      // Cycles and instruction counts.
-      {"PAPI_TOT_CYC", "CYCLE"},
-      {"PAPI_REF_CYC", "CYCLE"},
-      {"PAPI_TOT_INS", "INSTRUCTION"},
-      {"PAPI_TOT_IIS", "INSTRUCTION"},
-      {"PAPI_INT_INS", "INSTRUCTION"},
-      {"PAPI_SYC_INS", "INSTRUCTION"},
-      {"PAPI_HW_INT", "INTERRUPT"},
-      // Floating point and vector. The FPU sub-counters (multiply, add,
-      // divide, square root, FMA, inverse) are named per operation, so each
-      // needs its own prefix.
-      {"PAPI_FMA_INS", "FLOP"},
-      {"PAPI_FML_INS", "FLOP"},
-      {"PAPI_FAD_INS", "FLOP"},
-      {"PAPI_FDV_INS", "FLOP"},
-      {"PAPI_FSQ_INS", "FLOP"},
-      {"PAPI_FNV_INS", "FLOP"},
-      {"PAPI_FPU_IDL", "STALL"},
-      {"PAPI_FP_STAL", "STALL"},
-      {"PAPI_FP_", "FLOP"},
-      {"PAPI_SP_", "FLOP"},
-      {"PAPI_DP_", "FLOP"},
-      {"PAPI_VEC_", "FLOP"},
-      // Cache and coherency.
-      {"PAPI_L1_", "CACHE"},
-      {"PAPI_L2_", "CACHE"},
-      {"PAPI_L3_", "CACHE"},
-      {"PAPI_CA_", "COHERENCY"},
-      {"PAPI_PRF_DM", "PREFETCH"},
-      // Address translation.
-      {"PAPI_TLB_", "TLB"},
-      // Branches.
-      {"PAPI_BTAC_M", "BRANCH"},
-      {"PAPI_BRU_IDL", "STALL"},
-      {"PAPI_BR_", "BRANCH"},
-      // Loads, stores and memory stalls.
-      {"PAPI_LST_INS", "MEMORY"},
-      {"PAPI_LD_INS", "MEMORY"},
-      {"PAPI_SR_INS", "MEMORY"},
-      {"PAPI_MEM_SCY", "STALL"},
-      {"PAPI_MEM_RCY", "STALL"},
-      {"PAPI_MEM_WCY", "STALL"},
-      {"PAPI_MEM_", "MEMORY"},
-      {"PAPI_CSR_", "SYNC"},
-      // Issue and completion stalls.
-      {"PAPI_STL_", "STALL"},
-      {"PAPI_FUL_", "STALL"},
-      {"PAPI_RES_STL", "STALL"},
-      {"PAPI_FXU_IDL", "STALL"},
-      {"PAPI_LSU_IDL", "STALL"},
-  };
-  for (const auto &entry : kPrefixes) {
-    if (event_name.rfind(entry.prefix, 0) == 0) return entry.category;
+// The build-time probe emits "FAMILY:ev[,ev...][;FAMILY:...]". Families are
+// decided there, next to the counter detection that produced them; here they
+// only say how a sample is written out.
+std::vector<PAPICounterFunction::CounterGroup>
+PAPICounterFunction::parse_groups(const std::string &value) {
+  std::vector<CounterGroup> parsed;
+  size_t at = 0;
+  while (at < value.size()) {
+    size_t end = value.find(';', at);
+    if (end == std::string::npos) end = value.size();
+    std::string chunk = value.substr(at, end - at);
+    at = end + 1;
+
+    size_t colon = chunk.find(':');
+    if (colon == std::string::npos) continue;
+    CounterGroup group;
+    group.category = trim_copy(chunk.substr(0, colon));
+    if (group.category.empty()) continue;
+
+    std::string members = chunk.substr(colon + 1);
+    size_t member_at = 0;
+    while (member_at < members.size()) {
+      size_t comma = members.find(',', member_at);
+      if (comma == std::string::npos) comma = members.size();
+      auto name = trim_copy(members.substr(member_at, comma - member_at));
+      member_at = comma + 1;
+      if (!name.empty()) group.events.push_back(name);
+    }
+    if (!group.events.empty()) parsed.push_back(std::move(group));
   }
-  return "PAPI";
+  return parsed;
 }
 
 // Bind an event set to the whole process: component first (PAPI_attach and
@@ -183,7 +143,7 @@ std::string PAPICounterFunction::event_category(const std::string &event_name) {
 // spawns later are counted as well. Without PAPI_INHERIT_ALL only the main
 // thread would be counted; attaching to individual thread ids is not an option
 // because reads of such an event set return frozen garbage on this platform.
-bool PAPICounterFunction::bind_to_process(int set) const {
+bool PAPICounterFunction::bind_to_process(int set, bool multiplex) const {
   int retval = PAPI_assign_eventset_component(set, 0);
   if (retval != PAPI_OK) {
     log_papi_status("PAPI_assign_eventset_component", retval);
@@ -209,7 +169,7 @@ bool PAPICounterFunction::bind_to_process(int set) const {
         retval, PAPI_strerror(retval));
   }
 
-  if (multiplex_active) {
+  if (multiplex) {
     retval = PAPI_set_multiplex(set);
     if (retval != PAPI_OK) {
       log_papi_status("PAPI_set_multiplex", retval);
@@ -232,110 +192,124 @@ bool PAPICounterFunction::initialize_library() {
     return false;
   }
 
-  // Which counters to use is decided at build time by cmake/probes/papi_probe.c
-  // and baked into dftracer_config.hpp, so nothing is enumerated here.
-  // DFTRACER_PAPI_EVENTS overrides it for a specific run.
+  // Which counters to use, and how they are grouped into families, is decided
+  // at build time by cmake/probes/papi_probe.c and baked into
+  // dftracer_config.hpp. DFTRACER_PAPI_EVENTS overrides it for a run.
   auto configured = normalize_events(config->papi_events);
-  events =
-      configured.empty() ? normalize_events(build_time_events()) : configured;
-  if (events.empty()) {
+  if (configured.empty()) {
+    groups = parse_groups(DFTRACER_PAPI_DETECTED_EVENTS);
+  } else {
+    // An explicit list carries no family information; it becomes one family.
+    CounterGroup group;
+    group.category = "PAPI";
+    group.events = configured;
+    groups.assign(1, group);
+  }
+  if (groups.empty()) {
     DFTRACER_LOG_WARN("PAPI tracing disabled: no counters configured", "");
     return false;
   }
 
-  // More counters than the CPU has slots can only be collected by time-sharing
-  // them. Values then become scaled estimates rather than exact counts, so this
-  // is only turned on when it is the difference between collecting a counter
-  // and dropping it.
+  // A family that does not fit the hardware is time-shared. Doing this per
+  // family rather than across all counters leaves the small families exact;
+  // only the oversized ones become scaled estimates.
   int hw_counters = DFTRACER_PAPI_HW_COUNTERS;
-  multiplex_active =
-      config->papi_multiplex ||
-      (hw_counters > 0 && static_cast<int>(events.size()) > hw_counters);
-  if (multiplex_active) {
+  bool any_multiplexed = false;
+  for (auto &group : groups) {
+    group.multiplexed = config->papi_multiplex ||
+                        (hw_counters > 0 &&
+                         static_cast<int>(group.events.size()) > hw_counters);
+    if (group.multiplexed) any_multiplexed = true;
+  }
+  if (any_multiplexed) {
     int retval = PAPI_multiplex_init();
     if (retval != PAPI_OK) {
-      multiplex_active = false;
       log_papi_status("PAPI_multiplex_init", retval);
-    } else if (!config->papi_multiplex) {
-      DFTRACER_LOG_INFO(
-          "PAPI multiplexing enabled: %d counters requested but only %d "
-          "hardware slots; values are scaled estimates",
-          static_cast<int>(events.size()), hw_counters);
+      for (auto &group : groups) group.multiplexed = false;
     }
   }
   return true;
 }
 
-// Build the event set and start counting. Counters that this machine will not
-// program -- a different CPU from the build host, or one counter slot too many
-// -- are skipped rather than failing the run.
+// One event set per family, so a family's counters are read at one instant.
 bool PAPICounterFunction::start_counters() {
-  int retval = PAPI_create_eventset(&event_set);
-  if (retval != PAPI_OK) {
-    log_papi_status("PAPI_create_eventset", retval);
-    event_set = PAPI_NULL;
-    return false;
-  }
-  if (!bind_to_process(event_set)) {
-    PAPI_destroy_eventset(&event_set);
-    event_set = PAPI_NULL;
-    return false;
-  }
-
-  std::vector<std::string> added;
-  for (const auto &event_name : events) {
-    retval = PAPI_add_named_event(event_set, event_name.c_str());
+  std::vector<CounterGroup> started;
+  for (auto &group : groups) {
+    int retval = PAPI_create_eventset(&group.event_set);
     if (retval != PAPI_OK) {
-      DFTRACER_LOG_WARN("PAPI counter %s cannot be counted here (%d, %s)",
-                        event_name.c_str(), retval, PAPI_strerror(retval));
+      log_papi_status("PAPI_create_eventset", retval);
+      group.event_set = PAPI_NULL;
       continue;
     }
-    added.push_back(event_name);
+    if (!bind_to_process(group.event_set, group.multiplexed)) {
+      PAPI_destroy_eventset(&group.event_set);
+      group.event_set = PAPI_NULL;
+      continue;
+    }
+
+    std::vector<std::string> added;
+    for (const auto &event_name : group.events) {
+      retval = PAPI_add_named_event(group.event_set, event_name.c_str());
+      if (retval != PAPI_OK) {
+        DFTRACER_LOG_WARN("PAPI counter %s cannot be counted here (%d, %s)",
+                          event_name.c_str(), retval, PAPI_strerror(retval));
+        continue;
+      }
+      added.push_back(event_name);
+    }
+    group.events = std::move(added);
+    if (group.events.empty()) {
+      PAPI_cleanup_eventset(group.event_set);
+      PAPI_destroy_eventset(&group.event_set);
+      group.event_set = PAPI_NULL;
+      continue;
+    }
+
+    group.last_values.assign(group.events.size(), 0);
+    group.current_values.assign(group.events.size(), 0);
+
+    retval = PAPI_start(group.event_set);
+    if (retval != PAPI_OK) {
+      log_papi_status("PAPI_start", retval);
+      PAPI_cleanup_eventset(group.event_set);
+      PAPI_destroy_eventset(&group.event_set);
+      group.event_set = PAPI_NULL;
+      continue;
+    }
+    started.push_back(std::move(group));
   }
-  events = std::move(added);
-  if (events.empty()) {
+  groups = std::move(started);
+
+  if (groups.empty()) {
     DFTRACER_LOG_WARN(
         "PAPI tracing disabled: none of the configured counters can be counted "
         "on this machine",
         "");
-    PAPI_cleanup_eventset(event_set);
-    PAPI_destroy_eventset(&event_set);
-    event_set = PAPI_NULL;
     return false;
   }
 
-  categories.clear();
-  std::ostringstream names;
-  for (size_t idx = 0; idx < events.size(); ++idx) {
-    categories.push_back(event_category(events[idx]));
-    if (idx > 0) names << ',';
-    names << events[idx];
+  std::ostringstream summary;
+  int total = 0;
+  for (size_t g = 0; g < groups.size(); ++g) {
+    if (g > 0) summary << ' ';
+    summary << groups[g].category << '(' << groups[g].events.size()
+            << (groups[g].multiplexed ? ",mux" : "") << ')';
+    total += static_cast<int>(groups[g].events.size());
   }
-  event_list = names.str();
-
-  last_values.assign(events.size(), 0);
-  current_values.assign(events.size(), 0);
-
-  retval = PAPI_start(event_set);
-  if (retval != PAPI_OK) {
-    log_papi_status("PAPI_start", retval);
-    PAPI_cleanup_eventset(event_set);
-    PAPI_destroy_eventset(&event_set);
-    event_set = PAPI_NULL;
-    return false;
-  }
-
-  DFTRACER_LOG_INFO("PAPI tracing enabled with %d counters: %s",
-                    static_cast<int>(events.size()), event_list.c_str());
+  DFTRACER_LOG_INFO("PAPI tracing enabled with %d counters in %d families: %s",
+                    total, static_cast<int>(groups.size()),
+                    summary.str().c_str());
   return true;
 }
 
 void PAPICounterFunction::stop_counters() {
-  if (event_set == PAPI_NULL) return;
-  PAPI_stop(event_set, current_values.data());
-  PAPI_cleanup_eventset(event_set);
-  PAPI_destroy_eventset(&event_set);
-  event_set = PAPI_NULL;
+  for (auto &group : groups) {
+    if (group.event_set == PAPI_NULL) continue;
+    PAPI_stop(group.event_set, group.current_values.data());
+    PAPI_cleanup_eventset(group.event_set);
+    PAPI_destroy_eventset(&group.event_set);
+    group.event_set = PAPI_NULL;
+  }
 }
 
 void PAPICounterFunction::initialize() {
@@ -470,37 +444,42 @@ void PAPICounterFunction::on_stop(uv_async_t *handle) {
 }
 
 void PAPICounterFunction::emit_sample() {
-  if (!library_ready.load() || event_set == PAPI_NULL) return;
-
-  int retval = PAPI_read(event_set, current_values.data());
-  if (retval != PAPI_OK) {
-    log_papi_status("PAPI_read", retval);
-    return;
-  }
+  if (!library_ready.load()) return;
 
   TimeResolution now = logger->get_time();
 
-  // One record per counter: "name" is the counter, "cat" its family, and the
-  // reading is carried in args. process_id/thread_id are passed explicitly so
-  // the sample is attributed to the traced process, not to the sampler thread.
-  for (size_t idx = 0; idx < events.size(); ++idx) {
-    long long value = current_values[idx];
-    long long delta = value - last_values[idx];
+  // One record per family, carrying all of that family's counters. Writing a
+  // record per counter instead is most of what a PAPI trace costs: here 17
+  // counters become 4 records a sample rather than 17.
+  for (auto &group : groups) {
+    if (group.event_set == PAPI_NULL) continue;
+
+    int retval = PAPI_read(group.event_set, group.current_values.data());
+    if (retval != PAPI_OK) {
+      log_papi_status("PAPI_read", retval);
+      continue;
+    }
 
     auto metadata = new Metadata();
-    metadata->insert_or_assign("value", value);
-    metadata->insert_or_assign("delta", delta);
-    // Multiplexed readings are extrapolated from a time slice, so mark them:
-    // they are estimates and can even move backwards.
-    metadata->insert_or_assign("multiplex", multiplex_active ? 1 : 0);
+    for (size_t idx = 0; idx < group.events.size(); ++idx) {
+      long long value = group.current_values[idx];
+      metadata->insert_or_assign(group.events[idx], value);
+      metadata->insert_or_assign(group.events[idx] + "_delta",
+                                 value - group.last_values[idx]);
+    }
+    // Only an oversized family is time-shared, so this says per record whether
+    // its values are exact counts or scaled estimates.
+    metadata->insert_or_assign("multiplex", group.multiplexed ? 1 : 0);
 
+    // process_id/thread_id are passed explicitly so the sample is attributed to
+    // the traced process rather than to the sampler thread.
     int current_index = index.fetch_add(1, std::memory_order_relaxed);
-    buffer_manager->log_counter_event(
-        current_index, events[idx].c_str(), categories[idx].c_str(),
-        TraceEventType::TRACE_TYPE_PAPI, now, process_id, thread_id, metadata);
-  }
+    buffer_manager->log_counter_event(current_index, group.category.c_str(),
+                                      "papi", TraceEventType::TRACE_TYPE_PAPI,
+                                      now, process_id, thread_id, metadata);
 
-  last_values = current_values;
+    group.last_values = group.current_values;
+  }
 }
 
 void PAPICounterFunction::finalize() {

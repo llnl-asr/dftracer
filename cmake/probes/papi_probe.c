@@ -38,6 +38,69 @@
 /* The preset table is ~108 entries; leave room for every one of them. */
 #define MAX_EVENTS 256
 
+/* Family a preset belongs to, from the naming scheme of the PAPI preset table.
+ * Counters are grouped by family so a sample can be written as one record per
+ * family instead of one per counter, which is most of the trace size. Longer
+ * prefixes must come first. Keep in step with the docs in counters.h. */
+struct papi_family {
+  const char *prefix;
+  const char *category;
+};
+static const struct papi_family kFamilies[] = {
+    {"PAPI_TOT_CYC", "CYCLE"},
+    {"PAPI_REF_CYC", "CYCLE"},
+    {"PAPI_TOT_INS", "INSTRUCTION"},
+    {"PAPI_TOT_IIS", "INSTRUCTION"},
+    {"PAPI_INT_INS", "INSTRUCTION"},
+    {"PAPI_SYC_INS", "INSTRUCTION"},
+    {"PAPI_HW_INT", "INTERRUPT"},
+    {"PAPI_FMA_INS", "FLOP"},
+    {"PAPI_FML_INS", "FLOP"},
+    {"PAPI_FAD_INS", "FLOP"},
+    {"PAPI_FDV_INS", "FLOP"},
+    {"PAPI_FSQ_INS", "FLOP"},
+    {"PAPI_FNV_INS", "FLOP"},
+    {"PAPI_FPU_IDL", "STALL"},
+    {"PAPI_FP_STAL", "STALL"},
+    {"PAPI_FP_", "FLOP"},
+    {"PAPI_SP_", "FLOP"},
+    {"PAPI_DP_", "FLOP"},
+    {"PAPI_VEC_", "FLOP"},
+    {"PAPI_L1_", "CACHE"},
+    {"PAPI_L2_", "CACHE"},
+    {"PAPI_L3_", "CACHE"},
+    {"PAPI_CA_", "COHERENCY"},
+    {"PAPI_PRF_DM", "PREFETCH"},
+    {"PAPI_TLB_", "TLB"},
+    {"PAPI_BTAC_M", "BRANCH"},
+    {"PAPI_BRU_IDL", "STALL"},
+    {"PAPI_BR_", "BRANCH"},
+    {"PAPI_LST_INS", "MEMORY"},
+    {"PAPI_LD_INS", "MEMORY"},
+    {"PAPI_SR_INS", "MEMORY"},
+    {"PAPI_MEM_SCY", "STALL"},
+    {"PAPI_MEM_RCY", "STALL"},
+    {"PAPI_MEM_WCY", "STALL"},
+    {"PAPI_MEM_", "MEMORY"},
+    {"PAPI_CSR_", "SYNC"},
+    {"PAPI_STL_", "STALL"},
+    {"PAPI_FUL_", "STALL"},
+    {"PAPI_RES_STL", "STALL"},
+    {"PAPI_FXU_IDL", "STALL"},
+    {"PAPI_LSU_IDL", "STALL"},
+};
+static const int kNumFamilies = (int)(sizeof(kFamilies) / sizeof(kFamilies[0]));
+
+static const char *family_of(const char *event) {
+  int i;
+  for (i = 0; i < kNumFamilies; ++i) {
+    size_t n = strlen(kFamilies[i].prefix);
+    if (strncmp(event, kFamilies[i].prefix, n) == 0)
+      return kFamilies[i].category;
+  }
+  return "PAPI";
+}
+
 int main(void) {
   char countable[MAX_EVENTS][PAPI_MAX_STR_LEN];
   int num_countable = 0;
@@ -76,9 +139,37 @@ int main(void) {
   }
 
   printf("DFTRACER_PAPI_EVENTS=");
-  for (i = 0; i < num_countable; ++i) {
-    if (i > 0) printf(",");
-    printf("%s", countable[i]);
+  /* Group by family: "CYCLE:PAPI_TOT_CYC;BRANCH:PAPI_BR_CN,PAPI_BR_MSP;...".
+   * Each group becomes one event set at run time and one record per sample. */
+  {
+    const char *emitted[MAX_EVENTS];
+    int num_emitted = 0;
+    int first_group = 1;
+    for (i = 0; i < num_countable; ++i) {
+      const char *family = family_of(countable[i]);
+      int seen = 0, j;
+      for (j = 0; j < num_emitted; ++j) {
+        if (strcmp(emitted[j], family) == 0) {
+          seen = 1;
+          break;
+        }
+      }
+      if (seen) continue;
+      emitted[num_emitted++] = family;
+
+      if (!first_group) printf(";");
+      first_group = 0;
+      printf("%s:", family);
+      {
+        int first_member = 1;
+        for (j = 0; j < num_countable; ++j) {
+          if (strcmp(family_of(countable[j]), family) != 0) continue;
+          if (!first_member) printf(",");
+          first_member = 0;
+          printf("%s", countable[j]);
+        }
+      }
+    }
   }
   /* PAPI_num_hwctrs, not PAPI_num_counters: the latter is high-level API
    * that some PAPI builds do not declare, and a probe that fails to compile

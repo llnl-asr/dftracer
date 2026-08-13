@@ -756,8 +756,11 @@ else()
                                 # was missing or the value does not look like a
                                 # counter list, discard it so the portable fallback
                                 # below applies -- never emit a malformed list.
+                                # Grouped form: FAMILY:ev[,ev...][;FAMILY:ev...].
+                                # Counters are grouped by family so a sample is one
+                                # record per family rather than one per counter.
                                 if(NOT DFTRACER_PAPI_DETECTED_EVENTS MATCHES
-                                   "^PAPI_[A-Za-z0-9_]+(,PAPI_[A-Za-z0-9_]+)*$")
+                                   "^[A-Z]+:PAPI_[A-Za-z0-9_]+(,PAPI_[A-Za-z0-9_]+)*(;[A-Z]+:PAPI_[A-Za-z0-9_]+(,PAPI_[A-Za-z0-9_]+)*)*$")
                                         message(WARNING
                                                 "[DFTRACER] PAPI probe output did not contain a usable "
                                                 "DFTRACER_PAPI_EVENTS line; falling back to portable "
@@ -785,7 +788,7 @@ else()
         # Portable fallback when the probe could not run. Every x86 and ARM PMU
         # DFTracer targets implements these two.
         if(NOT DFTRACER_PAPI_DETECTED_EVENTS)
-                set(DFTRACER_PAPI_DETECTED_EVENTS "PAPI_TOT_CYC,PAPI_TOT_INS")
+                set(DFTRACER_PAPI_DETECTED_EVENTS "CYCLE:PAPI_TOT_CYC;INSTRUCTION:PAPI_TOT_INS")
         endif()
         if(NOT DFTRACER_PAPI_HW_COUNTERS)
                 set(DFTRACER_PAPI_HW_COUNTERS 0)

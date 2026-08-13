@@ -122,6 +122,44 @@ bool dftracer::DFTracerCore::finalize() {
       trie->finalize();
       dftracer::Singleton<Trie>::finalize();
     }
+#ifdef DFTRACER_PAPI_TRACING_ENABLE
+    // MUST come before the I/O interception is unbound below.
+    //
+    // The PAPI sampler runs on its own libuv timer thread and calls PAPI_read()
+    // on every tick. PAPI reads its perf_event counters with a plain read(2),
+    // which dftracer's OWN brahma/GOTCHA POSIX interception wraps. So while the
+    // sampler thread is alive, every sample re-enters this library's read
+    // wrapper.
+    //
+    // Finalising the sampler after `posix_instance->unbind()/finalize()` leaves
+    // a window where the sampler is still ticking but GOTCHA's wrappee table
+    // has already been freed, and the next sample dies in gotcha_get_wrappee():
+    //
+    //   #0 gotcha_get_wrappee()
+    //   #1 brahma::POSIXDFTracer::read(int, void*, unsigned long)
+    //   #2 read_wrapper(int, void*, unsigned long)
+    //   #3 _pe_read() / PAPI_read()
+    //   #4 dftracer::PAPICounterFunction::emit_sample()
+    //   #5 uv_run() / PAPICounterFunction::run_sampler()
+    //
+    // It is a race, so it looks size-dependent rather than deterministic: short
+    // runs usually exit between ticks and survive, long runs almost always land
+    // inside PAPI_read and SIGSEGV at exit. Measured on Laghos/MFEM at 4 nodes
+    // x 16 ranks: clean at ~335 steps, reliable SIGSEGV past ~600 steps --
+    // which also truncated the gzip trace stream on 11 of 16 ranks, so this
+    // silently corrupts output rather than merely being an ugly exit.
+    //
+    // Stopping the sampler first closes the window: no sampler thread means no
+    // re-entry into the interception being dismantled.
+    {
+      auto papi_instance =
+          dftracer::Singleton<dftracer::PAPICounterFunction>::get_instance();
+      if (papi_instance != nullptr) {
+        DFTRACER_LOG_INFO("Stop PAPI sampler before releasing I/O bindings");
+        papi_instance->finalize();
+      }
+    }
+#endif
     if (bind) {
 #ifdef DFTRACER_FTRACING_ENABLE
       auto function_instance = dftracer::Function::get_instance();
@@ -169,13 +207,11 @@ bool dftracer::DFTracerCore::finalize() {
 #endif
       }
     }
-#ifdef DFTRACER_PAPI_TRACING_ENABLE
-    auto papi_instance =
-        dftracer::Singleton<dftracer::PAPICounterFunction>::get_instance();
-    if (papi_instance != nullptr) {
-      papi_instance->finalize();
-    }
-#endif
+    // NOTE: the PAPI sampler is deliberately finalised EARLIER in this
+    // function, before the I/O interception is unbound -- see the long comment
+    // there. Do not move it back here: doing so reintroduces the teardown
+    // SIGSEGV where the still-running sampler re-enters a half-freed GOTCHA
+    // read wrapper.
     if (logger != nullptr) {
       logger->finalize();
       dftracer::Singleton<DFTLogger>::finalize();

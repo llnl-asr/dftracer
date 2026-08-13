@@ -57,23 +57,29 @@ class PAPICounterFunction : public dftracer::GenericFunction {
   std::shared_ptr<dftracer::ConfigurationManager> config;
   std::shared_ptr<dftracer::BufferManager> buffer_manager;
 
-  // Resolved counters, fixed once the library is initialized. Parallel arrays:
-  // events[i] is written as the record's "name" and categories[i] as its "cat".
-  std::vector<std::string> events;
-  std::vector<std::string> categories;
-  std::string event_list;
+  // Counters are collected together in one event set -- as many as the CPU can
+  // carry at once, multiplexed when there are more of them than slots -- and
+  // only grouped when written out. A family becomes one record carrying all of
+  // its counters, instead of one record per counter, which is most of the space
+  // a PAPI trace takes.
+  // A family gets its own event set, so its counters are read at one instant
+  // and written as one record. Only a family with more counters than the CPU
+  // has slots is multiplexed, which leaves the small families exact.
+  struct CounterGroup {
+    std::string category;
+    std::vector<std::string> events;
+    int event_set = PAPI_NULL;
+    bool multiplexed = false;
+    std::vector<long long> last_values;
+    std::vector<long long> current_values;
+  };
+
+  std::vector<CounterGroup> groups;
 
   std::atomic<bool> enabled;
   std::atomic<bool> library_ready;
-  // Time-share the counters. Turned on when more counters were detected than
-  // the CPU has slots, which is the only way to collect them all.
-  bool multiplex_active;
   std::atomic<int> index;
 
-  // Owned exclusively by the sampler thread.
-  int event_set;
-  std::vector<long long> last_values;
-  std::vector<long long> current_values;
   ProcessID process_id;
   ThreadID thread_id;
 
@@ -92,7 +98,7 @@ class PAPICounterFunction : public dftracer::GenericFunction {
 
   // Library setup, all on the sampler thread.
   bool initialize_library();
-  bool bind_to_process(int event_set) const;
+  bool bind_to_process(int event_set, bool multiplex) const;
   bool start_counters();
   void stop_counters();
 
@@ -102,9 +108,9 @@ class PAPICounterFunction : public dftracer::GenericFunction {
   static void on_timer(uv_timer_t *handle);
   static void on_stop(uv_async_t *handle);
 
-  // Broad family a PAPI preset belongs to (CACHE, BRANCH, FLOP, ...), written
-  // as the record's "cat".
-  static std::string event_category(const std::string &event_name);
+  // Parse the build-time list "FAMILY:ev[,ev...][;FAMILY:...]" into the flat
+  // counter list plus the family layout used when writing samples out.
+  static std::vector<CounterGroup> parse_groups(const std::string &value);
 
  public:
   PAPICounterFunction();
@@ -113,8 +119,8 @@ class PAPICounterFunction : public dftracer::GenericFunction {
   void initialize() override;
   void finalize() override;
   bool is_enabled() const { return enabled.load(); }
-  // Counters resolved for this machine; empty until the sampler has started.
-  const std::vector<std::string> &active_events() const { return events; }
+  // Counter families resolved for this machine; empty until the sampler starts.
+  size_t active_group_count() const { return groups.size(); }
 };
 
 }  // namespace dftracer
