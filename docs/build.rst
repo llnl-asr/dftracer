@@ -150,8 +150,9 @@ passed to CMake. See `Build Variables`_ for the full list:
    DFTRACER_ENABLE_MPI                MPI rank in traces and MPI/MPI-IO interception (default OFF).
    DFTRACER_ENABLE_HDF5               HDF5 interception (default OFF).
    DFTRACER_ENABLE_HIP_TRACING        AMD GPU tracing; needs ROCm/rocprofiler-sdk (default OFF).
+   DFTRACER_ENABLE_PAPI_TRACING       PAPI hardware counter sampling; needs libpapi-dev (default OFF).
    DFTRACER_ENABLE_FTRACING           Function tracing via ``-finstrument-functions`` (default OFF).
-   DFTRACER_ENABLE_DYNAMIC_DETECTION  Detect HWLOC, MPI and HIP at run time rather than link time (default OFF).
+   DFTRACER_ENABLE_DYNAMIC_DETECTION  Detect HWLOC, MPI, HIP and PAPI at run time rather than link time (default OFF).
    DFTRACER_DISABLE_HWLOC             HWLOC support; ``ON`` (disabled) by default.
    DFTRACER_MPI_IMPL                  Override MPI implementation detection (default: auto-detect).
    ================================== ===========================================================================
@@ -263,11 +264,12 @@ Build Variables
    DFTRACER_BUILD_TYPE              STRING  Sets the build type for DFTRACER (default Release). Values are Debug or Release
    DFTRACER_ENABLE_FTRACING         BOOL    Enables function tracing (default OFF).
    DFTRACER_ENABLE_HIP_TRACING      BOOL    Enables AMD GPU tracing (default OFF).
+   DFTRACER_ENABLE_PAPI_TRACING     BOOL    Enables PAPI counter tracing support (default OFF).
    DFTRACER_ENABLE_MPI              BOOL    Enables MPI Rank (default OFF).
    DFTRACER_MPI_IMPL                STRING  Selects the MPI implementation to build against (default: empty/auto-detect).
    DFTRACER_DISABLE_HWLOC           BOOL    Disables HWLOC (default ON).
    DFTRACER_ENABLE_HDF5             BOOL    Enables HDF5 tracing support (default OFF).
-   DFTRACER_ENABLE_DYNAMIC_DETECTION BOOL   Enables Dynamic library detection for HWLOC, MPI, and HIP (default OFF).
+   DFTRACER_ENABLE_DYNAMIC_DETECTION BOOL   Enables Dynamic library detection for HWLOC, MPI, HIP, and PAPI (default OFF).
    DFTRACER_GENERATE_INTERFACES     BOOL    Generate Brahma and DFTracer interfaces from discovered headers (default OFF).
    DFTRACER_ENABLE_NATIVE_SCRIPT    BOOL    Build with native scripting support (default OFF).
    DFTRACER_PYTHON_EXE              STRING  Sets path to python executable. Only Cmake.
@@ -285,6 +287,69 @@ Build Variables
    ================================ ======  ===========================================================================
 
 These build variables can be set with cmake as ``-DDISABLE_HWLOC=OFF`` or as environment variables ``export DFTRACER_DISABLE_HWLOC=OFF``
+
+When DFTracer is built with PAPI support, runtime counter sampling can be enabled with
+``DFTRACER_ENABLE_PAPI_TRACING=1``. ``DFTRACER_PAPI_MULTIPLEX=1`` enables PAPI
+multiplexing, and ``DFTRACER_PAPI_SAMPLE_INTERVAL_MS`` overrides the sampling
+interval in milliseconds. When it is unset or set to ``0``, PAPI sampling inherits
+the main ``DFTRACER_TRACE_INTERVAL_MS`` value.
+
+Counters are chosen at build time, and everything the machine offers is taken.
+``cmake/probes/papi_probe.c`` walks the whole PAPI preset table, keeps every
+preset the CPU implements and PAPI will program, and bakes the list into
+``dftracer_config.hpp`` as ``DFTRACER_PAPI_DETECTED_EVENTS``; a run uses it
+directly and does no discovery of its own. Nothing is hand-picked, because which
+presets exist varies enormously between CPUs: on an AMD MI300A node only 17 of
+the 108 presets are available and not one of them is a cache counter, so a fixed
+list would mostly miss.
+
+Where there are more counters than hardware slots, DFTracer multiplexes so all of
+them are still collected. Multiplexed readings are extrapolated from a time slice
+rather than counted exactly, so they are estimates and can occasionally move
+backwards; each record carries ``multiplex`` in ``args`` to say which it is. The
+build log reports the gap::
+
+    -- [DFTRACER] detected 17 PAPI counters (7 fit in 5 hardware slots, the rest
+       need multiplexing): PAPI_BR_UCN,PAPI_BR_CN,...
+
+Set ``DFTRACER_PAPI_EVENTS`` to a comma-separated list to pin the counters
+explicitly for a run, and ``DFTRACER_PAPI_MULTIPLEX=1`` to force multiplexing even
+when everything would fit. Counters the run host will not program -- a CPU
+different from the build host -- are skipped with a warning rather than failing
+the run.
+
+Because the list is fixed at build time, building on a login node and running on a
+compute node with a different CPU can leave counters on the table. Build on the
+target architecture, or pin ``DFTRACER_PAPI_EVENTS``, when that matters.
+
+Sampling runs on a dedicated libuv timer thread inside the traced process, so the
+tracing hot path does no PAPI work. The counters are attached to the process with
+``PAPI_INHERIT_ALL``, which covers every thread the application starts *after*
+DFTracer initializes; initialize DFTracer before spawning worker threads.
+
+Each sample is written as one record per counter, with the counter name in ``name``,
+its family (``CYCLE``, ``CACHE``, ``BRANCH``, ...) in ``cat``, ``type`` 11 for the
+PAPI layer, and the reading in ``args``:
+
+.. code-block:: JSON
+
+    {"name":"PAPI_TOT_CYC","cat":"CYCLE","type":11,"ts":1786573445491884,"ph":2,
+     "pid":2527286,"tid":2527286,"args":{"value":369676941,"delta":369676941}}
+
+To compile DFTracer with PAPI support, enable ``DFTRACER_ENABLE_PAPI_TRACING`` and make
+sure the PAPI development package is available to CMake. For example:
+
+.. code-block:: Bash
+
+    export DFTRACER_ENABLE_PAPI_TRACING=ON
+    cmake . -B build -DDFTRACER_ENABLE_PAPI_TRACING=ON
+    cmake --build build
+
+At runtime, PAPI tracing can be turned off without rebuilding by setting:
+
+.. code-block:: Bash
+
+    export DFTRACER_ENABLE_PAPI_TRACING=0
 
 Build DFTracer Dependencies
 ********************************

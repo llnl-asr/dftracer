@@ -7,6 +7,7 @@
 #include <cpp-logger/logger.h>
 #include <dftracer/core/common/enumeration.h>
 
+#include <string>
 #include <vector>
 namespace dftracer {
 class Metadata;
@@ -36,6 +37,10 @@ class ConfigurationManager {
   size_t write_buffer_size;
   size_t trace_interval_ms;
   size_t libuv_thread_count;
+  bool papi_tracing;
+  bool papi_multiplex;
+  size_t papi_sample_interval_ms;
+  std::vector<std::string> papi_events;
   bool aggregation_enable;
   AggregationType aggregation_type;
   std::vector<std::string> aggregation_inclusion_rules;

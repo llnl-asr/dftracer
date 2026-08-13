@@ -66,6 +66,7 @@
 
 #define DFTRACER_FOR_EACH_NUMERIC_TYPE(MACRO, VALUE, BLOCK) \
   MACRO(unsigned long long, VALUE, BLOCK)                   \
+  MACRO(long long, VALUE, BLOCK)                            \
   MACRO(unsigned int, VALUE, BLOCK)                         \
   MACRO(unsigned long int, VALUE, BLOCK)                    \
   MACRO(unsigned long, VALUE, BLOCK)                        \

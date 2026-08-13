@@ -308,16 +308,6 @@ FILE* brahma::STDIODFTracer::freopen64(const char* path, const char* mode,
 // stdio.h -- the real-function step goes through dftracer::STDIOBypass
 // instead of BRAHMA_MAP_OR_FAIL/__real_*.
 
-int brahma::STDIODFTracer::fprintf(FILE* stream, const char* format,
-                                   va_list args) {
-  DFT_LOGGER_START(stream);
-  int ret =
-      dftracer::STDIOBypass::get_instance().vfprintf(stream, format, args);
-  DFT_LOGGER_UPDATE_TYPE(ret, MetadataType::MT_VALUE);
-  DFT_LOGGER_END();
-  return ret;
-}
-
 int brahma::STDIODFTracer::vfprintf(FILE* stream, const char* format,
                                     va_list args) {
   DFT_LOGGER_START(stream);

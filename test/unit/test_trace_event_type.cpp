@@ -25,9 +25,11 @@ void test_wire_values_are_pinned() {
   DFT_CHECK(TRACE_TYPE_FINSTRUMENT == 8);
   DFT_CHECK(TRACE_TYPE_CPP_APP == 9);
   DFT_CHECK(TRACE_TYPE_MPI == 10);
+  DFT_CHECK(TRACE_TYPE_PAPI == 11);
+  DFT_CHECK(TRACE_TYPE_OMNISTAT == 12);
 
   // MAX is a sentinel one past the last real type; it is never serialized.
-  DFT_CHECK(TRACE_TYPE_MAX == 11);
+  DFT_CHECK(TRACE_TYPE_MAX == 13);
 
   std::cout << "✓ Wire values pinned\n" << std::endl;
 }
@@ -46,6 +48,8 @@ void test_to_string_is_total_and_unique() {
   DFT_CHECK(std::string(to_string(TRACE_TYPE_FINSTRUMENT)) == "FINSTRUMENT");
   DFT_CHECK(std::string(to_string(TRACE_TYPE_CPP_APP)) == "CPP_APP");
   DFT_CHECK(std::string(to_string(TRACE_TYPE_MPI)) == "MPI");
+  DFT_CHECK(std::string(to_string(TRACE_TYPE_PAPI)) == "PAPI");
+  DFT_CHECK(std::string(to_string(TRACE_TYPE_OMNISTAT)) == "OMNISTAT");
 
   // Every real type must map to a distinct name, so a name can be used to
   // identify a type without ambiguity.

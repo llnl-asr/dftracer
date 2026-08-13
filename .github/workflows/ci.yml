@@ -106,6 +106,7 @@ jobs:
             libhdf5-mpich-dev \
             libhwloc-dev \
             libmpich-dev \
+            libpapi-dev \
             libyaml-cpp-dev \
             llvm-dev \
             llvm-15-dev \
@@ -241,7 +242,7 @@ jobs:
           source ${VENV_PATH:-venv}/bin/activate
           export CFLAGS="${CFLAGS:-} -g3 -fno-omit-frame-pointer"
           export CXXFLAGS="${CXXFLAGS:-} -g3 -fno-omit-frame-pointer"
-          DFTRACER_CMAKE_ARGS="-DHDF5_PREFER_PARALLEL=ON;-DCMAKE_C_COMPILER_LAUNCHER=ccache;-DCMAKE_CXX_COMPILER_LAUNCHER=ccache;-DDFTRACER_TEST_LOG_LEVEL=INFO"
+          DFTRACER_CMAKE_ARGS="-DHDF5_PREFER_PARALLEL=ON;-DCMAKE_C_COMPILER_LAUNCHER=ccache;-DCMAKE_CXX_COMPILER_LAUNCHER=ccache;-DDFTRACER_TEST_LOG_LEVEL=INFO;-DDFTRACER_ENABLE_PAPI_TRACING=ON"
           if [ -n "${DFTRACER_CLANG_DIR:-}" ]; then
             DFTRACER_CMAKE_ARGS="${DFTRACER_CMAKE_ARGS};-DClang_DIR=${DFTRACER_CLANG_DIR}"
           fi
@@ -252,6 +253,30 @@ jobs:
           export DFTRACER_PIP_NO_BUILD_ISOLATION=1
           ./autobuild.sh --enable-tests --enable-coverage --enable-mpi --enable-hdf5
           pip install -r test/py/requirements.txt
+
+      - name: Run PAPI standalone e2e trace validation
+        run: |
+          source ${VENV_PATH:-venv}/bin/activate
+          DFTRACER_DIR=$(realpath $(find build -type d -name "dftracer.dftracer" | head -n 1))
+          if [ -z "${DFTRACER_DIR:-}" ] || [ ! -d "$DFTRACER_DIR" ]; then
+            echo "No DFTRACER build directory found; cannot run PAPI e2e validation."
+            exit 1
+          fi
+
+          pushd examples/papi_standalone
+          make clean
+          make run-single \
+            DFTRACER_INCLUDEDIR="$PWD/../../include" \
+            CPP_LOGGER_INCLUDEDIR="$PWD/../../include" \
+            DFTRACER_LIBDIR="$DFTRACER_DIR/../lib64" \
+            PAPI_EVENTS='PAPI_TOT_CYC,PAPI_TOT_INS'
+          python3 ../../scripts/check_papi_trace.py \
+            traces/*.pfw.gz \
+            --min-events 10 \
+            --require-papi-event PAPI_TOT_CYC \
+            --require-papi-event PAPI_TOT_INS \
+            --min-papi-lines 2
+          popd
 
       - name: Show ccache stats
         if: always()

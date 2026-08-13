@@ -1,4 +1,5 @@
 import os
+import shlex
 import pathlib
 import shutil
 import site
@@ -44,6 +45,26 @@ class CMakeExtension(Extension):
     def __init__(self, name: str, sourcedir: str = "") -> None:
         super().__init__(name, sources=[])
         self.sourcedir = os.fspath(Path(sourcedir).resolve())
+
+
+def split_cmake_args(value):
+    """Split DFTRACER_CMAKE_ARGS into individual cmake arguments.
+
+    The variable is written both ways in this repo, so both are accepted:
+    the CI workflows and autobuild.sh separate flags with semicolons, while
+    scripts/wheel/build_wheels.sh builds DEPS_CMAKE_ARGS with spaces.
+
+    Splitting on only one of them silently swallows every flag after the
+    first, because cmake takes the whole string as one -D value. That is how
+    -DDFTRACER_ENABLE_PAPI_TRACING=ON failed to reach cmake in the CI job, and
+    how -DCMAKE_PREFIX_PATH swallowed the -D<pkg>_DIR flags in the wheel job.
+
+    shlex keeps a quoted value with spaces in it intact, e.g.
+    -DCMAKE_CXX_FLAGS="-g -O2". A semicolon inside a cmake list value is not
+    supported, which matches how autobuild.sh has always treated this
+    variable.
+    """
+    return [item for item in shlex.split(value.replace(";", " ")) if item]
 
 
 class CMakeBuild(build_ext):
@@ -117,6 +138,8 @@ class CMakeBuild(build_ext):
         cmake_args += [f"-DDFTRACER_ENABLE_MPI={enable_mpi}"]
         enable_hdf5 = os.environ.get("DFTRACER_ENABLE_HDF5", "OFF")
         cmake_args += [f"-DDFTRACER_ENABLE_HDF5={enable_hdf5}"]
+        enable_papi = os.environ.get("DFTRACER_ENABLE_PAPI_TRACING", "OFF")
+        cmake_args += [f"-DDFTRACER_ENABLE_PAPI_TRACING={enable_papi}"]
         generate_interfaces = os.environ.get("DFTRACER_GENERATE_INTERFACES", "OFF")
         cmake_args += [f"-DDFTRACER_GENERATE_INTERFACES={generate_interfaces}"]
         disable_hwloc = os.environ.get("DFTRACER_DISABLE_HWLOC", "ON")
@@ -167,9 +190,7 @@ class CMakeBuild(build_ext):
         # In this example, we pass in the version to C++. You might not need to.
         cmake_args += [f"-DEXAMPLE_VERSION_INFO={self.distribution.get_version()}"]
         if "DFTRACER_CMAKE_ARGS" in os.environ:
-            cmake_args += [
-                item for item in os.environ["DFTRACER_CMAKE_ARGS"].split() if item
-            ]
+            cmake_args += split_cmake_args(os.environ["DFTRACER_CMAKE_ARGS"])
 
         # Use CMake's generator-agnostic parallel flag and default to all cores.
         parallel_jobs = (
@@ -224,9 +245,7 @@ class CMakeBuild(build_ext):
         ]
 
         if "DFTRACER_CMAKE_ARGS" in os.environ:
-            cmake_args += [
-                item for item in os.environ["DFTRACER_CMAKE_ARGS"].split() if item
-            ]
+            cmake_args += split_cmake_args(os.environ["DFTRACER_CMAKE_ARGS"])
 
         subprocess.run(
             ["cmake", ext.sourcedir, *cmake_args], cwd=build_temp, check=True
