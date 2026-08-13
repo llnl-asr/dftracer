@@ -4,18 +4,30 @@
  *
  * No counter is singled out. The probe walks the whole preset table and keeps
  * each one the CPU implements and PAPI will program, which is the only way to
- * be complete: which presets exist varies enormously between CPUs. On an AMD
- * MI300A node, for instance, 17 of the 108 presets are available and not one of
- * them is a cache counter, so any hand-picked list would mostly miss.
+ * be complete: which presets exist varies enormously between CPUs -- and even
+ * between PAPI versions on the SAME CPU. On an AMD MI300A node, PAPI 7.2.0.2
+ * programs 30 presets (including L1/L2 cache, TLB, branch and FP/FMA/vector
+ * counters) while PAPI 7.0.1.2 manages only 19, so any hand-picked list would
+ * mostly miss.
  *
  * "Available" (PAPI_event_info_t.count > 0) is necessary but not sufficient --
  * a preset can be listed and still refuse to be programmed -- so every
  * candidate is also added to a real event set on its own.
  *
- * Prints three lines to stdout:
- *   1. every countable counter, comma separated
- *   2. the number of hardware counter slots
- *   3. how many of those counters fit in one event set without multiplexing
+ * Prints three TAGGED lines to stdout:
+ *   DFTRACER_PAPI_EVENTS=<every countable counter, comma separated>
+ *   DFTRACER_PAPI_HWCTRS=<number of hardware counter slots>
+ *   DFTRACER_PAPI_FITTING=<how many fit in one event set without multiplexing>
+ *
+ * The tags matter. CMake's try_run() captures stdout and stderr MERGED into one
+ * variable, and libraries pulled in transitively can write to stderr during
+ * PAPI_library_init -- on a ROCm system, rocprofiler-register emits glog
+ * warnings ("Device N could not be locked for profiling ... SYS_PERFMON") when
+ * the process lacks perf capability, which is normal on a login node. Parsing
+ * this stream by LINE POSITION silently baked those warnings into
+ * dftracer_config.hpp as the counter list. Tagging lets CMake pick out exactly
+ * the three values it needs and ignore anything else on the stream.
+ *
  * Exits non-zero if PAPI is unusable here, in which case CMake falls back to a
  * portable default.
  */
@@ -63,6 +75,7 @@ int main(void) {
     return 1;
   }
 
+  printf("DFTRACER_PAPI_EVENTS=");
   for (i = 0; i < num_countable; ++i) {
     if (i > 0) printf(",");
     printf("%s", countable[i]);
@@ -70,7 +83,7 @@ int main(void) {
   /* PAPI_num_hwctrs, not PAPI_num_counters: the latter is high-level API
    * that some PAPI builds do not declare, and a probe that fails to compile
    * would silently fall back to the portable default counter list. */
-  printf("\n%d\n", PAPI_num_hwctrs());
+  printf("\nDFTRACER_PAPI_HWCTRS=%d\n", PAPI_num_hwctrs());
 
   /* How many fit at once. Counting more than this needs multiplexing, which
    * DFTracer enables for itself; reported so the build log shows the gap. */
@@ -85,7 +98,7 @@ int main(void) {
       PAPI_cleanup_eventset(set);
       PAPI_destroy_eventset(&set);
     }
-    printf("%d\n", fitting);
+    printf("DFTRACER_PAPI_FITTING=%d\n", fitting);
   }
   return 0;
 }

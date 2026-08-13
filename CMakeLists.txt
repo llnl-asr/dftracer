@@ -708,36 +708,71 @@ else()
                         message(STATUS
                                 "-- [DFTRACER] cross compiling; using portable default PAPI counters")
                 else()
-                        try_run(DFTRACER_PAPI_PROBE_RUN DFTRACER_PAPI_PROBE_BUILD
-                                ${CMAKE_BINARY_DIR}/papi_probe
-                                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/probes/papi_probe.c
-                                LINK_LIBRARIES ${PAPI_LIBRARIES}
-                                CMAKE_FLAGS
-                                        "-DINCLUDE_DIRECTORIES=${PAPI_INCLUDE_DIRS}"
-                                RUN_OUTPUT_VARIABLE DFTRACER_PAPI_PROBE_OUTPUT)
+                        # Separate stdout from stderr where CMake can (>= 3.25).
+                        # try_run()'s RUN_OUTPUT_VARIABLE merges the two, and on a
+                        # ROCm system libraries loaded transitively during
+                        # PAPI_library_init write glog warnings to stderr (e.g.
+                        # rocprofiler-register's "Device N could not be locked for
+                        # profiling ... SYS_PERFMON" on a node without perf
+                        # capability). Keeping stderr out of the parsed stream is
+                        # the first line of defence; the tag matching below is the
+                        # second, so this stays correct on older CMake too.
+                        if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.25)
+                                try_run(DFTRACER_PAPI_PROBE_RUN DFTRACER_PAPI_PROBE_BUILD
+                                        ${CMAKE_BINARY_DIR}/papi_probe
+                                        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/probes/papi_probe.c
+                                        LINK_LIBRARIES ${PAPI_LIBRARIES}
+                                        CMAKE_FLAGS
+                                                "-DINCLUDE_DIRECTORIES=${PAPI_INCLUDE_DIRS}"
+                                        RUN_OUTPUT_STDOUT_VARIABLE DFTRACER_PAPI_PROBE_OUTPUT
+                                        RUN_OUTPUT_STDERR_VARIABLE DFTRACER_PAPI_PROBE_STDERR)
+                        else()
+                                try_run(DFTRACER_PAPI_PROBE_RUN DFTRACER_PAPI_PROBE_BUILD
+                                        ${CMAKE_BINARY_DIR}/papi_probe
+                                        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/probes/papi_probe.c
+                                        LINK_LIBRARIES ${PAPI_LIBRARIES}
+                                        CMAKE_FLAGS
+                                                "-DINCLUDE_DIRECTORIES=${PAPI_INCLUDE_DIRS}"
+                                        RUN_OUTPUT_VARIABLE DFTRACER_PAPI_PROBE_OUTPUT)
+                        endif()
                         if(DFTRACER_PAPI_PROBE_BUILD AND
                            DFTRACER_PAPI_PROBE_RUN EQUAL 0)
-                                string(REGEX REPLACE "\r?\n" ";"
-                                        _papi_probe_lines "${DFTRACER_PAPI_PROBE_OUTPUT}")
-                                list(GET _papi_probe_lines 0 DFTRACER_PAPI_DETECTED_EVENTS)
-                                list(LENGTH _papi_probe_lines _papi_probe_line_count)
-                                if(_papi_probe_line_count GREATER 1)
-                                        list(GET _papi_probe_lines 1 DFTRACER_PAPI_HW_COUNTERS)
-                                endif()
-                                if(_papi_probe_line_count GREATER 2)
-                                        list(GET _papi_probe_lines 2 DFTRACER_PAPI_FITTING_COUNTERS)
-                                endif()
+                                # Match the probe's TAGGED lines rather than trusting
+                                # line position. Anything else on the stream (stderr
+                                # noise from transitively-loaded runtimes) is ignored
+                                # instead of being baked into dftracer_config.hpp.
+                                string(REGEX MATCH "DFTRACER_PAPI_EVENTS=([^\r\n]*)"
+                                        _papi_events_match "${DFTRACER_PAPI_PROBE_OUTPUT}")
+                                set(DFTRACER_PAPI_DETECTED_EVENTS "${CMAKE_MATCH_1}")
+                                string(REGEX MATCH "DFTRACER_PAPI_HWCTRS=([0-9]+)"
+                                        _papi_hwctrs_match "${DFTRACER_PAPI_PROBE_OUTPUT}")
+                                set(DFTRACER_PAPI_HW_COUNTERS "${CMAKE_MATCH_1}")
+                                string(REGEX MATCH "DFTRACER_PAPI_FITTING=([0-9]+)"
+                                        _papi_fitting_match "${DFTRACER_PAPI_PROBE_OUTPUT}")
+                                set(DFTRACER_PAPI_FITTING_COUNTERS "${CMAKE_MATCH_1}")
                                 string(STRIP "${DFTRACER_PAPI_DETECTED_EVENTS}"
                                         DFTRACER_PAPI_DETECTED_EVENTS)
-                                string(STRIP "${DFTRACER_PAPI_HW_COUNTERS}"
-                                        DFTRACER_PAPI_HW_COUNTERS)
-                                string(STRIP "${DFTRACER_PAPI_FITTING_COUNTERS}"
-                                        DFTRACER_PAPI_FITTING_COUNTERS)
-                                string(REPLACE "," ";" _papi_detected_list
-                                        "${DFTRACER_PAPI_DETECTED_EVENTS}")
-                                list(LENGTH _papi_detected_list _papi_detected_count)
-                                message(STATUS
-                                        "[DFTRACER] detected ${_papi_detected_count} PAPI counters (${DFTRACER_PAPI_FITTING_COUNTERS} fit in ${DFTRACER_PAPI_HW_COUNTERS} hardware slots, the rest need multiplexing): ${DFTRACER_PAPI_DETECTED_EVENTS}")
+                                # Only PAPI preset names are acceptable. If the tag
+                                # was missing or the value does not look like a
+                                # counter list, discard it so the portable fallback
+                                # below applies -- never emit a malformed list.
+                                if(NOT DFTRACER_PAPI_DETECTED_EVENTS MATCHES
+                                   "^PAPI_[A-Za-z0-9_]+(,PAPI_[A-Za-z0-9_]+)*$")
+                                        message(WARNING
+                                                "[DFTRACER] PAPI probe output did not contain a usable "
+                                                "DFTRACER_PAPI_EVENTS line; falling back to portable "
+                                                "default counters. Raw output: ${DFTRACER_PAPI_PROBE_OUTPUT}")
+                                        set(DFTRACER_PAPI_DETECTED_EVENTS "")
+                                        set(DFTRACER_PAPI_HW_COUNTERS "")
+                                        set(DFTRACER_PAPI_FITTING_COUNTERS "")
+                                endif()
+                                if(DFTRACER_PAPI_DETECTED_EVENTS)
+                                        string(REPLACE "," ";" _papi_detected_list
+                                                "${DFTRACER_PAPI_DETECTED_EVENTS}")
+                                        list(LENGTH _papi_detected_list _papi_detected_count)
+                                        message(STATUS
+                                                "[DFTRACER] detected ${_papi_detected_count} PAPI counters (${DFTRACER_PAPI_FITTING_COUNTERS} fit in ${DFTRACER_PAPI_HW_COUNTERS} hardware slots, the rest need multiplexing): ${DFTRACER_PAPI_DETECTED_EVENTS}")
+                                endif()
                         else()
                                 message(STATUS
                                         "-- [DFTRACER] PAPI counter probe did not run; using portable default counters")
