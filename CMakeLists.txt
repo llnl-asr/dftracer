@@ -818,10 +818,17 @@ else()
                 set(_dftracer_variorum_found ${Variorum_FOUND})
         endif()
 
+        # Only the service's power collector calls variorum, so it is kept out of
+        # DEPENDENCY_LIB and linked to that one library instead. Putting it in
+        # DEPENDENCY_LIB links it into every target, including dftracer_core,
+        # which is both unnecessary and a build ordering error: core has no
+        # dependency on the variorum sub-build and would link against
+        # -lvariorum before the sub-build has produced it.
+        set(DFTRACER_VARIORUM_LINK_LIBS "")
         if(_dftracer_variorum_found AND(DFTRACER_ENABLE_VARIORUM OR DFTRACER_ENABLE_DYNAMIC_DETECTION))
                 set(DFTRACER_VARIORUM_ENABLE 1)
                 include_directories(${VARIORUM_INCLUDE_DIRS})
-                set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${VARIORUM_LIBRARIES})
+                set(DFTRACER_VARIORUM_LINK_LIBS ${VARIORUM_LIBRARIES})
                 if(DEFINED VARIORUM_LIBRARY_DIRS)
                         list(APPEND DEPENDENCY_LIBRARY_DIRS ${VARIORUM_LIBRARY_DIRS})
                 endif()
@@ -842,7 +849,7 @@ else()
                 if(DFTRACER_VARIORUM_PROVISIONED)
                         set(DFTRACER_VARIORUM_ENABLE 1)
                         include_directories(BEFORE ${DFTRACER_VARIORUM_INCLUDE_DIRS})
-                        set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${DFTRACER_VARIORUM_LIBRARIES})
+                        set(DFTRACER_VARIORUM_LINK_LIBS ${DFTRACER_VARIORUM_LIBRARIES})
                         list(APPEND DEPENDENCY_LIBRARY_DIRS ${DFTRACER_VARIORUM_LIBRARY_DIRS})
                         link_directories(${DFTRACER_VARIORUM_LIBRARY_DIRS})
                 endif()
@@ -1069,7 +1076,8 @@ else()
                 PUBLIC
                 ${CMAKE_CURRENT_SOURCE_DIR}/src
                 ${CMAKE_CURRENT_SOURCE_DIR}/include)
-        target_link_libraries(${PROJECT_NAME}_service_telemetry ${DEPENDENCY_LIB} ${PROJECT_NAME}_core)
+        target_link_libraries(${PROJECT_NAME}_service_telemetry ${DEPENDENCY_LIB} ${PROJECT_NAME}_core
+                ${DFTRACER_VARIORUM_LINK_LIBS})
 
         set(DFTRACER_SERVICE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/service/service.cpp)
 
