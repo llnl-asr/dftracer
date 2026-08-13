@@ -1,4 +1,5 @@
 import os
+import shlex
 import pathlib
 import shutil
 import site
@@ -49,14 +50,21 @@ class CMakeExtension(Extension):
 def split_cmake_args(value):
     """Split DFTRACER_CMAKE_ARGS into individual cmake arguments.
 
-    The variable is documented (and used by autobuild.sh and CI) as
-    semicolon-separated, because cmake arguments routinely contain paths and
-    list values with spaces. Splitting on whitespace instead handed cmake the
-    whole string as a single -D argument, so everything after the first flag
-    was silently swallowed as part of that flag's value -- which is how
-    -DDFTRACER_ENABLE_PAPI_TRACING=ON ended up never reaching cmake.
+    The variable is written both ways in this repo, so both are accepted:
+    the CI workflows and autobuild.sh separate flags with semicolons, while
+    scripts/wheel/build_wheels.sh builds DEPS_CMAKE_ARGS with spaces.
+
+    Splitting on only one of them silently swallows every flag after the
+    first, because cmake takes the whole string as one -D value. That is how
+    -DDFTRACER_ENABLE_PAPI_TRACING=ON failed to reach cmake in the CI job, and
+    how -DCMAKE_PREFIX_PATH swallowed the -D<pkg>_DIR flags in the wheel job.
+
+    shlex keeps a quoted value with spaces in it intact, e.g.
+    -DCMAKE_CXX_FLAGS="-g -O2". A semicolon inside a cmake list value is not
+    supported, which matches how autobuild.sh has always treated this
+    variable.
     """
-    return [item.strip() for item in value.split(";") if item.strip()]
+    return [item for item in shlex.split(value.replace(";", " ")) if item]
 
 
 class CMakeBuild(build_ext):
