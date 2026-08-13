@@ -67,7 +67,10 @@ int main(void) {
     if (i > 0) printf(",");
     printf("%s", countable[i]);
   }
-  printf("\n%d\n", PAPI_num_counters());
+  /* PAPI_num_hwctrs, not PAPI_num_counters: the latter is high-level API
+   * that some PAPI builds do not declare, and a probe that fails to compile
+   * would silently fall back to the portable default counter list. */
+  printf("\n%d\n", PAPI_num_hwctrs());
 
   /* How many fit at once. Counting more than this needs multiplexing, which
    * DFTracer enables for itself; reported so the build log shows the gap. */

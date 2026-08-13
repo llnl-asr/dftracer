@@ -24,7 +24,10 @@ bool verify_papi_runtime() {
     return false;
   }
 
-  int counters = PAPI_num_counters();
+  // PAPI_num_hwctrs, not PAPI_num_counters: the latter belongs to PAPI's
+  // high-level API, which some builds (including the CI container's) do not
+  // declare.
+  int counters = PAPI_num_hwctrs();
   if (counters <= 0) {
     std::fprintf(stderr,
                  "PAPI runtime is available but exposes %d hardware counters "
