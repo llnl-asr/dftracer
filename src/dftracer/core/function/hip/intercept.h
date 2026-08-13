@@ -80,21 +80,29 @@ class HIPFunction : public dftracer::GenericFunction {
   void initialize() override {
     DFTRACER_LOG_DEBUG("Initializing HIPFunction instance");
 
-    // Register as a rocprofiler tool. This MUST happen before the HSA runtime
-    // is initialised; afterwards rocprofiler refuses with
-    // ROCPROFILER_STATUS_ERROR_CONFIGURATION_LOCKED and no tracing is ever set
-    // up. The status was previously discarded, which turned "we registered too
-    // late" into a silent zero-GPU-events run.
+    // Late-registration fallback. The PRIMARY path is the global
+    // `rocprofiler_configure` symbol exported from intercept.cpp, which
+    // rocprofiler finds and calls itself at the right moment. This
+    // force_configure only matters for the case where rocprofiler had not yet
+    // scanned for clients.
+    //
+    // CONFIGURATION_LOCKED here is normal, not a failure: on Cray PE + ROCm the
+    // load-time constructors of librocprofiler-register / libamdhip64 / the
+    // MPICH GTL bring rocprofiler up before main() runs, so configuration is
+    // always already locked by the time any application code executes. It is
+    // only a real problem if we ALSO never got registered via
+    // rocprofiler_configure, which shows up as tool_init never running.
     rocprofiler_status_t cfg_status =
         rocprofiler_force_configure(&conf::roc_conf);
-    if (cfg_status != ROCPROFILER_STATUS_SUCCESS) {
+    if (cfg_status != ROCPROFILER_STATUS_SUCCESS &&
+        cfg_status != ROCPROFILER_STATUS_ERROR_CONFIGURATION_LOCKED) {
       DFTRACER_LOG_ERROR(
-          "HIP Intercept rocprofiler_force_configure failed: status %d (%s). "
-          "GPU tracing will collect nothing. This usually means dftracer "
-          "initialised after the HSA/HIP runtime was already up -- move "
-          "DFTRACER_*_INIT before the first GPU touch.\n",
+          "HIP Intercept rocprofiler_force_configure failed: status %d (%s)\n",
           cfg_status, rocprofiler_get_status_name(cfg_status));
-      return;
+    } else if (cfg_status == ROCPROFILER_STATUS_ERROR_CONFIGURATION_LOCKED) {
+      DFTRACER_LOG_DEBUG(
+          "HIP Intercept: rocprofiler configuration already locked (expected); "
+          "relying on the exported rocprofiler_configure registration");
     }
 
     // Do NOT unconditionally start the context here. rocprofiler calls
