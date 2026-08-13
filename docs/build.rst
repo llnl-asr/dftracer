@@ -151,8 +151,9 @@ passed to CMake. See `Build Variables`_ for the full list:
    DFTRACER_ENABLE_HDF5               HDF5 interception (default OFF).
    DFTRACER_ENABLE_HIP_TRACING        AMD GPU tracing; needs ROCm/rocprofiler-sdk (default OFF).
    DFTRACER_ENABLE_PAPI_TRACING       PAPI hardware counter sampling; needs libpapi-dev (default OFF).
+   DFTRACER_ENABLE_VARIORUM           Node-level power counters via variorum; fetched and built if not installed (default OFF).
    DFTRACER_ENABLE_FTRACING           Function tracing via ``-finstrument-functions`` (default OFF).
-   DFTRACER_ENABLE_DYNAMIC_DETECTION  Detect HWLOC, MPI, HIP and PAPI at run time rather than link time (default OFF).
+   DFTRACER_ENABLE_DYNAMIC_DETECTION  Detect HWLOC, MPI, HIP, PAPI and Variorum at run time rather than link time (default OFF).
    DFTRACER_DISABLE_HWLOC             HWLOC support; ``ON`` (disabled) by default.
    DFTRACER_MPI_IMPL                  Override MPI implementation detection (default: auto-detect).
    ================================== ===========================================================================
@@ -265,11 +266,13 @@ Build Variables
    DFTRACER_ENABLE_FTRACING         BOOL    Enables function tracing (default OFF).
    DFTRACER_ENABLE_HIP_TRACING      BOOL    Enables AMD GPU tracing (default OFF).
    DFTRACER_ENABLE_PAPI_TRACING     BOOL    Enables PAPI counter tracing support (default OFF).
+   DFTRACER_ENABLE_VARIORUM         BOOL    Enables Variorum node power tracing (default OFF).
+   DFTRACER_BUILD_VARIORUM          STRING  When to build variorum from source: AUTO (only if none installed), ALWAYS, NEVER (default AUTO).
    DFTRACER_ENABLE_MPI              BOOL    Enables MPI Rank (default OFF).
    DFTRACER_MPI_IMPL                STRING  Selects the MPI implementation to build against (default: empty/auto-detect).
    DFTRACER_DISABLE_HWLOC           BOOL    Disables HWLOC (default ON).
    DFTRACER_ENABLE_HDF5             BOOL    Enables HDF5 tracing support (default OFF).
-   DFTRACER_ENABLE_DYNAMIC_DETECTION BOOL   Enables Dynamic library detection for HWLOC, MPI, HIP, and PAPI (default OFF).
+   DFTRACER_ENABLE_DYNAMIC_DETECTION BOOL   Enables Dynamic library detection for HWLOC, MPI, HIP, PAPI, and Variorum (default OFF).
    DFTRACER_GENERATE_INTERFACES     BOOL    Generate Brahma and DFTracer interfaces from discovered headers (default OFF).
    DFTRACER_ENABLE_NATIVE_SCRIPT    BOOL    Build with native scripting support (default OFF).
    DFTRACER_PYTHON_EXE              STRING  Sets path to python executable. Only Cmake.

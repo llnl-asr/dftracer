@@ -202,6 +202,16 @@ option (DFTRACER_ENABLE_PAPI_TRACING "Enable PAPI counter tracing" OFF)
 if (DFTRACER_ENABLE_PAPI_TRACING)
         set(DFTRACER_PAPI_TRACING_ENABLE 1)
 endif()
+option (DFTRACER_ENABLE_VARIORUM "Enable Variorum node power tracing" OFF)
+# AUTO   use an installed variorum, build one only if there is none
+# ALWAYS build from source even when one is installed. A distribution variorum
+#        is often built for none of the machine's power domains and answers
+#        _ERROR_VARIORUM_UNSUPPORTED_PLATFORM at run time, which no build-time
+#        check can see; this is the way out of that.
+# NEVER  never build one, warn if none is installed
+set(DFTRACER_BUILD_VARIORUM "AUTO" CACHE STRING
+        "When to fetch and build variorum: AUTO, ALWAYS or NEVER")
+set_property(CACHE DFTRACER_BUILD_VARIORUM PROPERTY STRINGS AUTO ALWAYS NEVER)
 option (DFTRACER_ENABLE_MPI "Enable MPI" OFF)
 if (DFTRACER_ENABLE_MPI)
     set(DFTRACER_MPI_ENABLE 1)
@@ -797,6 +807,53 @@ else()
                 set(DFTRACER_PAPI_FITTING_COUNTERS 0)
         endif()
 
+        # Variorum: node-level power, read by the service. Optional in the same
+        # sense as PAPI and rocprofiler -- an installation already on the system
+        # is picked up automatically under dynamic detection, and asking for it
+        # explicitly on a machine that has none fetches and builds it.
+        if(DFTRACER_BUILD_VARIORUM STREQUAL "ALWAYS" AND DFTRACER_ENABLE_VARIORUM)
+                set(_dftracer_variorum_found FALSE)
+        else()
+                find_package(Variorum QUIET)
+                set(_dftracer_variorum_found ${Variorum_FOUND})
+        endif()
+
+        if(_dftracer_variorum_found AND(DFTRACER_ENABLE_VARIORUM OR DFTRACER_ENABLE_DYNAMIC_DETECTION))
+                set(DFTRACER_VARIORUM_ENABLE 1)
+                include_directories(${VARIORUM_INCLUDE_DIRS})
+                set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${VARIORUM_LIBRARIES})
+                if(DEFINED VARIORUM_LIBRARY_DIRS)
+                        list(APPEND DEPENDENCY_LIBRARY_DIRS ${VARIORUM_LIBRARY_DIRS})
+                endif()
+                message(STATUS "[DFTRACER] found Variorum at ${VARIORUM_INCLUDE_DIRS}")
+                # A variorum from a distribution package is usually built for none
+                # of the machine's power domains, and only says so at run time. The
+                # collector handles that by going quiet, so say here how to get a
+                # variorum that can actually read this node.
+                message(STATUS
+                        "[DFTRACER] if this variorum reports UNSUPPORTED_PLATFORM at run time, "
+                        "rebuild with -DDFTRACER_BUILD_VARIORUM=ALWAYS to build one for this machine")
+        elseif(DFTRACER_ENABLE_VARIORUM AND NOT DFTRACER_BUILD_VARIORUM STREQUAL "NEVER")
+                # Only when power tracing was asked for by name. Dynamic detection
+                # reports what a machine already has; it does not go and fetch a
+                # dependency the user never mentioned.
+                include(DFTracerVariorum)
+                dftracer_provision_variorum(${CMAKE_INSTALL_PREFIX})
+                if(DFTRACER_VARIORUM_PROVISIONED)
+                        set(DFTRACER_VARIORUM_ENABLE 1)
+                        include_directories(BEFORE ${DFTRACER_VARIORUM_INCLUDE_DIRS})
+                        set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${DFTRACER_VARIORUM_LIBRARIES})
+                        list(APPEND DEPENDENCY_LIBRARY_DIRS ${DFTRACER_VARIORUM_LIBRARY_DIRS})
+                        link_directories(${DFTRACER_VARIORUM_LIBRARY_DIRS})
+                endif()
+        elseif(DFTRACER_ENABLE_VARIORUM)
+                message(WARNING
+                        "[DFTRACER] DFTRACER_ENABLE_VARIORUM=ON but no variorum was found and "
+                        "DFTRACER_BUILD_VARIORUM=NEVER. Building without power tracing.")
+        else()
+                message(STATUS "-- [DFTRACER] Variorum is not found.")
+        endif()
+
         find_package(ZLIB REQUIRED)
 
         if(ZLIB_FOUND)
@@ -997,9 +1054,15 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/service/telemetry/io_collector.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/service/telemetry/network_collector.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/service/telemetry/omnistat_collector.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/service/telemetry/variorum_collector.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/service/telemetry/telemetry_factory.cpp)
 
         add_library(${PROJECT_NAME}_service_telemetry STATIC ${DFTRACER_SERVICE_TELEMETRY_SRC})
+        # The collector's variorum.h comes from the sub-build's install step, so
+        # it has to have run before this library is compiled.
+        if(TARGET variorum_external)
+                add_dependencies(${PROJECT_NAME}_service_telemetry variorum_external)
+        endif()
         target_include_directories(${PROJECT_NAME}_service_telemetry
                 PUBLIC
                 ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -1567,6 +1630,7 @@ else()
                 DFTRACER_USE_CLANG_LIBCXX
                 DFTRACER_WARNINGS_AS_ERRORS
                 DFTRACER_PAPI_TRACING_ENABLE
+                DFTRACER_VARIORUM_ENABLE
         )
         string(APPEND _str
                 "\n== End DFTRACER Configuration Summary ==\n")

@@ -45,6 +45,7 @@ DFTracer: is a library for profiling I/O calls and application functions.
 
    utilities
    dftracer_service
+   variorum
    bash_utilities
    perfetto
 

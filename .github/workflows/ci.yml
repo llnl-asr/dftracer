@@ -105,6 +105,7 @@ jobs:
             libclang-common-15-dev \
             libhdf5-mpich-dev \
             libhwloc-dev \
+            libjansson-dev \
             libmpich-dev \
             libpapi-dev \
             libyaml-cpp-dev \
@@ -242,7 +243,7 @@ jobs:
           source ${VENV_PATH:-venv}/bin/activate
           export CFLAGS="${CFLAGS:-} -g3 -fno-omit-frame-pointer"
           export CXXFLAGS="${CXXFLAGS:-} -g3 -fno-omit-frame-pointer"
-          DFTRACER_CMAKE_ARGS="-DHDF5_PREFER_PARALLEL=ON;-DCMAKE_C_COMPILER_LAUNCHER=ccache;-DCMAKE_CXX_COMPILER_LAUNCHER=ccache;-DDFTRACER_TEST_LOG_LEVEL=INFO;-DDFTRACER_ENABLE_PAPI_TRACING=ON"
+          DFTRACER_CMAKE_ARGS="-DHDF5_PREFER_PARALLEL=ON;-DCMAKE_C_COMPILER_LAUNCHER=ccache;-DCMAKE_CXX_COMPILER_LAUNCHER=ccache;-DDFTRACER_TEST_LOG_LEVEL=INFO;-DDFTRACER_ENABLE_PAPI_TRACING=ON;-DDFTRACER_ENABLE_VARIORUM=ON"
           if [ -n "${DFTRACER_CLANG_DIR:-}" ]; then
             DFTRACER_CMAKE_ARGS="${DFTRACER_CMAKE_ARGS};-DClang_DIR=${DFTRACER_CLANG_DIR}"
           fi
@@ -277,6 +278,39 @@ jobs:
             --require-papi-event PAPI_TOT_INS \
             --min-papi-lines 2
           popd
+
+      - name: Run Variorum power e2e trace validation
+        run: |
+          source ${VENV_PATH:-venv}/bin/activate
+          VARIORUM_SERVICE=$(find build install -name dftracer_service -type f -perm -u+x 2>/dev/null | head -n 1)
+          if [ -z "${VARIORUM_SERVICE:-}" ]; then
+            echo "dftracer_service not found; cannot run Variorum e2e validation."
+            exit 1
+          fi
+          # A GitHub runner has no msr-safe, no /dev/hsmp and no ROCm, so
+          # variorum can read nothing and the collector disables itself.
+          # --skip-if-no-power accepts that while still failing a trace whose
+          # power records are malformed. What this proves is that the service
+          # starts, samples and shuts down cleanly with variorum linked in; the
+          # grouping itself is covered by unit_test_variorum under ctest.
+          VARIORUM_DIR=$(mktemp -d)
+          DFTRACER_ENABLE=1 \
+          DFTRACER_LOG_FILE="$VARIORUM_DIR/power" \
+          DFTRACER_TRACE_INTERVAL_MS=200 \
+            "$VARIORUM_SERVICE" start "$VARIORUM_DIR"
+          sleep 2
+          "$VARIORUM_SERVICE" stop "$VARIORUM_DIR"
+          sleep 1
+          VARIORUM_TRACE=$(find "$VARIORUM_DIR" -name "power_*.pfw*" | head -n 1)
+          if [ -z "${VARIORUM_TRACE:-}" ]; then
+            echo "The service wrote no trace to $VARIORUM_DIR"
+            exit 1
+          fi
+          python3 scripts/check_variorum_trace.py "$VARIORUM_TRACE" \
+            --min-events 1 \
+            --require-family node \
+            --skip-if-no-power
+          rm -rf "$VARIORUM_DIR"
 
       - name: Show ccache stats
         if: always()

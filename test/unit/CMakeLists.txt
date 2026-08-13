@@ -25,6 +25,11 @@ add_executable(test_omnistat test_omnistat.cpp)
 target_link_libraries(test_omnistat ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry yaml-cpp)
 add_dependencies(test_omnistat ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry)
 
+# Test variorum power ingestion
+add_executable(test_variorum test_variorum.cpp)
+target_link_libraries(test_variorum ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry yaml-cpp)
+add_dependencies(test_variorum ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry)
+
 # Test aggregated key hash
 add_executable(test_aggregated_key_hash test_aggregated_key_hash.cpp)
 target_link_libraries(test_aggregated_key_hash ${PROJECT_NAME}_core_dbg)
@@ -59,6 +64,10 @@ set_common_properties(${test_name})
 
 set(test_name unit_test_omnistat)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_omnistat)
+set_common_properties(${test_name})
+
+set(test_name unit_test_variorum)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_variorum)
 set_common_properties(${test_name})
 
 set(test_name unit_test_aggregated_key_hash)

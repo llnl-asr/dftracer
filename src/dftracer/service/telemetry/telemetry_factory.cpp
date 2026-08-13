@@ -6,6 +6,7 @@
 #include <dftracer/service/telemetry/network_collector.h>
 #include <dftracer/service/telemetry/omnistat_collector.h>
 #include <dftracer/service/telemetry/telemetry_factory.h>
+#include <dftracer/service/telemetry/variorum_collector.h>
 
 #include <algorithm>
 #include <stdexcept>
@@ -24,6 +25,8 @@ std::unique_ptr<TelemetryCollector> TelemetryCollectorFactory::create(
     return std::make_unique<NetworkTelemetryCollector>();
   } else if (type == "omnistat") {
     return std::make_unique<OmnistatTelemetryCollector>();
+  } else if (type == "variorum") {
+    return std::make_unique<VariorumTelemetryCollector>();
   } else {
     throw std::invalid_argument("Unknown telemetry collector type: " + type);
   }
@@ -37,11 +40,12 @@ TelemetryCollectorFactory::create_all() {
   collectors.push_back(std::make_unique<IOTelemetryCollector>());
   collectors.push_back(std::make_unique<NetworkTelemetryCollector>());
   collectors.push_back(std::make_unique<OmnistatTelemetryCollector>());
+  collectors.push_back(std::make_unique<VariorumTelemetryCollector>());
   return collectors;
 }
 
 std::vector<std::string> TelemetryCollectorFactory::get_supported_types() {
-  return {"cpu", "memory", "io", "network", "omnistat"};
+  return {"cpu", "memory", "io", "network", "omnistat", "variorum"};
 }
 
 bool TelemetryCollectorFactory::is_supported(const std::string& type) {

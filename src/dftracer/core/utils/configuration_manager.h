@@ -41,6 +41,11 @@ class ConfigurationManager {
   bool papi_multiplex;
   size_t papi_sample_interval_ms;
   std::vector<std::string> papi_events;
+  // Node-level power sampling through variorum, in the service. On by default
+  // wherever the build found variorum, like the other service collectors: it
+  // costs one register read per tick and disables itself on a machine whose
+  // power domains variorum cannot reach.
+  bool variorum_power;
   bool aggregation_enable;
   AggregationType aggregation_type;
   std::vector<std::string> aggregation_inclusion_rules;

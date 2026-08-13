@@ -37,6 +37,11 @@
 #cmakedefine DFTRACER_HIP_TRACING_ENABLE 1
 #cmakedefine DFTRACER_PAPI_TRACING_ENABLE 1
 
+// Set when the build found (or built) variorum, so the service's power
+// collector can call it. Node power is read in the service, not in a traced
+// process, so this only affects dftracer_service.
+#cmakedefine DFTRACER_VARIORUM_ENABLE 1
+
 // Every PAPI counter this machine can program, found by
 // cmake/probes/papi_probe.c at build time. Used as the runtime default so a run
 // does not have to rediscover them; DFTRACER_PAPI_EVENTS still overrides.

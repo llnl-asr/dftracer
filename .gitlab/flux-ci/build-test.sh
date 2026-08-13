@@ -30,6 +30,16 @@ BUILD_FLAGS="--enable-tests --enable-mpi"
 if [ "$DFTRACER_PAPI" = "1" ]; then
   BUILD_FLAGS="$BUILD_FLAGS --enable-papi"
 fi
+# Variorum node power. Nothing is installed, so this exercises the fetch-and-
+# build path; both of variorum's own prerequisites come from the image and its
+# CMake aborts rather than degrading when either is missing, so check for them
+# the same way as for PAPI.
+if [ -f /usr/include/hwloc.h ] && [ -f /usr/include/jansson.h ]; then
+  DFTRACER_VARIORUM=1
+  BUILD_FLAGS="$BUILD_FLAGS --enable-variorum"
+else
+  DFTRACER_VARIORUM=0
+fi
 ./autobuild.sh $BUILD_FLAGS
 pip install -r test/py/requirements.txt
 # ctest (with DEBUG rerun of failures, as on GitHub)
@@ -84,6 +94,43 @@ if [ "$DFTRACER_PAPI" = "1" ]; then
   else
     echo "PAPI e2e skipped: could not locate cpp-logger headers, the generated"
     echo "dftracer_config.hpp or libdftracer_core.so under $CI_PROJECT_DIR"
+    exit 1
+  fi
+fi
+
+# Variorum end-to-end: run the service with variorum linked in and confirm the
+# power records it writes are well formed. A container has no msr-safe, no
+# /dev/hsmp and no ROCm, so variorum can read nothing here and the collector is
+# expected to disable itself -- --skip-if-no-power accepts that, while still
+# failing a trace whose power records are malformed. What this proves in CI is
+# that the service starts, samples and shuts down cleanly with variorum linked;
+# the grouping itself is covered by unit_test_variorum under ctest below.
+if [ "$DFTRACER_VARIORUM" = "1" ]; then
+  VARIORUM_SERVICE=$(find "$CI_PROJECT_DIR/build" "$CI_PROJECT_DIR/install" \
+    -name dftracer_service -type f -perm -u+x 2>/dev/null | head -n 1)
+  if [ -n "${VARIORUM_SERVICE:-}" ]; then
+    VARIORUM_DIR=$(mktemp -d)
+    echo "Variorum e2e: $VARIORUM_SERVICE -> $VARIORUM_DIR"
+    DFTRACER_ENABLE=1 \
+    DFTRACER_LOG_FILE="$VARIORUM_DIR/power" \
+    DFTRACER_TRACE_INTERVAL_MS=200 \
+      "$VARIORUM_SERVICE" start "$VARIORUM_DIR"
+    sleep 2
+    "$VARIORUM_SERVICE" stop "$VARIORUM_DIR"
+    sleep 1
+    VARIORUM_TRACE=$(find "$VARIORUM_DIR" -name "power_*.pfw*" | head -n 1)
+    if [ -n "${VARIORUM_TRACE:-}" ]; then
+      python3 scripts/check_variorum_trace.py "$VARIORUM_TRACE" \
+        --min-events 1 \
+        --require-family node \
+        --skip-if-no-power
+    else
+      echo "Variorum e2e failed: the service wrote no trace to $VARIORUM_DIR"
+      exit 1
+    fi
+    rm -rf "$VARIORUM_DIR"
+  else
+    echo "Variorum e2e skipped: dftracer_service not found under $CI_PROJECT_DIR"
     exit 1
   fi
 fi

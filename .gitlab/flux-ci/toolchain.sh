@@ -11,7 +11,8 @@ if command -v apt-get >/dev/null; then
   apt-get -o APT::Sandbox::User=root install -y -qq \
     build-essential cmake ninja-build git openssh-client pkg-config jq \
     python3 python3-pip python3-venv python3-dev \
-    valgrind gdb curl ca-certificates libpapi-dev
+    valgrind gdb curl ca-certificates libpapi-dev \
+    libhwloc-dev libjansson-dev
 fi
 
 # MPI and HDF5 come from the image's spack stack when it has one. brahma only

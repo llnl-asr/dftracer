@@ -25,6 +25,8 @@ ENABLE_MPI="${DFTRACER_ENABLE_MPI:-OFF}"
 ENABLE_HDF5="${DFTRACER_ENABLE_HDF5:-OFF}"
 ENABLE_DYNAMIC_DETECTION="${DFTRACER_ENABLE_DYNAMIC_DETECTION:-OFF}"
 ENABLE_PAPI_TRACING="${DFTRACER_ENABLE_PAPI_TRACING:-OFF}"
+ENABLE_VARIORUM="${DFTRACER_ENABLE_VARIORUM:-OFF}"
+BUILD_VARIORUM="${DFTRACER_BUILD_VARIORUM:-AUTO}"
 GENERATE_INTERFACES="${DFTRACER_GENERATE_INTERFACES:-OFF}"
 DISABLE_HWLOC="${DFTRACER_DISABLE_HWLOC:-ON}"
 ENABLE_DLIO_TESTS="${DFTRACER_ENABLE_DLIO_BENCHMARK_TESTS:-OFF}"
@@ -81,7 +83,9 @@ OPTIONS:
     --with-c-compiler PATH  C compiler to use (sets CMAKE_C_COMPILER)
     --with-cxx-compiler PATH C++ compiler to use (sets CMAKE_CXX_COMPILER)
     --enable-papi           Enable PAPI hardware counter tracing
-    --enable-dynamic-detection Enable dynamic detection of MPI, HWLOC, HIP, and PAPI at runtime
+    --enable-variorum       Enable Variorum node power tracing (fetches variorum if absent)
+    --build-variorum WHEN   When to build variorum from source: AUTO, ALWAYS, NEVER (default AUTO)
+    --enable-dynamic-detection Enable dynamic detection of MPI, HWLOC, HIP, PAPI and Variorum at runtime
     --generate-interfaces   Generate Brahma/DFTracer interfaces from discovered MPI/HDF5 headers
     --enable-hwloc          Enable HWLOC (default: disabled)
     --enable-dlio-tests     Enable DLIO benchmark tests
@@ -115,6 +119,8 @@ ENVIRONMENT VARIABLES (same as setup.py):
     DFTRACER_ENABLE_MPI                     Enable MPI (ON/OFF)
     DFTRACER_ENABLE_HDF5                    Enable HDF5 (ON/OFF)
     DFTRACER_ENABLE_PAPI_TRACING            Enable PAPI counter tracing (ON/OFF)
+    DFTRACER_ENABLE_VARIORUM                Enable Variorum node power tracing (ON/OFF)
+    DFTRACER_BUILD_VARIORUM                 When to build variorum from source (AUTO/ALWAYS/NEVER)
     DFTRACER_ENABLE_DYNAMIC_DETECTION       Enable dynamic detection (ON/OFF)
     DFTRACER_GENERATE_INTERFACES            Generate interfaces from system headers (ON/OFF)
     DFTRACER_DISABLE_HWLOC                  Disable HWLOC (ON/OFF)
@@ -287,6 +293,16 @@ while [[ $# -gt 0 ]]; do
             ENABLE_PAPI_TRACING="ON"
             export DFTRACER_ENABLE_PAPI_TRACING="ON"
             shift
+            ;;
+        --enable-variorum)
+            ENABLE_VARIORUM="ON"
+            export DFTRACER_ENABLE_VARIORUM="ON"
+            shift
+            ;;
+        --build-variorum)
+            BUILD_VARIORUM="$2"
+            export DFTRACER_BUILD_VARIORUM="$2"
+            shift 2
             ;;
         --enable-dynamic-detection)
             ENABLE_DYNAMIC_DETECTION="ON"
@@ -2402,6 +2418,8 @@ echo "Enable HIP Tracing: ${ENABLE_HIP_TRACING}"
 echo "Enable MPI: ${ENABLE_MPI}"
 echo "Enable HDF5: ${ENABLE_HDF5}"
 echo "Enable PAPI Tracing: ${ENABLE_PAPI_TRACING}"
+echo "Enable Variorum Power: ${ENABLE_VARIORUM}"
+echo "Build Variorum From Source: ${BUILD_VARIORUM}"
 echo "Enable Dynamic Detection: ${ENABLE_DYNAMIC_DETECTION}"
 echo "Generate Interfaces: ${GENERATE_INTERFACES}"
 echo "Disable HWLOC: ${DISABLE_HWLOC}"
@@ -2508,6 +2526,8 @@ export DFTRACER_ENABLE_HIP_TRACING="${ENABLE_HIP_TRACING}"
 export DFTRACER_ENABLE_MPI="${ENABLE_MPI}"
 export DFTRACER_ENABLE_HDF5="${ENABLE_HDF5}"
 export DFTRACER_ENABLE_PAPI_TRACING="${ENABLE_PAPI_TRACING}"
+export DFTRACER_ENABLE_VARIORUM="${ENABLE_VARIORUM}"
+export DFTRACER_BUILD_VARIORUM="${BUILD_VARIORUM}"
 export DFTRACER_ENABLE_DYNAMIC_DETECTION="${ENABLE_DYNAMIC_DETECTION}"
 export DFTRACER_DISABLE_HWLOC="${DISABLE_HWLOC}"
 export DFTRACER_ENABLE_DLIO_BENCHMARK_TESTS="${ENABLE_DLIO_TESTS}"
@@ -2786,6 +2806,8 @@ else
         "-DDFTRACER_ENABLE_MPI=${ENABLE_MPI}"
         "-DDFTRACER_ENABLE_HDF5=${ENABLE_HDF5}"
         "-DDFTRACER_ENABLE_PAPI_TRACING=${ENABLE_PAPI_TRACING}"
+        "-DDFTRACER_ENABLE_VARIORUM=${ENABLE_VARIORUM}"
+        "-DDFTRACER_BUILD_VARIORUM=${BUILD_VARIORUM}"
         "-DDFTRACER_ENABLE_DYNAMIC_DETECTION=${ENABLE_DYNAMIC_DETECTION}"
         "-DDFTRACER_GENERATE_INTERFACES=${GENERATE_INTERFACES}"
         "-DDFTRACER_DISABLE_HWLOC=${DISABLE_HWLOC}"

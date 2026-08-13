@@ -44,6 +44,8 @@
 #define DFT_YAML_FEATURES_PAPI_EVENTS "events"
 #define DFT_YAML_FEATURES_PAPI_INTERVAL "interval"
 #define DFT_YAML_FEATURES_PAPI_MULTIPLEX "multiplex"
+#define DFT_YAML_FEATURES_VARIORUM "variorum"
+#define DFT_YAML_FEATURES_VARIORUM_ENABLE "enable"
 #define DFT_YAML_FEATURES_AGGREGATION "aggregation"
 #define DFT_YAML_FEATURES_AGGREGATION_ENABLE "enable"
 #define DFT_YAML_FEATURES_AGGREGATION_TYPE "type"
@@ -139,6 +141,10 @@ dftracer::ConfigurationManager::ConfigurationManager()
       // Empty means "discover what this machine can count" rather than
       // insisting on a fixed list that many CPUs will not support.
       papi_events(),
+      // On unless turned off, unlike papi_tracing: this is a service-side
+      // collector like cpu/memory/omnistat, not something a traced process
+      // pays for, and a build without variorum ignores it anyway.
+      variorum_power(true),
       aggregation_enable(false),
       aggregation_type(AggregationType::AGGREGATION_TYPE_FULL),
       aggregation_inclusion_rules(),
@@ -307,6 +313,16 @@ dftracer::ConfigurationManager::ConfigurationManager()
                          this->papi_multiplex);
       DFTRACER_LOG_DEBUG("YAML ConfigurationManager.papi_sample_interval_ms %d",
                          this->papi_sample_interval_ms);
+      if (config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_VARIORUM]) {
+        auto variorum_config =
+            config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_VARIORUM];
+        if (variorum_config[DFT_YAML_FEATURES_VARIORUM_ENABLE]) {
+          this->variorum_power =
+              variorum_config[DFT_YAML_FEATURES_VARIORUM_ENABLE].as<bool>();
+        }
+      }
+      DFTRACER_LOG_DEBUG("YAML ConfigurationManager.variorum_power %d",
+                         this->variorum_power);
       if (config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_AGGREGATION]) {
         if (config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_AGGREGATION]
                   [DFT_YAML_FEATURES_AGGREGATION_ENABLE]) {
@@ -487,6 +503,13 @@ dftracer::ConfigurationManager::ConfigurationManager()
                        this->papi_multiplex);
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.papi_sample_interval_ms %d",
                        this->papi_sample_interval_ms);
+    const char* env_disable_variorum = getenv(DFTRACER_DISABLE_VARIORUM_POWER);
+    if (env_disable_variorum != nullptr &&
+        strcmp(env_disable_variorum, "1") == 0) {
+      this->variorum_power = false;
+    }
+    DFTRACER_LOG_DEBUG("ENV ConfigurationManager.variorum_power %d",
+                       this->variorum_power);
     const char* env_enable_aggregation = getenv(DFTRACER_ENABLE_AGGREGATION);
     if (env_enable_aggregation != nullptr &&
         strcmp(env_enable_aggregation, "1") == 0) {
@@ -631,6 +654,7 @@ void dftracer::ConfigurationManager::populate_metadata(
       << "\"write_buffer_size\":" << this->write_buffer_size << ","
       << "\"trace_interval_ms\":" << this->trace_interval_ms << ","
       << "\"libuv_thread_count\":" << this->libuv_thread_count << ","
+      << "\"variorum_power\":" << (int)this->variorum_power << ","
       << "\"aggregation_enable\":" << (int)this->aggregation_enable << ","
       << "\"aggregation_type\":\"" << to_string(this->aggregation_type)
       << "\","
@@ -669,6 +693,12 @@ void dftracer::ConfigurationManager::populate_metadata(
 #endif
         << ",\"finstrument\":"
 #ifdef DFTRACER_FTRACING_ENABLE
+        << 1
+#else
+        << 0
+#endif
+        << ",\"variorum\":"
+#ifdef DFTRACER_VARIORUM_ENABLE
         << 1
 #else
         << 0
