@@ -12,6 +12,7 @@
 #include <rocprofiler-sdk/version.h>
 
 #include <any>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -61,6 +62,46 @@ extern "C" rocprofiler_tool_configure_result_t* roc_conf(
 }
 
 }  // namespace conf
+
+// rocprofiler-sdk's SUPPORTED tool-registration entry point.
+//
+// Why this exists in addition to the rocprofiler_force_configure() call in
+// HIPFunction::initialize(): force_configure only works if it runs before
+// rocprofiler locks its configuration, and on a Cray PE + ROCm system it never
+// does. librocprofiler-register / libamdhip64 / the Cray MPICH GTL are pulled
+// in as link-time dependencies, and their load-time constructors bring
+// rocprofiler up before main() is entered -- so by the time ANY application
+// code runs, including DFTRACER_CPP_INIT as the very first statement of main(),
+// force_configure returns ROCPROFILER_STATUS_ERROR_CONFIGURATION_LOCKED (16)
+// and no GPU tracing is ever configured. Measured on Tuolumne (MI300A,
+// ROCm 6.4.2, rocprofiler-sdk 0.6.0) with Laghos/MFEM.
+//
+// rocprofiler instead SCANS the loaded libraries for a symbol named exactly
+// `rocprofiler_configure` and calls it at the correct point in its own
+// initialisation, which removes the race entirely. Defining it here means
+// libdftracer_core.so is discovered as a rocprofiler client no matter when the
+// application gets around to calling DFTRACER_*_INIT.
+//
+// Because this runs for EVERY process that merely links libdftracer_core (not
+// just traced ones), decline politely unless dftracer is actually switched on.
+// Returning nullptr is the documented way for a client to say "not interested".
+// getenv is used rather than the ConfigurationManager singleton because this
+// can be called before any dftracer object has been constructed.
+extern "C" __attribute__((visibility("default")))
+rocprofiler_tool_configure_result_t*
+rocprofiler_configure(uint32_t version, const char* runtime_version,
+                      uint32_t priority, rocprofiler_client_id_t* id) {
+  const char* enabled = getenv("DFTRACER_ENABLE");
+  if (enabled == nullptr || enabled[0] == '0' || enabled[0] == '\0') {
+    return nullptr;
+  }
+  if (id != nullptr) {
+    id->name = "dftracer";
+  }
+  DFTRACER_LOG_DEBUG(
+      "dftracer registered with rocprofiler via rocprofiler_configure");
+  return conf::roc_conf(version, runtime_version, priority, id);
+}
 
 template <>
 std::shared_ptr<dftracer::HIPFunction>
@@ -719,10 +760,12 @@ int HIPFunction::tool_init(rocprofiler_client_finalize_t fini_func,
 
   status = rocprofiler_start_context(function->client_ctx);
   if (status != ROCPROFILER_STATUS_SUCCESS) {
-    DFTRACER_LOG_ERROR("HIP Intercept context start failed: status, %d\n",
-                       status);
+    DFTRACER_LOG_ERROR(
+        "HIP Intercept context start failed in tool_init(): status %d (%s)\n",
+        status, rocprofiler_get_status_name(status));
     return -1;
   }
+  DFTRACER_LOG_DEBUG("HIP Intercept context started from tool_init");
   return 0;
 }
 

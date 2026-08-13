@@ -49,6 +49,18 @@
 #cmakedefine DFTRACER_FTRACING_ENABLE 1
 #cmakedefine DFTRACER_HWLOC_ENABLE 1
 #cmakedefine DFTRACER_HIP_TRACING_ENABLE 1
+#cmakedefine DFTRACER_PAPI_TRACING_ENABLE 1
+
+// Every PAPI counter this machine can program, found by
+// cmake/probes/papi_probe.c at build time. Used as the runtime default so a run
+// does not have to rediscover them; DFTRACER_PAPI_EVENTS still overrides.
+// HW_COUNTERS is the number of hardware slots and FITTING_COUNTERS how many of
+// the detected counters fit at once; when fewer fit than were detected,
+// DFTracer multiplexes so all of them are still collected. Both are 0 when the
+// probe could not run.
+#define DFTRACER_PAPI_DETECTED_EVENTS "@DFTRACER_PAPI_DETECTED_EVENTS@"
+#define DFTRACER_PAPI_HW_COUNTERS @DFTRACER_PAPI_HW_COUNTERS@
+#define DFTRACER_PAPI_FITTING_COUNTERS @DFTRACER_PAPI_FITTING_COUNTERS@
 
 //==========================
 // Common macro definitions

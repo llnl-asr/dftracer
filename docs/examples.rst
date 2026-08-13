@@ -115,6 +115,25 @@ Example of running this configurations are:
     # Enable profiler
     export DFTRACER_ENABLE=1
 
+Minimal PAPI example:
+**************************
+
+The standalone sample under ``examples/papi_standalone`` shows PAPI counters embedded in
+the regular DFTracer trace stream. Build DFTracer with ``DFTRACER_ENABLE_PAPI_TRACING=ON``,
+then run:
+
+.. code-block:: bash
+
+    cd examples/papi_standalone
+    make run-single \
+      DFTRACER_INCLUDEDIR=/path/to/dftracer/include \
+      CPP_LOGGER_INCLUDEDIR=/path/to/dftracer/include \
+      DFTRACER_LIBDIR=/path/to/dftracer/lib64
+
+This emits trace files under ``examples/papi_standalone/traces`` containing both regular
+DFTracer events and PAPI counter metadata/events such as ``PAPI_TOT_CYC`` and
+``PAPI_TOT_INS``.
+
 Hybrid Example:
 **************************
 

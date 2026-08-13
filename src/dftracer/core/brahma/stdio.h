@@ -186,9 +186,13 @@ class STDIODFTracer : public STDIO {
   // brahma/interface/stdio.cpp) -- GOTCHA still binds the symbols
   // (brahma's bind<>() is unconditional), but no tracing/logging happens
   // for them, so the recursion can't occur. Only the FILE*-targeting
-  // members of this family (fprintf/vfprintf/fscanf/vfscanf, which can
-  // point at a real file, not just stdin/stdout/a buffer) stay traced.
-  int fprintf(FILE* stream, const char* format, va_list args) override;
+  // members of this family (vfprintf/fscanf/vfscanf, which can point at a
+  // real file, not just stdin/stdout/a buffer) stay traced.
+  //
+  // fprintf is deliberately NOT overridden: cpp-logger writes every log line
+  // with fprintf, so tracing it reintroduced exactly the recursion described
+  // above (cpp_logger_clog -> fprintf -> is_traced -> DFTRACER_LOG_DEBUG ->
+  // cpp_logger_clog -> ...), which hangs any binary run at DEBUG level.
   int vfprintf(FILE* stream, const char* format, va_list args) override;
   int fscanf(FILE* stream, const char* format, va_list args) override;
   int vfscanf(FILE* stream, const char* format, va_list args) override;

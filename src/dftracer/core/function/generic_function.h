@@ -1,6 +1,9 @@
 //
 // Created by druva on 6/9/25 from finstrument/functions.h
 //
+#ifndef DFTRACER_GENERIC_FUNCTION_H
+#define DFTRACER_GENERIC_FUNCTION_H
+
 /* Config Header */
 #include <dftracer/core/dftracer_config.hpp>
 
@@ -36,3 +39,5 @@ class GenericFunction {
 };
 
 }  // namespace dftracer
+
+#endif  // DFTRACER_GENERIC_FUNCTION_H

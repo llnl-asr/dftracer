@@ -1,7 +1,10 @@
+#include <dftracer/core/common/singleton.h>
+#include <dftracer/core/utils/configuration_manager.h>
 #include <dftracer/service/telemetry/cpu_collector.h>
 #include <dftracer/service/telemetry/io_collector.h>
 #include <dftracer/service/telemetry/memory_collector.h>
 #include <dftracer/service/telemetry/network_collector.h>
+#include <dftracer/service/telemetry/omnistat_collector.h>
 #include <dftracer/service/telemetry/telemetry_factory.h>
 
 #include <algorithm>
@@ -19,6 +22,8 @@ std::unique_ptr<TelemetryCollector> TelemetryCollectorFactory::create(
     return std::make_unique<IOTelemetryCollector>();
   } else if (type == "network") {
     return std::make_unique<NetworkTelemetryCollector>();
+  } else if (type == "omnistat") {
+    return std::make_unique<OmnistatTelemetryCollector>();
   } else {
     throw std::invalid_argument("Unknown telemetry collector type: " + type);
   }
@@ -31,11 +36,12 @@ TelemetryCollectorFactory::create_all() {
   collectors.push_back(std::make_unique<MemoryTelemetryCollector>());
   collectors.push_back(std::make_unique<IOTelemetryCollector>());
   collectors.push_back(std::make_unique<NetworkTelemetryCollector>());
+  collectors.push_back(std::make_unique<OmnistatTelemetryCollector>());
   return collectors;
 }
 
 std::vector<std::string> TelemetryCollectorFactory::get_supported_types() {
-  return {"cpu", "memory", "io", "network"};
+  return {"cpu", "memory", "io", "network", "omnistat"};
 }
 
 bool TelemetryCollectorFactory::is_supported(const std::string& type) {

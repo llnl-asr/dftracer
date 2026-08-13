@@ -265,6 +265,11 @@ class DFTLogger {
           auto cwd_hash = hash_and_store(cwd, METADATA_NAME_FILE_HASH);
           meta->insert_or_assign("cwd", cwd_hash);
         }
+        // Both are arbitrary text from the environment and are stored
+        // verbatim in a metadata record, so they have to be made safe for the
+        // one-object-per-line format first.
+        fix_str(cmd.data(), cmd.size());
+        fix_str(exec_name.data(), exec_name.size());
         cmd_hash = hash_and_store(cmd.data(), METADATA_NAME_STRING_HASH);
         exec_hash = hash_and_store(exec_name.data(), METADATA_NAME_STRING_HASH);
 #ifdef DFTRACER_GIT_VERSION
@@ -481,6 +486,12 @@ class DFTLogger {
   }
 
   bool ignore_chars(char c) {
+    // Control characters, newline above all. Records are one JSON object per
+    // line, so a newline reaching the trace splits a record in two and makes
+    // the file unparseable. A traced agent is typically launched as
+    // `python -c "<multi-line script>"`, so the command line really does carry
+    // them.
+    if (static_cast<unsigned char>(c) < 0x20) return true;
     switch (c) {
       case '(':
       case ')':

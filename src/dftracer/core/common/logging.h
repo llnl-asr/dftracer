@@ -74,6 +74,33 @@ inline std::string dftracer_macro_get_time() {
 #define DFTRACER_NOOP_MACRO \
   do {                      \
   } while (0)
+
+// Guards against DFTracer's own logging recursing back into itself. cpp-logger
+// writes each line with stdio (fprintf, then fflush), and those calls are
+// intercepted by STDIODFTracer, whose interceptor bodies log at DEBUG -- which
+// calls cpp-logger again, and so on until the process wedges. Any binary run at
+// DEBUG level hung on this. The guard makes a nested log from inside a log a
+// no-op, which breaks every such cycle at the root rather than one intercepted
+// stdio symbol at a time.
+class DFTracerLogReentryGuard {
+ public:
+  DFTracerLogReentryGuard() : entered_(!active()) {
+    if (entered_) active() = true;
+  }
+  ~DFTracerLogReentryGuard() {
+    if (entered_) active() = false;
+  }
+  // True when this is the outermost log call on this thread, i.e. it is safe
+  // to actually emit.
+  bool should_log() const { return entered_; }
+
+ private:
+  static bool& active() {
+    static thread_local bool in_logging = false;
+    return in_logging;
+  }
+  bool entered_;
+};
 //=============================================================================
 
 #if defined(DFTRACER_LOGGER_CPP_LOGGER)  // CPP_LOGGER
@@ -84,15 +111,25 @@ inline std::string dftracer_macro_get_time() {
 #define DFTRACER_LOG_STDERR_REDIRECT(fpath) freopen((fpath), "a+", stderr);
 #define DFTRACER_LOGGER_NAME "DFTRACER"
 
-#define DFTRACER_INTERNAL_TRACE(file, line, function, name, logger_level) \
-  cpp_logger_clog(logger_level, name, "[%s] %s [%s:%d]",                  \
+inline void dftracer_internal_trace(const char* file, int line,
+                                    const char* function, const char* name,
+                                    int logger_level) {
+  DFTracerLogReentryGuard guard;
+  if (!guard.should_log()) return;
+  cpp_logger_clog(logger_level, name, "[%s] %s [%s:%d]",
                   dftracer_macro_get_time().c_str(), function, file, line);
+}
+
+#define DFTRACER_INTERNAL_TRACE(file, line, function, name, logger_level) \
+  dftracer_internal_trace(file, line, function, name, logger_level);
 
 template <typename... Args>
 inline void dftracer_internal_trace_format(const char* file, int line,
                                            const char* function,
                                            const char* name, int logger_level,
                                            const char* format, Args... args) {
+  DFTracerLogReentryGuard guard;
+  if (!guard.should_log()) return;
   char user_message[4096];
   dftracer_logging_real_snprintf()(user_message, sizeof(user_message), format,
                                    args...);

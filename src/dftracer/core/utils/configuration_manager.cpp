@@ -6,6 +6,7 @@
 
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/datastructure.h>
+#include <dftracer/core/common/singleton.h>
 #include <yaml-cpp/yaml.h>
 
 #include <dftracer/core/dftracer_config.hpp>
@@ -38,6 +39,11 @@
 #define DFT_YAML_FEATURES_IO_POSIX "posix"
 #define DFT_YAML_FEATURES_IO_STDIO "stdio"
 #define DFT_YAML_FEATURES_TID "tid"
+#define DFT_YAML_FEATURES_PAPI "papi"
+#define DFT_YAML_FEATURES_PAPI_ENABLE "enable"
+#define DFT_YAML_FEATURES_PAPI_EVENTS "events"
+#define DFT_YAML_FEATURES_PAPI_INTERVAL "interval"
+#define DFT_YAML_FEATURES_PAPI_MULTIPLEX "multiplex"
 #define DFT_YAML_FEATURES_AGGREGATION "aggregation"
 #define DFT_YAML_FEATURES_AGGREGATION_ENABLE "enable"
 #define DFT_YAML_FEATURES_AGGREGATION_TYPE "type"
@@ -57,6 +63,55 @@ std::shared_ptr<dftracer::ConfigurationManager>
 template <>
 bool dftracer::Singleton<
     dftracer::ConfigurationManager>::stop_creating_instances = false;
+
+namespace {
+
+void trim_in_place(std::string& value) {
+  auto first = value.find_first_not_of(" \t\n\r");
+  if (first == std::string::npos) {
+    value.clear();
+    return;
+  }
+  auto last = value.find_last_not_of(" \t\n\r");
+  value = value.substr(first, last - first + 1);
+}
+
+std::vector<std::string> parse_list_value(const std::string& value) {
+  std::vector<std::string> items;
+  std::string current;
+  for (char ch : value) {
+    if (ch == ',' || ch == ';') {
+      if (!current.empty()) {
+        trim_in_place(current);
+        if (!current.empty()) items.push_back(current);
+        current.clear();
+      }
+      continue;
+    }
+    current.push_back(ch);
+  }
+  if (!current.empty()) {
+    trim_in_place(current);
+    if (!current.empty()) items.push_back(current);
+  }
+  return items;
+}
+
+void load_list_value(const YAML::Node& node, std::vector<std::string>& target) {
+  if (!node) return;
+  target.clear();
+  if (node.IsSequence()) {
+    for (const auto& item : node) {
+      auto value = item.as<std::string>();
+      if (!value.empty()) target.push_back(value);
+    }
+  } else if (node.IsScalar()) {
+    target = parse_list_value(node.as<std::string>());
+  }
+}
+
+}  // namespace
+
 dftracer::ConfigurationManager::ConfigurationManager()
     : enable(false),
       init_type(PROFILER_INIT_FUNCTION),
@@ -78,6 +133,12 @@ dftracer::ConfigurationManager::ConfigurationManager()
       write_buffer_size(16 * 1024 * 1024),
       trace_interval_ms(1000),
       libuv_thread_count(1),
+      papi_tracing(false),
+      papi_multiplex(false),
+      papi_sample_interval_ms(0),
+      // Empty means "discover what this machine can count" rather than
+      // insisting on a fixed list that many CPUs will not support.
+      papi_events(),
       aggregation_enable(false),
       aggregation_type(AggregationType::AGGREGATION_TYPE_FULL),
       aggregation_inclusion_rules(),
@@ -221,6 +282,31 @@ dftracer::ConfigurationManager::ConfigurationManager()
             config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_TID].as<bool>();
       }
       DFTRACER_LOG_DEBUG("YAML ConfigurationManager.tids %d", this->tids);
+      if (config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_PAPI]) {
+        auto papi_config = config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_PAPI];
+        if (papi_config[DFT_YAML_FEATURES_PAPI_ENABLE]) {
+          this->papi_tracing =
+              papi_config[DFT_YAML_FEATURES_PAPI_ENABLE].as<bool>();
+        }
+        if (papi_config[DFT_YAML_FEATURES_PAPI_MULTIPLEX]) {
+          this->papi_multiplex =
+              papi_config[DFT_YAML_FEATURES_PAPI_MULTIPLEX].as<bool>();
+        }
+        if (papi_config[DFT_YAML_FEATURES_PAPI_INTERVAL]) {
+          this->papi_sample_interval_ms =
+              papi_config[DFT_YAML_FEATURES_PAPI_INTERVAL].as<size_t>();
+        }
+        if (papi_config[DFT_YAML_FEATURES_PAPI_EVENTS]) {
+          load_list_value(papi_config[DFT_YAML_FEATURES_PAPI_EVENTS],
+                          this->papi_events);
+        }
+      }
+      DFTRACER_LOG_DEBUG("YAML ConfigurationManager.papi_tracing %d",
+                         this->papi_tracing);
+      DFTRACER_LOG_DEBUG("YAML ConfigurationManager.papi_multiplex %d",
+                         this->papi_multiplex);
+      DFTRACER_LOG_DEBUG("YAML ConfigurationManager.papi_sample_interval_ms %d",
+                         this->papi_sample_interval_ms);
       if (config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_AGGREGATION]) {
         if (config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_AGGREGATION]
                   [DFT_YAML_FEATURES_AGGREGATION_ENABLE]) {
@@ -379,6 +465,28 @@ dftracer::ConfigurationManager::ConfigurationManager()
       this->tids = false;
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.tids %d", this->tids);
+    const char* env_enable_papi = getenv(DFTRACER_ENABLE_PAPI_TRACING);
+    if (env_enable_papi != nullptr && strcmp(env_enable_papi, "1") == 0) {
+      this->papi_tracing = true;
+    }
+    const char* env_papi_multiplex = getenv(DFTRACER_PAPI_MULTIPLEX);
+    if (env_papi_multiplex != nullptr && strcmp(env_papi_multiplex, "1") == 0) {
+      this->papi_multiplex = true;
+    }
+    const char* env_papi_interval = getenv(DFTRACER_PAPI_SAMPLE_INTERVAL_MS);
+    if (env_papi_interval != nullptr) {
+      this->papi_sample_interval_ms = atoi(env_papi_interval);
+    }
+    const char* env_papi_events = getenv(DFTRACER_PAPI_EVENTS);
+    if (env_papi_events != nullptr) {
+      this->papi_events = parse_list_value(env_papi_events);
+    }
+    DFTRACER_LOG_DEBUG("ENV ConfigurationManager.papi_tracing %d",
+                       this->papi_tracing);
+    DFTRACER_LOG_DEBUG("ENV ConfigurationManager.papi_multiplex %d",
+                       this->papi_multiplex);
+    DFTRACER_LOG_DEBUG("ENV ConfigurationManager.papi_sample_interval_ms %d",
+                       this->papi_sample_interval_ms);
     const char* env_enable_aggregation = getenv(DFTRACER_ENABLE_AGGREGATION);
     if (env_enable_aggregation != nullptr &&
         strcmp(env_enable_aggregation, "1") == 0) {
@@ -431,6 +539,11 @@ dftracer::ConfigurationManager::ConfigurationManager()
 }
 
 void dftracer::ConfigurationManager::derive_configurations() {
+  if (this->papi_sample_interval_ms == 0) {
+    this->papi_sample_interval_ms = this->trace_interval_ms;
+  }
+  DFTRACER_LOG_DEBUG("Derived ConfigurationManager.papi_sample_interval_ms %d",
+                     this->papi_sample_interval_ms);
   // Derive configurations based on the current settings
   if (this->aggregation_type == AggregationType::AGGREGATION_TYPE_SELECTIVE) {
     if (!this->aggregation_file.empty() &&
