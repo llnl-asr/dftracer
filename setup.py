@@ -134,6 +134,12 @@ class CMakeBuild(build_ext):
         cmake_args += [f"-DDFTRACER_ENABLE_FTRACING={enable_ftracing}"]
         enable_hip_tracing = os.environ.get("DFTRACER_ENABLE_HIP_TRACING", "OFF")
         cmake_args += [f"-DDFTRACER_ENABLE_HIP_TRACING={enable_hip_tracing}"]
+        enable_cuda_tracing = os.environ.get("DFTRACER_ENABLE_CUDA_TRACING", "OFF")
+        cmake_args += [f"-DDFTRACER_ENABLE_CUDA_TRACING={enable_cuda_tracing}"]
+        # Optional explicit CUDA toolkit root; empty means CMake auto-detects.
+        cuda_path = os.environ.get("DFTRACER_CUDA_PATH", "")
+        if cuda_path:
+            cmake_args += [f"-DDFTRACER_CUDA_PATH={cuda_path}"]
         enable_mpi = os.environ.get("DFTRACER_ENABLE_MPI", "OFF")
         cmake_args += [f"-DDFTRACER_ENABLE_MPI={enable_mpi}"]
         enable_hdf5 = os.environ.get("DFTRACER_ENABLE_HDF5", "OFF")

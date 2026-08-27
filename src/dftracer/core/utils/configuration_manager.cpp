@@ -691,6 +691,12 @@ void dftracer::ConfigurationManager::populate_metadata(
 #else
         << 0
 #endif
+        << ",\"cuda\":"
+#ifdef DFTRACER_CUDA_TRACING_ENABLE
+        << 1
+#else
+        << 0
+#endif
         << ",\"finstrument\":"
 #ifdef DFTRACER_FTRACING_ENABLE
         << 1

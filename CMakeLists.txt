@@ -212,9 +212,30 @@ option (DFTRACER_ENABLE_VARIORUM "Enable Variorum node power tracing" OFF)
 set(DFTRACER_BUILD_VARIORUM "AUTO" CACHE STRING
         "When to fetch and build variorum: AUTO, ALWAYS or NEVER")
 set_property(CACHE DFTRACER_BUILD_VARIORUM PROPERTY STRINGS AUTO ALWAYS NEVER)
-option (DFTRACER_ENABLE_MPI "Enable MPI" OFF)
-if (DFTRACER_ENABLE_MPI)
-    set(DFTRACER_MPI_ENABLE 1)
+
+option(DFTRACER_ENABLE_CUDA_TRACING "Enable CUDA (CUPTI) Tracing" OFF)
+
+# Explicit CUDA toolkit override. Point it at the root of a CUDA install (the
+# directory containing bin/nvcc), e.g. -DDFTRACER_CUDA_PATH=/usr/local/cuda-12.6.
+# When empty, the toolkit is auto-detected (CUDAToolkit_ROOT, CUDA_HOME,
+# CUDA_PATH, nvcc on PATH, /usr/local/cuda).
+set(DFTRACER_CUDA_PATH "" CACHE PATH
+    "Root directory of the CUDA toolkit to build CUPTI tracing against. Empty = auto-detect.")
+
+# CUDA toolkit version defaults (used by generated config header to select the
+# correct versioned CUpti_Activity* record structs).
+set(DFTRACER_CUDA_VERSION_MAJOR 0)
+set(DFTRACER_CUDA_VERSION_MINOR 0)
+set(DFTRACER_CUDA_VERSION_PATCH 0)
+
+if(DFTRACER_ENABLE_CUDA_TRACING)
+        set(DFTRACER_CUDA_TRACING_ENABLE 1)
+endif()
+
+option(DFTRACER_ENABLE_MPI "Enable MPI" OFF)
+
+if(DFTRACER_ENABLE_MPI)
+        set(DFTRACER_MPI_ENABLE 1)
 endif()
 
 set(DFTRACER_MPI_IMPL "" CACHE STRING
@@ -861,6 +882,51 @@ else()
                 message(STATUS "-- [DFTRACER] Variorum is not found.")
         endif()
 
+        # ── CUDA / CUPTI ────────────────────────────────────────────────────
+        # Mirrors the rocprofiler-sdk handling above: found + (explicitly
+        # requested OR dynamic detection) => enable the CUPTI backend.
+        find_package(CUPTI QUIET)
+
+        if(CUPTI_FOUND AND(DFTRACER_ENABLE_CUDA_TRACING OR DFTRACER_ENABLE_DYNAMIC_DETECTION))
+                set(DFTRACER_CUDA_TRACING_ENABLE 1)
+                message(STATUS "[DFTRACER] found CUPTI at ${CUPTI_INCLUDE_DIR} (cuda root ${CUPTI_CUDA_ROOT})")
+
+                if(CUPTI_CUDA_VERSION MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+                        set(DFTRACER_CUDA_VERSION_MAJOR "${CMAKE_MATCH_1}")
+                        set(DFTRACER_CUDA_VERSION_MINOR "${CMAKE_MATCH_2}")
+                        set(DFTRACER_CUDA_VERSION_PATCH "${CMAKE_MATCH_3}")
+                elseif(CUPTI_CUDA_VERSION MATCHES "^([0-9]+)\\.([0-9]+)")
+                        set(DFTRACER_CUDA_VERSION_MAJOR "${CMAKE_MATCH_1}")
+                        set(DFTRACER_CUDA_VERSION_MINOR "${CMAKE_MATCH_2}")
+                        set(DFTRACER_CUDA_VERSION_PATCH 0)
+                else()
+                        message(WARNING "[DFTRACER] could not determine CUDA toolkit version from "
+                                "'${CUPTI_CUDA_VERSION}'. CUPTI record struct selection may be wrong.")
+                endif()
+
+                message(STATUS "[DFTRACER] CUDA toolkit version: ${DFTRACER_CUDA_VERSION_MAJOR}.${DFTRACER_CUDA_VERSION_MINOR}.${DFTRACER_CUDA_VERSION_PATCH}")
+                include_directories(${CUPTI_INCLUDE_DIRS})
+                set(CUDA_TRACING_LIBRARIES ${CUPTI_LIBRARIES})
+                set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${CUDA_TRACING_LIBRARIES})
+
+                if(CUPTI_LIBRARY_DIR)
+                        list(APPEND DEPENDENCY_LIBRARY_DIRS ${CUPTI_LIBRARY_DIR})
+                endif()
+        else()
+                if(DFTRACER_ENABLE_CUDA_TRACING)
+                        # Only an error-level warning when CUDA tracing was explicitly asked for.
+                        if(DFTRACER_CUDA_PATH)
+                                message(WARNING "[DFTRACER] CUPTI not found under DFTRACER_CUDA_PATH=${DFTRACER_CUDA_PATH}. "
+                                        "Expected <path>/include/cupti.h or <path>/extras/CUPTI/include/cupti.h.")
+                        else()
+                                message(WARNING "[DFTRACER] CUPTI not found. Set DFTRACER_CUDA_PATH or CUDA_HOME, "
+                                        "or load a cuda module, to enable CUDA tracing.")
+                        endif()
+                else()
+                        message(STATUS "-- [DFTRACER] CUPTI is not found.")
+                endif()
+        endif()
+
         find_package(ZLIB REQUIRED)
 
         if(ZLIB_FOUND)
@@ -939,6 +1005,7 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/finstrument/functions.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/hip/intercept.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/papi/counters.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/cuda/intercept.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/posix_bypass.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/stdio_bypass.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/dftracer.cpp
@@ -989,6 +1056,7 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/generic_function.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/hip/intercept.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/papi/counters.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/cuda/intercept.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/singleton.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/configuration_manager.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/aggregator.h
@@ -1635,6 +1703,7 @@ else()
                 DFTRACER_ENABLE_TESTS
                 DFTRACER_GNU_LINUX
                 DFTRACER_HIP_TRACING_ENABLE
+                DFTRACER_CUDA_TRACING_ENABLE
                 DFTRACER_HWLOC_ENABLE
                 DFTRACER_LIBDIR_AS_LIB
                 DFTRACER_USE_CLANG_LIBCXX

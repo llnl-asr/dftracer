@@ -51,6 +51,7 @@ free-form and holds the sub-category within that layer.
  8         FINSTRUMENT    ``-finstrument-functions`` (cat: FUNC)
  9         CPP_APP        C++ API (``DFTRACER_CPP_*``)
  10        MPI            MPI and MPI-IO interception (cat: MPI, MPIIO)
+ 11        CUDA           CUPTI (cat: the CUDA activity kind)
 ========  =============  ===================================================
 
 The numbering is append-only: values are never renumbered or reused, so a
@@ -261,7 +262,7 @@ readability; on disk it is a single line):
           "bind": 1,
           "log_file": "/tmp/final_check/t-fbd87939335a24cd-app.pfw.gz"
         },
-        "build": {"mpi": 1, "hdf5": 1, "hip": 0, "finstrument": 0},
+        "build": {"mpi": 1, "hdf5": 1, "hip": 0, "cuda": 0, "finstrument": 0},
         "used": {"C_APP": 1, "LIBC_IO": 1},
         "app": {"batch_size": 32, "model": "resnet50"}
       }
@@ -286,7 +287,7 @@ dotted keys, so any one group can be sliced out at once with a tool like
            extension)
  build     Layers this build was compiled with support for,
            regardless of whether they were used this run, e.g.
-           ``build.mpi``, ``build.hdf5``, ``build.hip``,
+           ``build.mpi``, ``build.hdf5``, ``build.hip``, ``build.cuda``,
            ``build.finstrument``
  used      Layers (see `Event Types`_) that produced at least one
            event this run, plus any named sub-layer/integration
