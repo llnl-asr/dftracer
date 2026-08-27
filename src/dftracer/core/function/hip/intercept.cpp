@@ -174,6 +174,37 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
                                         uint64_t drop_count) {
   DFTRACER_LOG_DEBUG("HIPFunction::tool_tracing_callback");
   auto function = dftracer::Singleton<dftracer::HIPFunction>::get_instance();
+
+  // TEARDOWN GUARD.
+  //
+  // rocprofiler flushes its buffers from its OWN thread pool (PTL::ThreadPool),
+  // and it also flushes once more from its atexit tool_fini() -- by which point
+  // DFTracerCore::finalize() has already destroyed the DFTLogger and its
+  // BufferManager. The late callback then walked into freed memory and died:
+  //
+  //   #0 dftracer::BufferManager::log_data_event()   buffer/buffer.cpp:100
+  //        this->config->aggregation_enable    <-- config on a freed manager
+  //   #1 DFTLogger::log()                      core/df_logger.h
+  //   #2 dftracer::HIPFunction::tool_tracing_callback()
+  //   #3 rocprofiler::buffer::flush()          librocprofiler-sdk
+  //   #7 PTL::ThreadPool::execute_thread()     rocprofiler's thread pool
+  //
+  // The freed logger reads back as garbage rather than null, so neither a
+  // nullptr check nor DFTLogger::is_active() catches it (is_init is garbage
+  // non-zero). The only reliable interlock is HIPFunction's own flag, since the
+  // HIPFunction singleton outlives the logger.
+  //
+  // Rank-count sensitive purely because it is a race: more ranks -> more GPU
+  // activity -> records still buffered at exit -> the late flush overlaps
+  // teardown. Measured on MI250X: clean at 1-2 ranks, SIGSEGV 3/3 at >=3 ranks,
+  // and invisible under gdb because the slowdown closes the window. The dropped
+  // -event record (PAGE_MIGRATION_DROPPED_EVENT) in the crashing batch confirms
+  // the buffers were under pressure.
+  if (function == nullptr ||
+      function->finalized.load(std::memory_order_acquire))
+    return;
+  if (function->logger == nullptr) return;
+
   auto client_name_info = function->client_name_info;
   assert(user_data != nullptr);
   assert(drop_count == 0 && "drop count should be zero for lossless policy");
