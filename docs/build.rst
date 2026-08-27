@@ -42,8 +42,8 @@ From PyPI (Recommended)
     pip install dftracer
 
 This installs a prebuilt wheel that traces POSIX and STDIO I/O. It requires
-nothing from the host, but it cannot trace MPI, HDF5 or HIP; for those see
-`Enabling MPI, HDF5 and HIP`_.
+nothing from the host, but it cannot trace MPI, HDF5, HIP or CUDA; for those see
+`Enabling MPI, HDF5, HIP and CUDA`_.
 
 Development builds are published from every merge into ``develop``, versioned
 ``<last release>.postN.dev0``, as both wheels and a source distribution, so a
@@ -102,10 +102,10 @@ From Github
     This enables clean management of pip installation and uninstallations.
 
 ------------------------------------------
-Enabling MPI, HDF5 and HIP
+Enabling MPI, HDF5, HIP and CUDA
 ------------------------------------------
 
-MPI, HDF5 and HIP support are compile-time options, so they require a build
+MPI, HDF5, HIP and CUDA support are compile-time options, so they require a build
 against the libraries you run with. The prebuilt wheel cannot provide them:
 DFTracer intercepts calls into the MPI or HDF5 library the application loads, and
 the interception is generated for a specific implementation and version, so a
@@ -150,10 +150,12 @@ passed to CMake. See `Build Variables`_ for the full list:
    DFTRACER_ENABLE_MPI                MPI rank in traces and MPI/MPI-IO interception (default OFF).
    DFTRACER_ENABLE_HDF5               HDF5 interception (default OFF).
    DFTRACER_ENABLE_HIP_TRACING        AMD GPU tracing; needs ROCm/rocprofiler-sdk (default OFF).
+   DFTRACER_ENABLE_CUDA_TRACING       NVIDIA GPU tracing; needs a CUDA toolkit with CUPTI (default OFF).
+   DFTRACER_CUDA_PATH                 CUDA toolkit root to build CUPTI tracing against (default: auto-detect).
    DFTRACER_ENABLE_PAPI_TRACING       PAPI hardware counter sampling; needs libpapi-dev (default OFF).
    DFTRACER_ENABLE_VARIORUM           Node-level power counters via variorum; fetched and built if not installed (default OFF).
    DFTRACER_ENABLE_FTRACING           Function tracing via ``-finstrument-functions`` (default OFF).
-   DFTRACER_ENABLE_DYNAMIC_DETECTION  Detect HWLOC, MPI, HIP, PAPI and Variorum at run time rather than link time (default OFF).
+   DFTRACER_ENABLE_DYNAMIC_DETECTION  Detect HWLOC, MPI, HIP, CUDA, PAPI and Variorum at run time rather than link time (default OFF).
    DFTRACER_DISABLE_HWLOC             HWLOC support; ``ON`` (disabled) by default.
    DFTRACER_MPI_IMPL                  Override MPI implementation detection (default: auto-detect).
    ================================== ===========================================================================
@@ -167,7 +169,7 @@ Requirements
   ``std::filesystem``; loading a compiler module (for example
   ``module load gcc/12.1.1``) resolves it.
 * CMake 3.24 or newer.
-* the development packages of whatever is enabled (MPI, HDF5, ROCm).
+* the development packages of whatever is enabled (MPI, HDF5, ROCm, CUDA).
 
 DFTracer must be built against the same MPI and HDF5 the application uses.
 The build detects their versions and forwards them to brahma, which generates the
@@ -259,7 +261,6 @@ Build Variables
 .. table:: section - main build settings using env variables or cmake flags
    :widths: auto
 
-   ================================ ======  ===========================================================================
    Environment Variable             Type    Description
    ================================ ======  ===========================================================================
    DFTRACER_BUILD_TYPE              STRING  Sets the build type for DFTRACER (default Release). Values are Debug or Release
@@ -288,6 +289,38 @@ Build Variables
    DFTRACER_TEST_LD_LIBRARY_PATH    STRING  Additional ``LD_LIBRARY_PATH`` entries to include when running tests (default: empty).
    DFTRACER_MPI_TEST_LAUNCHER_FLAGS STRING  Additional flags passed to the MPI test launcher (default: auto-detected).
    ================================ ======  ===========================================================================
+=======
+   ==================================== ======  ================================================================================================
+   Environment Variable                 Type    Description
+   ==================================== ======  ================================================================================================
+   DFTRACER_BUILD_TYPE                  STRING  Sets the build type for DFTRACER (default Release). Values are Debug or Release
+   DFTRACER_ENABLE_FTRACING             BOOL    Enables function tracing (default OFF).
+   DFTRACER_ENABLE_HIP_TRACING          BOOL    Enables AMD GPU tracing (default OFF).
+   DFTRACER_ENABLE_CUDA_TRACING         BOOL    Enables NVIDIA GPU tracing via CUPTI (default OFF).
+   DFTRACER_CUDA_PATH                   PATH    CUDA toolkit root used for CUPTI tracing (default: empty/auto-detect).
+   DFTRACER_ENABLE_PAPI_TRACING         BOOL    Enables PAPI counter tracing support (default OFF).
+   DFTRACER_ENABLE_VARIORUM             BOOL    Enables Variorum node power tracing (default OFF).
+   DFTRACER_BUILD_VARIORUM              STRING  When to build variorum from source: AUTO (only if none installed), ALWAYS, NEVER (default AUTO).
+   DFTRACER_ENABLE_MPI                  BOOL    Enables MPI Rank (default OFF).
+   DFTRACER_MPI_IMPL                    STRING  Selects the MPI implementation to build against (default: empty/auto-detect).
+   DFTRACER_DISABLE_HWLOC               BOOL    Disables HWLOC (default ON).
+   DFTRACER_ENABLE_HDF5                 BOOL    Enables HDF5 tracing support (default OFF).
+   DFTRACER_ENABLE_DYNAMIC_DETECTION    BOOL    Enables Dynamic library detection for HWLOC, MPI, HIP, CUDA, PAPI, and Variorum (default OFF).
+   DFTRACER_GENERATE_INTERFACES         BOOL    Generate Brahma and DFTracer interfaces from discovered headers (default OFF).
+   DFTRACER_ENABLE_NATIVE_SCRIPT        BOOL    Build with native scripting support (default OFF).
+   DFTRACER_PYTHON_EXE                  STRING  Sets path to python executable. Only Cmake.
+   DFTRACER_PYTHON_SITE                 STRING  Sets path to python site-packages. Only Cmake.
+   DFTRACER_BUILD_PYTHON_BINDINGS       BOOL    Enable python bindings for DFTracer (default ON).
+   DFTRACER_LIBDIR_AS_LIB               BOOL    Install libraries directly under ``lib`` instead of an arch-specific subdir (default OFF).
+   DFTRACER_WARNINGS_AS_ERRORS          BOOL    Build with warnings promoted to errors (default OFF).
+   DFTRACER_USE_CLANG_LIBCXX            BOOL    Build against Clang's ``libc++`` instead of ``libstdc++`` (default OFF).
+   DFTRACER_INSTALL_DEPENDENCIES        BOOL    Install DFTracer's dependencies (cpp-logger, GOTCHA, brahma) as part of the build (default OFF).
+   DFTRACER_ENABLE_TESTS                BOOL    Enable tests for DFTracer (default OFF).
+   DFTRACER_ENABLE_DLIO_BENCHMARK_TESTS BOOL    Enable dlio_benchmark integration tests (default OFF).
+   DFTRACER_ENABLE_PAPER_TESTS          BOOL    Enable paper/reproducibility tests (default OFF).
+   DFTRACER_TEST_LD_LIBRARY_PATH        STRING  Additional ``LD_LIBRARY_PATH`` entries to include when running tests (default: empty).
+   DFTRACER_MPI_TEST_LAUNCHER_FLAGS     STRING  Additional flags passed to the MPI test launcher (default: auto-detected).
+   ==================================== ======  ================================================================================================
 
 These build variables can be set with cmake as ``-DDISABLE_HWLOC=OFF`` or as environment variables ``export DFTRACER_DISABLE_HWLOC=OFF``
 

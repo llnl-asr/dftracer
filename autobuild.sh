@@ -21,6 +21,8 @@ BUILD_DEPENDENCIES="${DFTRACER_BUILD_DEPENDENCIES:-1}"
 ENABLE_TESTS="${DFTRACER_ENABLE_TESTS:-OFF}"
 ENABLE_FTRACING="${DFTRACER_ENABLE_FTRACING:-OFF}"
 ENABLE_HIP_TRACING="${DFTRACER_ENABLE_HIP_TRACING:-OFF}"
+ENABLE_CUDA_TRACING="${DFTRACER_ENABLE_CUDA_TRACING:-OFF}"
+CUDA_PATH_DIR="${DFTRACER_CUDA_PATH:-}"
 ENABLE_MPI="${DFTRACER_ENABLE_MPI:-OFF}"
 ENABLE_HDF5="${DFTRACER_ENABLE_HDF5:-OFF}"
 ENABLE_DYNAMIC_DETECTION="${DFTRACER_ENABLE_DYNAMIC_DETECTION:-OFF}"
@@ -76,16 +78,18 @@ OPTIONS:
     --enable-coverage       Enable coverage analysis (sets build type to PROFILE and enables tests)
     --enable-ftracing       Enable function tracing
     --enable-hip            Enable HIP tracing
+    --enable-cuda           Enable CUDA (CUPTI) tracing
     --enable-mpi            Enable MPI support
     --enable-hdf5           Enable HDF5 support
     --with-hdf5 DIR         Path to custom HDF5 installation (sets HDF5_ROOT for CMake)
+    --with-cuda DIR         Path to CUDA toolkit root for CUPTI tracing (sets DFTRACER_CUDA_PATH)
     --with-mpi DIR          Path to custom MPI installation (sets MPI_HOME for CMake)
     --with-c-compiler PATH  C compiler to use (sets CMAKE_C_COMPILER)
     --with-cxx-compiler PATH C++ compiler to use (sets CMAKE_CXX_COMPILER)
     --enable-papi           Enable PAPI hardware counter tracing
     --enable-variorum       Enable Variorum node power tracing (fetches variorum if absent)
     --build-variorum WHEN   When to build variorum from source: AUTO, ALWAYS, NEVER (default AUTO)
-    --enable-dynamic-detection Enable dynamic detection of MPI, HWLOC, HIP, PAPI and Variorum at runtime
+    --enable-dynamic-detection Enable dynamic detection of MPI, HWLOC, HIP, CUDA, PAPI and Variorum at runtime
     --generate-interfaces   Generate Brahma/DFTracer interfaces from discovered MPI/HDF5 headers
     --enable-hwloc          Enable HWLOC (default: disabled)
     --enable-dlio-tests     Enable DLIO benchmark tests
@@ -116,6 +120,8 @@ ENVIRONMENT VARIABLES (same as setup.py):
     DFTRACER_ENABLE_TESTS                   Enable tests (ON/OFF)
     DFTRACER_ENABLE_FTRACING                Enable function tracing (ON/OFF)
     DFTRACER_ENABLE_HIP_TRACING             Enable HIP tracing (ON/OFF)
+    DFTRACER_ENABLE_CUDA_TRACING            Enable CUDA (CUPTI) tracing (ON/OFF)
+    DFTRACER_CUDA_PATH                      CUDA toolkit root for CUPTI tracing (empty = auto-detect)
     DFTRACER_ENABLE_MPI                     Enable MPI (ON/OFF)
     DFTRACER_ENABLE_HDF5                    Enable HDF5 (ON/OFF)
     DFTRACER_ENABLE_PAPI_TRACING            Enable PAPI counter tracing (ON/OFF)
@@ -278,6 +284,18 @@ while [[ $# -gt 0 ]]; do
             ENABLE_HIP_TRACING="ON"
             export DFTRACER_ENABLE_HIP_TRACING="ON"
             shift
+            ;;
+        --enable-cuda)
+            ENABLE_CUDA_TRACING="ON"
+            export DFTRACER_ENABLE_CUDA_TRACING="ON"
+            shift
+            ;;
+        --with-cuda)
+            CUDA_PATH_DIR="$2"
+            export DFTRACER_CUDA_PATH="$2"
+            ENABLE_CUDA_TRACING="ON"
+            export DFTRACER_ENABLE_CUDA_TRACING="ON"
+            shift 2
             ;;
         --enable-mpi)
             ENABLE_MPI="ON"
@@ -2415,6 +2433,8 @@ echo "Build Dependencies: ${BUILD_DEPENDENCIES}"
 echo "Enable Tests: ${ENABLE_TESTS}"
 echo "Enable Function Tracing: ${ENABLE_FTRACING}"
 echo "Enable HIP Tracing: ${ENABLE_HIP_TRACING}"
+echo "Enable CUDA Tracing: ${ENABLE_CUDA_TRACING}"
+if [ -n "${CUDA_PATH_DIR}" ]; then echo "CUDA Toolkit Path: ${CUDA_PATH_DIR}"; fi
 echo "Enable MPI: ${ENABLE_MPI}"
 echo "Enable HDF5: ${ENABLE_HDF5}"
 echo "Enable PAPI Tracing: ${ENABLE_PAPI_TRACING}"
@@ -2523,6 +2543,8 @@ export DFTRACER_BUILD_DEPENDENCIES="${BUILD_DEPENDENCIES}"
 export DFTRACER_ENABLE_TESTS="${ENABLE_TESTS}"
 export DFTRACER_ENABLE_FTRACING="${ENABLE_FTRACING}"
 export DFTRACER_ENABLE_HIP_TRACING="${ENABLE_HIP_TRACING}"
+export DFTRACER_ENABLE_CUDA_TRACING="${ENABLE_CUDA_TRACING}"
+if [ -n "${CUDA_PATH_DIR}" ]; then export DFTRACER_CUDA_PATH="${CUDA_PATH_DIR}"; fi
 export DFTRACER_ENABLE_MPI="${ENABLE_MPI}"
 export DFTRACER_ENABLE_HDF5="${ENABLE_HDF5}"
 export DFTRACER_ENABLE_PAPI_TRACING="${ENABLE_PAPI_TRACING}"
@@ -2803,6 +2825,7 @@ else
         "-DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX}"
         "-DDFTRACER_ENABLE_FTRACING=${ENABLE_FTRACING}"
         "-DDFTRACER_ENABLE_HIP_TRACING=${ENABLE_HIP_TRACING}"
+        "-DDFTRACER_ENABLE_CUDA_TRACING=${ENABLE_CUDA_TRACING}"
         "-DDFTRACER_ENABLE_MPI=${ENABLE_MPI}"
         "-DDFTRACER_ENABLE_HDF5=${ENABLE_HDF5}"
         "-DDFTRACER_ENABLE_PAPI_TRACING=${ENABLE_PAPI_TRACING}"
@@ -2869,6 +2892,10 @@ else
     fi
 
     # Add HDF5 root if specified
+    if [ -n "${CUDA_PATH_DIR}" ]; then
+        CMAKE_FULL_ARGS+=("-DDFTRACER_CUDA_PATH=${CUDA_PATH_DIR}")
+    fi
+
     if [ -n "${HDF5_ROOT_DIR}" ]; then
         CMAKE_FULL_ARGS+=("-DHDF5_ROOT=${HDF5_ROOT_DIR}")
         # Spack's HDF5 config can expose a directory-local target named

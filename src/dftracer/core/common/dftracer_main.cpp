@@ -3,6 +3,7 @@
 //
 #include <dftracer/core/common/dftracer_main.h>
 #include <dftracer/core/finstrument/functions.h>
+#include <dftracer/core/function/cuda/intercept.h>
 #include <dftracer/core/function/hip/intercept.h>
 #include <dftracer/core/function/papi/counters.h>
 #include <dftracer/core/utils/posix_bypass.h>
@@ -172,6 +173,13 @@ bool dftracer::DFTracerCore::finalize() {
           dftracer::Singleton<dftracer::HIPFunction>::get_instance();
       if (hip_instance != nullptr) {
         hip_instance->finalize();
+      }
+#endif
+#ifdef DFTRACER_CUDA_TRACING_ENABLE
+      auto cuda_instance =
+          dftracer::Singleton<dftracer::CUDAFunction>::get_instance();
+      if (cuda_instance != nullptr) {
+        cuda_instance->finalize();
       }
 #endif
       if (conf->io) {
@@ -487,6 +495,14 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char* _log_file,
 #else
         DFTRACER_LOG_DEBUG("HIP tracing is not enabled");
 #endif
+#ifdef DFTRACER_CUDA_TRACING_ENABLE
+        DFTRACER_LOG_DEBUG("CUDA tracing is enabled");
+        auto cuda_instance =
+            dftracer::Singleton<dftracer::CUDAFunction>::get_instance();
+        cuda_instance->initialize();
+#else
+        DFTRACER_LOG_DEBUG("CUDA tracing is not enabled");
+#endif
       }
     } else {
 #ifdef DFTRACER_FTRACING_ENABLE
@@ -497,6 +513,13 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char* _log_file,
           dftracer::Singleton<dftracer::HIPFunction>::get_instance();
       if (hip_instance != nullptr) {
         hip_instance->finalize();
+      }
+#endif
+#ifdef DFTRACER_CUDA_TRACING_ENABLE
+      auto cuda_instance =
+          dftracer::Singleton<dftracer::CUDAFunction>::get_instance();
+      if (cuda_instance != nullptr) {
+        cuda_instance->finalize();
       }
 #endif
     }

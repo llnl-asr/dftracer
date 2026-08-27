@@ -26,6 +26,7 @@ DFTracer: is a library for profiling I/O calls and application functions.
    api
    models
    trace_format
+   gpu_tracing
    ai_logging
 
 .. toctree::

@@ -988,5 +988,30 @@ set_tests_properties(${test_name} PROPERTIES WILL_FAIL TRUE)
 # END OF NEW TESTS
 # ########################################################################
 
+# ── CUDA (CUPTI) tracing ─────────────────────────────────────────────────────
+# Only registered when the library was actually built with the CUPTI backend.
+# The test program itself exits 77 (SKIP) when no NVIDIA device is present, so
+# this stays green on CPU-only build machines while still exercising the full
+# build+link path for the CUPTI code.
+if(DFTRACER_CUDA_TRACING_ENABLE)
+    add_executable(test_cuda cuda/test_cuda.cpp)
+    target_include_directories(test_cuda PRIVATE ${CUPTI_INCLUDE_DIRS})
+    target_link_libraries(test_cuda ${PROJECT_NAME}_core_dbg ${CUPTI_CUDART_LIBRARY})
+    add_dependencies(test_cuda ${PROJECT_NAME}_core_dbg)
+
+    set(test_name test_cuda_tracing)
+    df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_cuda)
+    set_common_properties(${test_name} ${CUPTI_LIBRARY_DIR} ${CUPTI_CUDART_LIBRARY_DIR})
+    set_property(TEST ${test_name} PROPERTY SKIP_RETURN_CODE 77)
+
+    # Verifies CUDA events are present, correctly typed, and -- the point of the
+    # test -- that their CUPTI timestamps were rebased onto the DFTracer clock.
+    df_add_test(check_cuda_trace_${test_name}
+        ${DFTRACER_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/cuda/check_cuda_trace.py
+        ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*)
+    set_tests_properties(check_cuda_trace_${test_name} PROPERTIES DEPENDS ${test_name})
+    set_property(TEST check_cuda_trace_${test_name} PROPERTY SKIP_RETURN_CODE 77)
+endif()
+
 # Add unit tests subdirectory
 add_subdirectory(unit)
