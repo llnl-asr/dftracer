@@ -161,25 +161,49 @@ bool dftracer::DFTracerCore::finalize() {
       }
     }
 #endif
+    // GPU profiler teardown must happen BEFORE the logger is destroyed, and
+    // must NOT be conditional on `bind`.
+    //
+    // `bind` gates the brahma/GOTCHA I/O *interception*. The HIP/CUDA backends
+    // are not interception -- they are profiler contexts owned by
+    // rocprofiler/CUPTI, whose callbacks fire from THEIR OWN threads and keep
+    // pointing at our DFTLogger until we stop them. Leaving their teardown
+    // inside `if (bind)` means an unbound session (initialize_no_bind, i.e.
+    // pure FUNCTION-mode annotation) never stops them at all: rocprofiler then
+    // flushes from its atexit tool_fini() into a logger this function has
+    // already freed, and the process SIGSEGVs at exit inside
+    // BufferManager::log_data_event() -- after the science is done but while
+    // the gzip trace stream is still being written, so it silently truncates
+    // output rather than merely being an ugly exit.
+    //
+    // Hoisting it out also puts it in the same position as the PAPI sampler
+    // above: stop every asynchronous producer of trace events first, then
+    // dismantle what they were writing into.
+#ifdef DFTRACER_HIP_TRACING_ENABLE
+    {
+      auto hip_instance =
+          dftracer::Singleton<dftracer::HIPFunction>::get_instance();
+      if (hip_instance != nullptr) {
+        DFTRACER_LOG_INFO("Stop HIP tracing before releasing the logger");
+        hip_instance->finalize();
+      }
+    }
+#endif
+#ifdef DFTRACER_CUDA_TRACING_ENABLE
+    {
+      auto cuda_instance =
+          dftracer::Singleton<dftracer::CUDAFunction>::get_instance();
+      if (cuda_instance != nullptr) {
+        DFTRACER_LOG_INFO("Stop CUDA tracing before releasing the logger");
+        cuda_instance->finalize();
+      }
+    }
+#endif
     if (bind) {
 #ifdef DFTRACER_FTRACING_ENABLE
       auto function_instance = dftracer::Function::get_instance();
       if (function_instance != nullptr) {
         function_instance->finalize();
-      }
-#endif
-#ifdef DFTRACER_HIP_TRACING_ENABLE
-      auto hip_instance =
-          dftracer::Singleton<dftracer::HIPFunction>::get_instance();
-      if (hip_instance != nullptr) {
-        hip_instance->finalize();
-      }
-#endif
-#ifdef DFTRACER_CUDA_TRACING_ENABLE
-      auto cuda_instance =
-          dftracer::Singleton<dftracer::CUDAFunction>::get_instance();
-      if (cuda_instance != nullptr) {
-        cuda_instance->finalize();
       }
 #endif
       if (conf->io) {

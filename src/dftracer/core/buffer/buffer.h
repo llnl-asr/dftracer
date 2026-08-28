@@ -13,6 +13,7 @@
 #include <dftracer/core/writer/stdio_writer.h>
 
 #include <any>
+#include <atomic>
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
@@ -21,6 +22,39 @@ class BufferManager {
  public:
   BufferManager()
       : buffer(nullptr), buffer_pos(0), mtx(), app_name(), rank(-1) {}
+
+  // TWO-PHASE CONSTRUCTION GUARD.
+  //
+  // The constructor above deliberately does NOT wire `config` -- that happens
+  // later, in initialize(). But Singleton<BufferManager>::get_instance()
+  // publishes the pointer as soon as the object is constructed, so between
+  // construction and initialize() this object is reachable with config ==
+  // nullptr and rank == -1.
+  //
+  // Asynchronous producers do not respect that window. rocprofiler registers
+  // through the exported rocprofiler_configure symbol at LOAD time -- before
+  // dftracer initializes -- and flushes its buffers from its own thread pool.
+  // A flush landing in the window called log_data_event() and dereferenced a
+  // null config:
+  //
+  //   #0 BufferManager::log_data_event()   buffer.cpp: this->config->...
+  //   #1 DFTLogger::log()
+  //   #2 HIPFunction::tool_tracing_callback()
+  //   #3 rocprofiler::buffer::flush()      librocprofiler-sdk
+  //   #7 PTL::ThreadPool::execute_thread()
+  //
+  // DFTLogger::is_init is already true at that point (it is set once the
+  // logger has *obtained* this singleton, not once this singleton is usable),
+  // so no existing guard caught it. Measured on MI250X: clean at 1-2 ranks,
+  // SIGSEGV 3/3 at >=3 ranks -- more ranks start GPU work sooner and fill
+  // rocprofiler's buffers inside the window -- and invisible under gdb, whose
+  // slowdown moves initialize() out from under the flush.
+  //
+  // `ready` closes both ends: false until initialize() has wired everything,
+  // and false again from the start of finalize(), so a late flush during
+  // teardown is equally harmless. Atomic because it is read from producer
+  // threads dftracer does not own.
+  bool inline is_ready() const { return ready.load(std::memory_order_acquire); }
   ~BufferManager() {}
 
   void inline set_app_name(const char* name) { app_name = name; }
@@ -58,6 +92,7 @@ class BufferManager {
   std::shared_mutex mtx;
   std::string app_name;
   int rank;
+  std::atomic<bool> ready{false};
 
   std::shared_ptr<dftracer::ConfigurationManager> config;
   std::shared_ptr<dftracer::JsonLines> serializer;

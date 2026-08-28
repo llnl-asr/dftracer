@@ -4,6 +4,7 @@
 #define DFTRACER_HIP_INTERCEPT_H
 
 #ifdef DFTRACER_DEBUG
+#include <atomic>
 #include <dftracer/core/dftracer_config_dbg.hpp>
 #else
 #include <dftracer/core/dftracer_config.hpp>
@@ -44,7 +45,11 @@ class HIPFunction : public dftracer::GenericFunction {
   rocprofiler_buffer_id_t client_buffer = {0};
   rocprofiler_context_id_t client_ctx = {0};
   // Guards against the double teardown described in finalize().
-  bool finalized = false;
+  // ATOMIC: read from rocprofiler's own PTL thread-pool threads (which run the
+  // buffer-flush tracing callback), written by the thread running finalize().
+  // A plain bool here is a data race and, worse, lets a late callback sail past
+  // the guard below into a destroyed logger.
+  std::atomic<bool> finalized{false};
   std::unordered_map<rocprofiler_kernel_id_t, kernel_symbol_data_t>
       client_kernels;
 
