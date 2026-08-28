@@ -381,6 +381,26 @@ class DFTLogger {
     return t;
   }
 
+// Which MPI implementations brahma actually intercepts.
+//
+// dftracer's OWN MPI calls in handle_mpi() below must use the PMPI_ entry points
+// for every implementation in this set. If they use the public MPI_ names they
+// are caught by our own interceptors, and the result is unbounded recursion:
+//   interceptor -> DFT_LOGGER_START_ALWAYS -> logger -> handle_mpi()
+//     -> MPI_Comm_rank -> interceptor -> ...
+// There is no reentrancy guard anywhere in the logger to stop it, and each level
+// allocates a `new dftracer::Metadata`, so the process dies of OOM rather than a
+// stack overflow. Measured on MVAPICH2 2.3.7: a SINGLE rank exhausted a 515 GB
+// node and the trace was left 0 bytes.
+//
+// This set MUST stay in sync with the implementation arms of the interceptor
+// guards in core/brahma/mpi.cpp and core/brahma/mpiio.cpp. Adding an
+// implementation there without adding it here reintroduces the recursion.
+#if defined(BRAHMA_MPI_IMPL_CRAYMPICH) || defined(BRAHMA_MPI_IMPL_MPICH) || \
+    defined(BRAHMA_MPI_IMPL_OPENMPI) || defined(BRAHMA_MPI_IMPL_MVAPICH)
+#define DFTRACER_MPI_SELF_CALLS_ARE_INTERCEPTED 1
+#endif
+
   inline void handle_mpi(ThreadID tid) {
 #if defined(DFTRACER_MPI_ENABLE) && defined(BRAHMA_ENABLE_MPI)
     if (!mpi_event && !dftracer_mpi_fork_guard().load()) {
@@ -388,8 +408,7 @@ class DFTLogger {
       int finalized;
       int status = MPI_SUCCESS;
       int finalized_status = MPI_SUCCESS;
-#if defined(BRAHMA_MPI_IMPL_CRAYMPICH) || defined(BRAHMA_MPI_IMPL_MPICH) || \
-    defined(BRAHMA_MPI_IMPL_OPENMPI)
+#ifdef DFTRACER_MPI_SELF_CALLS_ARE_INTERCEPTED
       status = PMPI_Initialized(&initialized);
       finalized_status = PMPI_Finalized(&finalized);
 #else
@@ -402,8 +421,7 @@ class DFTLogger {
       if (status == MPI_SUCCESS && initialized == true &&
           finalized_status == MPI_SUCCESS && finalized == false) {
         int rank = 0;
-#if defined(BRAHMA_MPI_IMPL_CRAYMPICH) || defined(BRAHMA_MPI_IMPL_MPICH) || \
-    defined(BRAHMA_MPI_IMPL_OPENMPI)
+#ifdef DFTRACER_MPI_SELF_CALLS_ARE_INTERCEPTED
         PMPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #else
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
