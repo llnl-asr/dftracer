@@ -383,15 +383,16 @@ class DFTLogger {
 
 // Which MPI implementations brahma actually intercepts.
 //
-// dftracer's OWN MPI calls in handle_mpi() below must use the PMPI_ entry points
-// for every implementation in this set. If they use the public MPI_ names they
-// are caught by our own interceptors, and the result is unbounded recursion:
+// dftracer's OWN MPI calls in handle_mpi() below must use the PMPI_ entry
+// points for every implementation in this set. If they use the public MPI_
+// names they are caught by our own interceptors, and the result is unbounded
+// recursion:
 //   interceptor -> DFT_LOGGER_START_ALWAYS -> logger -> handle_mpi()
 //     -> MPI_Comm_rank -> interceptor -> ...
-// There is no reentrancy guard anywhere in the logger to stop it, and each level
-// allocates a `new dftracer::Metadata`, so the process dies of OOM rather than a
-// stack overflow. Measured on MVAPICH2 2.3.7: a SINGLE rank exhausted a 515 GB
-// node and the trace was left 0 bytes.
+// There is no reentrancy guard anywhere in the logger to stop it, and each
+// level allocates a `new dftracer::Metadata`, so the process dies of OOM rather
+// than a stack overflow. Measured on MVAPICH2 2.3.7: a SINGLE rank exhausted a
+// 515 GB node and the trace was left 0 bytes.
 //
 // This set MUST stay in sync with the implementation arms of the interceptor
 // guards in core/brahma/mpi.cpp and core/brahma/mpiio.cpp. Adding an
