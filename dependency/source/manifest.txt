@@ -1,7 +1,7 @@
 # DFTracer vendored C/C++ dependency manifest.
 
 gotcha       GOTCHA-1.0.10.tar.gz     9113c748ee91a159ab08e2a402e739952c4dc4b4b77cf4d569ca17eb2e360ff8  https://github.com/LLNL/GOTCHA/archive/refs/tags/v1.0.10.tar.gz
-cpp-logger   cpp-logger-0.0.8.tar.gz  3831718f9d9b079cffde73a0180c777d139f74206c5ab2d7db4f2294f15df25f  git+ssh://git@czgitlab.llnl.gov:7999/dftracer/cpp-logger.git@v0.0.8
+cpp-logger   cpp-logger-0.0.8.tar.gz  3831718f9d9b079cffde73a0180c777d139f74206c5ab2d7db4f2294f15df25f  git+https://github.com/llnl-asr/cpp-logger.git@v0.0.8
 yaml-cpp     yaml-cpp-0.6.3.tar.gz    77ea1b90b3718aa0c324207cb29418f5bced2354c2e483a9523d98c3460af1ed  https://github.com/jbeder/yaml-cpp/archive/refs/tags/yaml-cpp-0.6.3.tar.gz
 libuv        libuv-1.52.1.tar.gz      478baf2599bfbc882c355288c9cb6f92e0e7dda435fa04031fa5b607cf3f414c  https://github.com/libuv/libuv/archive/refs/tags/v1.52.1.tar.gz
 brahma       brahma-1.1.0.tar.gz      d229daae5382eef2e37e9de21faa266cc53662c14afd8459935683e404c9438f  https://github.com/hariharan-devarajan/brahma/archive/refs/tags/v1.1.0.tar.gz

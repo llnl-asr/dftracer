@@ -70,10 +70,10 @@ pip install dftracer==2.1.0.post5   # a specific one
 
 ```bash
 DFTRACER_VERSION=develop
-pip install git+https://github.com/LLNL/dftracer.git@${DFTRACER_VERSION}
-pip install git+https://github.com/LLNL/dftracer.git@${DFTRACER_VERSION}#egg=dftracer[dfanalyzer]
+pip install git+https://github.com/llnl-asr/dftracer.git@${DFTRACER_VERSION}
+pip install git+https://github.com/llnl-asr/dftracer.git@${DFTRACER_VERSION}#egg=dftracer[dfanalyzer]
 # if you want to use old version of DFAnalyzer
-# pip install git+https://github.com/LLNL/dftracer.git@${DFTRACER_VERSION}#egg=dftracer[dfanalyzer_old]
+# pip install git+https://github.com/llnl-asr/dftracer.git@${DFTRACER_VERSION}#egg=dftracer[dfanalyzer_old]
 ```
 
 ### From Source
