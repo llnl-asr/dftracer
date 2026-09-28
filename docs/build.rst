@@ -94,7 +94,7 @@ From Github
 .. code-block:: Bash
 
   DFT_VERSION=v1.0.4
-  pip install git+https://github.com/LLNL/dftracer.git@${DFT_VERSION}
+  pip install git+https://github.com/llnl-asr/dftracer.git@${DFT_VERSION}
 
 .. attention::
 
