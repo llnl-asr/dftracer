@@ -6,7 +6,7 @@
 
 **Version:** `$(cat PACKAGE_VERSION 2>/dev/null || echo "2.0.2")`
 
-[![Build and Test](https://github.com/LLNL/dftracer/actions/workflows/ci.yml/badge.svg)](https://github.com/LLNL/dftracer/actions/workflows/ci.yml)
+[![Build and Test](https://github.com/llnl-asr/dftracer/actions/workflows/ci.yml/badge.svg)](https://github.com/llnl-asr/dftracer/actions/workflows/ci.yml)
 [![Coverage Status](https://coveralls.io/repos/github/LLNL/dftracer/badge.svg?branch=develop)](https://coveralls.io/github/LLNL/dftracer?branch=develop)
 [![Documentation Status](https://readthedocs.org/projects/dftracer/badge/?version=latest)](https://dftracer.readthedocs.io/en/latest/?badge=latest)
 ![PyPI - Version](https://img.shields.io/pypi/v/dftracer?label=PyPI)
@@ -79,7 +79,7 @@ pip install git+https://github.com/LLNL/dftracer.git@${DFTRACER_VERSION}#egg=dft
 ### From Source
 
 ```bash
-git clone git@github.com:LLNL/dftracer.git
+git clone https://github.com/llnl-asr/dftracer.git
 cd dftracer
 # You can skip this for installing the dev branch.
 # for latest stable version use master branch.

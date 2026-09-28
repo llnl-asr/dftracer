@@ -80,7 +80,7 @@ variables:
   # Repository information
   DLIO_BENCHMARK_REPO: https://github.com/argonne-lcf/dlio_benchmark.git
   DLIO_BENCHMARK_TAG: main
-  DFTRACER_REPO: https://github.com/LLNL/dftracer.git
+  DFTRACER_REPO: https://github.com/llnl-asr/dftracer.git
   # test variable
   ENV_NAME: dlio_env
   # test variables

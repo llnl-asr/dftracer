@@ -92,7 +92,7 @@ Step 4: Get the montage-pegasus-v3
 
     pip install astropy
     pip install pegasus-wms
-    pip install git+https://github.com/LLNL/dftracer.git
+    pip install git+https://github.com/llnl-asr/dftracer.git
 
 4.3 Get the code:
 
