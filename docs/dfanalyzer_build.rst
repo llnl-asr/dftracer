@@ -8,7 +8,7 @@ From source (Recommended)
 
 .. code-block:: Bash
 
-    git clone git@github.com:LLNL/dftracer.git
+    git clone https://github.com/llnl-asr/dftracer.git
     cd dftracer
     pip install ".[dfanalyzer]"
 

@@ -38,7 +38,7 @@ jobs:
           fi
           url="${{ github.event.pull_request.head.repo.clone_url }}"
           if [ -z "$url" ]; then
-            url="https://github.com/LLNL/dftracer.git"
+            url="https://github.com/llnl-asr/dftracer.git"
           fi
           echo "branch=$branch" >> $GITHUB_OUTPUT
           echo "url=$url" >> $GITHUB_OUTPUT
@@ -215,7 +215,7 @@ jobs:
 
   store-results:
     needs: benchmark
-    if: ${{ needs.benchmark.outputs.skip == 'true' && (needs.benchmark.outputs.branch != 'develop' || needs.benchmark.outputs.url != 'https://github.com/LLNL/dftracer.git') }}
+    if: ${{ needs.benchmark.outputs.skip == 'true' && (needs.benchmark.outputs.branch != 'develop' || needs.benchmark.outputs.url != 'https://github.com/llnl-asr/dftracer.git') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write # Grants write access to the repository's contents

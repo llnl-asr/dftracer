@@ -441,7 +441,7 @@ open build/coverage/html/index.html
 
 - [gcovr Documentation](https://gcovr.com/)
 - [Coveralls.io](https://coveralls.io/github/LLNL/dftracer)
-- [GitHub Actions Artifacts](https://github.com/LLNL/dftracer/actions)
+- [GitHub Actions Artifacts](https://github.com/llnl-asr/dftracer/actions)
    - `test/py/` for Python tests
 
 2. Add test to `test/CMakeLists.txt`

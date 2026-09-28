@@ -12,7 +12,7 @@ This section describes how to use `Perfetto UI <https://ui.perfetto.dev/>`_ to v
     * The `DFTracer Viewer <https://marketplace.visualstudio.com/items?itemName=rayandrew.dftracer-viewer>`_
       VS Code extension (`source <https://github.com/rayandrew/vscode-dftracer-viewer>`_),
       for browsing a trace in the editor.
-    * `dftracer-utils <https://github.com/LLNL/dftracer-utils>`_
+    * `dftracer-utils <https://github.com/llnl-asr/dftracer-utils>`_
       (`docs <https://dftracer.readthedocs.io/projects/utils/>`_), for
       querying and summarising from the command line.
 

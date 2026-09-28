@@ -1,6 +1,5 @@
 include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/modules/dftracer-utils.cmake)
-# NOTE(gitlab-migration): was https://github.com/hariharan-devarajan/cpp-logger.git — restore when moving back to GitHub (see .migration/REVERT.md)
-dftracer_install_external_project(cpp-logger 2.0.0 "CPP_LOGGER" ssh://git@czgitlab.llnl.gov:7999/dftracer/cpp-logger.git v0.0.8 ${CMAKE_INSTALL_PREFIX} "")
+dftracer_install_external_project(cpp-logger 2.0.0 "CPP_LOGGER" https://github.com/llnl-asr/cpp-logger.git v0.0.8 ${CMAKE_INSTALL_PREFIX} "")
 
 # Build Brahma with MPI and/or HDF5 support based on dftracer options
 # Keep BRAHMA's core targets/install rules enabled in the currently pinned branch.
@@ -195,8 +194,7 @@ else()
   ExternalProject_Add(
     brahma
     PREFIX ${CMAKE_BINARY_DIR}
-    # NOTE(gitlab-migration): was https://github.com/hariharan-devarajan/brahma.git — restore when moving back to GitHub (see .migration/REVERT.md)
-    GIT_REPOSITORY ssh://git@czgitlab.llnl.gov:7999/dftracer/brahma.git
+    GIT_REPOSITORY https://github.com/llnl-asr/brahma.git
     GIT_TAG v1.1.0
     TIMEOUT 10
     PATCH_COMMAND ${CMAKE_COMMAND}
