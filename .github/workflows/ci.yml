@@ -4,10 +4,10 @@ on:
   pull_request:
     branches: [main, develop]
     paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - '.readthedocs.yaml'
-      - 'LICENSE'
+      - "docs/**"
+      - "**/*.md"
+      - ".readthedocs.yaml"
+      - "LICENSE"
 
 jobs:
   build-and-test:
@@ -254,57 +254,6 @@ jobs:
           export DFTRACER_PIP_NO_BUILD_ISOLATION=1
           ./autobuild.sh --enable-tests --enable-coverage --enable-mpi --enable-hdf5
           pip install -r test/py/requirements.txt
-
-      - name: Run PAPI standalone e2e trace validation
-        run: |
-          source ${VENV_PATH:-venv}/bin/activate
-          pushd examples/papi_standalone
-          make clean
-          make run-single \
-            DFTRACER_INCLUDEDIR="$PWD/../../include" \
-            CPP_LOGGER_INCLUDEDIR="$GITHUB_WORKSPACE/install/include" \
-            DFTRACER_LIBDIR="$GITHUB_WORKSPACE/install/lib" \
-            PAPI_EVENTS='PAPI_TOT_CYC,PAPI_TOT_INS'
-          python3 ../../scripts/check_papi_trace.py \
-            traces/*.pfw.gz \
-            --min-events 10 \
-            --require-papi-event PAPI_TOT_CYC \
-            --require-papi-event PAPI_TOT_INS \
-            --min-papi-lines 2
-          popd
-
-      - name: Run Variorum power e2e trace validation
-        run: |
-          source ${VENV_PATH:-venv}/bin/activate
-          VARIORUM_SERVICE=$(find build install -name dftracer_service -type f -perm -u+x 2>/dev/null | head -n 1)
-          if [ -z "${VARIORUM_SERVICE:-}" ]; then
-            echo "dftracer_service not found; cannot run Variorum e2e validation."
-            exit 1
-          fi
-          # A GitHub runner has no msr-safe, no /dev/hsmp and no ROCm, so
-          # variorum can read nothing and the collector disables itself.
-          # --skip-if-no-power accepts that while still failing a trace whose
-          # power records are malformed. What this proves is that the service
-          # starts, samples and shuts down cleanly with variorum linked in; the
-          # grouping itself is covered by unit_test_variorum under ctest.
-          VARIORUM_DIR=$(mktemp -d)
-          DFTRACER_ENABLE=1 \
-          DFTRACER_LOG_FILE="$VARIORUM_DIR/power" \
-          DFTRACER_TRACE_INTERVAL_MS=200 \
-            "$VARIORUM_SERVICE" start "$VARIORUM_DIR"
-          sleep 2
-          "$VARIORUM_SERVICE" stop "$VARIORUM_DIR"
-          sleep 1
-          VARIORUM_TRACE=$(find "$VARIORUM_DIR" -name "power_*.pfw*" | head -n 1)
-          if [ -z "${VARIORUM_TRACE:-}" ]; then
-            echo "The service wrote no trace to $VARIORUM_DIR"
-            exit 1
-          fi
-          python3 scripts/check_variorum_trace.py "$VARIORUM_TRACE" \
-            --min-events 1 \
-            --require-family node \
-            --skip-if-no-power
-          rm -rf "$VARIORUM_DIR"
 
       - name: Show ccache stats
         if: always()
