@@ -148,30 +148,55 @@ namespace dftracer {
 // sampled once by reading both clocks back to back.  This is exactly what the
 // HIP/rocprofiler backend does, so CUDA, HIP and CPU-side events all share one
 // timeline.
-static double cupti_ns_to_time_metric_factor() {
+// Nanoseconds per one unit of the configured time metric: ns -> 1, us -> 1000,
+// ms -> 1e6, s -> 1e9. Integer, so the conversion never goes through a double.
+static uint64_t cupti_ns_per_time_metric_unit() {
   auto config =
       dftracer::Singleton<dftracer::ConfigurationManager>::get_instance();
-  return time_metric_units_per_second(config->time_metric) / 1e9;
+  double per_sec = time_metric_units_per_second(config->time_metric);
+  if (per_sec <= 0) per_sec = 1e6;  // defensive: the unit table's own default
+  return (uint64_t)(1e9 / per_sec);
+}
+
+// CUPTI timestamps are ~1.8e18 ns and the logger's are ~1.8e15 us -- both past
+// 2^53, so they cannot survive a round trip through a double. Divide in integer
+// space: exact, and with no representable-range cliff.
+static inline TimeResolution cupti_ns_to_metric(uint64_t ns) {
+  const uint64_t per_unit = cupti_ns_per_time_metric_unit();
+  return (TimeResolution)(per_unit > 1 ? ns / per_unit : ns);
 }
 
 TimeResolution CUDAFunction::transform_time(uint64_t end_time,
                                             uint64_t start_time) {
-  double factor = cupti_ns_to_time_metric_factor();
-  return std::floor(end_time * factor) - std::floor(start_time * factor);
+  const TimeResolution e = cupti_ns_to_metric(end_time);
+  const TimeResolution s = cupti_ns_to_metric(start_time);
+  return e > s ? e - s : 0;
 }
 
 TimeResolution CUDAFunction::transform_timestamp(uint64_t timestamp) {
-  double factor = cupti_ns_to_time_metric_factor();
-  if (time_diff == 0) {
+  if (!time_diff_resolved) {
     uint64_t cupti_now = 0;
     // Deliberately sampled lazily: cuptiGetTimestamp() only returns a usable
-    // value once CUPTI is initialized.  If it is not yet, leave time_diff
+    // value once CUPTI is initialized. If it is not yet, leave the offset
     // unresolved and retry on the next record.
     if (cuptiGetTimestamp(&cupti_now) == CUPTI_SUCCESS && cupti_now != 0) {
-      time_diff = logger->get_time() - std::floor(cupti_now * factor);
+      // SIGNED, and this is the whole bug. CUPTI's clock is the SAME epoch as
+      // gettimeofday() here (measured: they agree to ~1us), so this offset is
+      // ~0 and is as likely to be negative as positive. Computed in an unsigned
+      // type it wrapped to ~2^64; the old code then added that to a double and
+      // converted back, overflowing the unsigned range so EVERY timestamp after
+      // the offset resolved came out as exactly 0. Only the handful of events
+      // logged before resolution had correct times.
+      time_diff =
+          (int64_t)logger->get_time() - (int64_t)cupti_ns_to_metric(cupti_now);
+      time_diff_resolved = true;
     }
   }
-  return std::floor(timestamp * factor) + time_diff;
+  const int64_t base = (int64_t)cupti_ns_to_metric(timestamp);
+  const int64_t shifted = base + time_diff;
+  // A negative result would wrap on the unsigned return type; the unshifted
+  // CUDA time is a better answer than a wrapped one.
+  return (TimeResolution)(shifted > 0 ? shifted : base);
 }
 
 // ── Small enum → string helpers, so event names read like the CUDA API ──────
