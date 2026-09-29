@@ -258,18 +258,12 @@ jobs:
       - name: Run PAPI standalone e2e trace validation
         run: |
           source ${VENV_PATH:-venv}/bin/activate
-          DFTRACER_DIR=$(realpath $(find build -type d -name "dftracer.dftracer" | head -n 1))
-          if [ -z "${DFTRACER_DIR:-}" ] || [ ! -d "$DFTRACER_DIR" ]; then
-            echo "No DFTRACER build directory found; cannot run PAPI e2e validation."
-            exit 1
-          fi
-
           pushd examples/papi_standalone
           make clean
           make run-single \
             DFTRACER_INCLUDEDIR="$PWD/../../include" \
-            CPP_LOGGER_INCLUDEDIR="$PWD/../../include" \
-            DFTRACER_LIBDIR="$DFTRACER_DIR/../lib64" \
+            CPP_LOGGER_INCLUDEDIR="$GITHUB_WORKSPACE/install/include" \
+            DFTRACER_LIBDIR="$GITHUB_WORKSPACE/install/lib" \
             PAPI_EVENTS='PAPI_TOT_CYC,PAPI_TOT_INS'
           python3 ../../scripts/check_papi_trace.py \
             traces/*.pfw.gz \
