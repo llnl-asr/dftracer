@@ -100,7 +100,12 @@ def read_wheel(path: Path) -> list[tuple[zipfile.ZipInfo, bytes]]:
 
 
 def write_wheel(path: Path, entries: list[tuple[zipfile.ZipInfo, bytes]]) -> None:
-    """Rewrite the wheel, refreshing RECORD for whatever changed."""
+    """Rewrite the wheel, refreshing RECORD for whatever changed.
+
+    Directory entries are dropped: RECORD never lists them and PyPI rejects
+    wheels whose contents differ from RECORD.
+    """
+    entries = [(info, data) for info, data in entries if not info.filename.endswith("/")]
     names = [info.filename for info, _ in entries]
     record_name = next((n for n in names if n.endswith(".dist-info/RECORD")), None)
     if record_name:
@@ -111,8 +116,6 @@ def write_wheel(path: Path, entries: list[tuple[zipfile.ZipInfo, bytes]]) -> Non
         for name in names:
             if name == record_name:
                 new_rows.append([name, "", ""])
-            elif name.endswith("/"):
-                new_rows.append(rows.get(name, [name, "", ""]))
             else:
                 blob = blobs[name]
                 new_rows.append([name, record_hash(blob), str(len(blob))])
