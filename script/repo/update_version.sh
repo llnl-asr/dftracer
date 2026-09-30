@@ -108,36 +108,36 @@ analyze_changes() {
     LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
     
     if [[ -z "${LAST_TAG}" ]]; then
-        echo -e "${YELLOW}Warning: No previous tags found. Defaulting to patch bump.${NC}"
+        echo -e "${YELLOW}Warning: No previous tags found. Defaulting to patch bump.${NC}" >&2
         echo "patch"
         return
     fi
     
-    echo -e "${BLUE}Analyzing changes since tag: ${LAST_TAG}${NC}"
+    echo -e "${BLUE}Analyzing changes since tag: ${LAST_TAG}${NC}" >&2
     
     # Get commit messages since last tag
     COMMITS=$(git log ${LAST_TAG}..HEAD --oneline)
     
     if [[ -z "${COMMITS}" ]]; then
-        echo -e "${YELLOW}No new commits since last tag ${LAST_TAG}${NC}"
+        echo -e "${YELLOW}No new commits since last tag ${LAST_TAG}${NC}" >&2
         echo "none"
         return
     fi
     
-    echo -e "${BLUE}Commits since ${LAST_TAG}:${NC}"
-    echo "${COMMITS}"
-    echo ""
+    echo -e "${BLUE}Commits since ${LAST_TAG}:${NC}" >&2
+    echo "${COMMITS}" >&2
+    echo "" >&2
     
     # Check for breaking changes (MAJOR bump)
     if echo "${COMMITS}" | grep -iE '(BREAKING|API_CHANGE|breaking change)' > /dev/null; then
-        echo -e "${YELLOW}Detected BREAKING CHANGES${NC}"
+        echo -e "${YELLOW}Detected BREAKING CHANGES${NC}" >&2
         echo "major"
         return
     fi
     
     # Check for new features (MINOR bump)
     if echo "${COMMITS}" | grep -iE '(feat|feature|add|new|enhance)' > /dev/null; then
-        echo -e "${YELLOW}Detected new FEATURES${NC}"
+        echo -e "${YELLOW}Detected new FEATURES${NC}" >&2
         echo "minor"
         return
     fi
@@ -150,14 +150,14 @@ analyze_changes() {
         # Check if API changes
         API_CHANGES=$(git diff ${LAST_TAG}..HEAD -- 'include/*.h' 'include/**/*.h' | grep -E '^\+.*public:|^\+.*class ' || true)
         if [[ -n "${API_CHANGES}" ]]; then
-            echo -e "${YELLOW}Detected API changes in headers${NC}"
+            echo -e "${YELLOW}Detected API changes in headers${NC}" >&2
             echo "minor"
             return
         fi
     fi
     
     # Default to patch bump (bug fixes, docs, minor changes)
-    echo -e "${YELLOW}Detected bug fixes or minor changes${NC}"
+    echo -e "${YELLOW}Detected bug fixes or minor changes${NC}" >&2
     echo "patch"
 }
 
