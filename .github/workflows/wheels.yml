@@ -29,7 +29,7 @@ on:
       version_scheme:
         description: 'version for off-tag commits: post, postdev or dev'
         type: string
-        default: 'post'
+        default: 'postdev'
   workflow_call:
     inputs:
       python_versions:
@@ -40,7 +40,7 @@ on:
         default: '2.28'
       version_scheme:
         type: string
-        default: 'post'
+        default: 'postdev'
 
 permissions:
   contents: read
@@ -74,7 +74,7 @@ jobs:
       - name: Resolve the version
         id: version
         env:
-          DFTRACER_VERSION_SCHEME: ${{ inputs.version_scheme || 'post' }}
+          DFTRACER_VERSION_SCHEME: ${{ inputs.version_scheme || 'postdev' }}
         run: |
           version="$(scripts/wheel/build_wheels.sh --list | awk '/wheel version/ {print $NF}')"
           echo "version=$version" >> "$GITHUB_OUTPUT"

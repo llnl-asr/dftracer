@@ -59,11 +59,11 @@ from the host, but it cannot trace MPI, HDF5 or HIP — see
 [With MPI, HDF5 or HIP support](#with-mpi-hdf5-or-hip-support).
 
 Development builds are published from every merge into `develop`, versioned
-`<last release>.postN`, as both wheels and an sdist:
+`<last release>.postN.dev0`, as both wheels and an sdist:
 
 ```bash
 pip install --pre dftracer          # newest prerelease
-pip install dftracer==2.1.0.post5   # a specific one
+pip install dftracer==2.1.0.post5.dev0   # a specific one
 ```
 
 ### From Github
