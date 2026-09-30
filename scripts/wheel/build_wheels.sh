@@ -27,11 +27,11 @@
 #                     build runs alone to populate the caches, the rest follow N
 #                     at a time.
 #   --version-scheme S  how to version a commit that is not exactly a tag:
-#                     post (default)  2.1.1.post5 -- sorts after the tag, and is
+#                     post            2.1.1.post5 -- sorts after the tag, and is
 #                       a final release, so plain pip install resolves to it
-#                     postdev         2.1.1.post5.dev0 -- same ordering but a
-#                       prerelease, so it needs pip --pre
-#                     dev             2.1.1.dev5 -- what setup.py emits
+#                     postdev (default)  2.1.1.post5.dev0 -- same ordering but
+#                       a prerelease, so it needs pip --pre; what setup.py emits
+#                     dev             2.1.1.dev5
 #   --no-cache        do not reuse the host-side dependency prefix and ccache
 #   --no-fetch        do not run fetch_deps.sh first
 #   --rebuild-deps    discard the cached dependency prefix and rebuild it
@@ -69,7 +69,7 @@ IN_PLACE=0
 LIST_ONLY=0
 JOBS=1
 USE_CACHE=1
-VERSION_SCHEME="${DFTRACER_VERSION_SCHEME:-post}"
+VERSION_SCHEME="${DFTRACER_VERSION_SCHEME:-postdev}"
 CIBW_VERSION="${CIBW_VERSION:-3.2.1}"
 DEPS_PREFIX="/opt/dftracer-deps"
 
