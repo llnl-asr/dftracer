@@ -1040,6 +1040,7 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/dftracer.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/core/common/constants.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/core/common/typedef.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/core/common/entity.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/core/common/cpp_typedefs.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/core/common/enumeration.h)
         set(DFTRACER_CORE_PRIVATE_INCLUDE

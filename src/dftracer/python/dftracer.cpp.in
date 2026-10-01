@@ -58,18 +58,37 @@ void log_event(
     TimeResolution duration,
     std::unordered_map<std::string, std::tuple<int, int>> &int_args,
     std::unordered_map<std::string, std::tuple<int, std::string>> &string_args,
-    std::unordered_map<std::string, std::tuple<int, float>> &float_args) {
+    std::unordered_map<std::string, std::tuple<int, float>> &float_args,
+    std::unordered_map<EntityRelation, std::vector<EntityID>> &relations) {
   DFTRACER_LOG_DEBUG("py.log_event", "");
   auto args = new Metadata();
-  for (auto item : int_args)
-    args->insert_or_assign(item.first, std::get<1>(item.second),
-                           convert(std::get<0>(item.second)));
-  for (auto item : string_args)
-    args->insert_or_assign(item.first, std::get<1>(item.second),
-                           convert(std::get<0>(item.second)));
-  for (auto item : float_args)
-    args->insert_or_assign(item.first, std::get<1>(item.second),
-                           convert(std::get<0>(item.second)));
+  // EntityRelation -> entity ids, written as one "relations" object of
+  // 16-hex id arrays (DFT_RELATIONS_ARG); kept regardless of
+  // DFTRACER_INC_METADATA.
+  {
+    char hex[DFT_ENTITY_HEX_LEN];
+    std::string obj = "{";
+    bool first_rel = true;
+    for (auto &item : relations) {
+      if (item.second.empty() || !dft_relation_is_event(item.first)) continue;
+      if (!first_rel) obj += ",";
+      first_rel = false;
+      obj += "\"";
+      obj += dft_relation_name(item.first);
+      obj += "\":[";
+      for (std::size_t i = 0; i < item.second.size(); ++i) {
+        if (i) obj += ",";
+        dft_entity_hex(item.second[i], hex);
+        obj += "\"";
+        obj += hex;
+        obj += "\"";
+      }
+      obj += "]";
+    }
+    obj += "}";
+    if (!first_rel)
+      args->insert_or_assign(DFT_RELATIONS_ARG, dftracer::RawJson(obj));
+  }
   auto dftracer_inst =
       dftracer::Singleton<dftracer::DFTracerCore>::get_instance(
           ProfilerStage::PROFILER_OTHER, ProfileType::PROFILER_PY_APP);
@@ -80,6 +99,46 @@ void log_event(
   } else {
     DFTRACER_LOG_DEBUG("py.log_event dftracer not initialized", "");
   }
+}
+
+// Entities: see dftracer_declare_entity in dftracer.h and
+// core/common/entity.h. Ids are Python ints (EntityID).
+static std::shared_ptr<dftracer::DFTracerCore> py_core() {
+  return dftracer::Singleton<dftracer::DFTracerCore>::get_instance(
+      ProfilerStage::PROFILER_OTHER, ProfileType::PROFILER_PY_APP);
+}
+
+EntityID declare_entity(std::string type, std::string key, EntityStore store,
+                        std::string uri) {
+  auto core = py_core();
+  if (core == nullptr) return DFT_ENTITY_NONE;
+  return core->declare_entity(type.c_str(), key.c_str(), store, uri.c_str());
+}
+
+void declare_entity_type(std::string type, EntityRole role,
+                         std::string description) {
+  auto core = py_core();
+  if (core != nullptr)
+    core->declare_entity_type(type.c_str(), role, description.c_str());
+}
+
+void relate_entities(EntityRelation relation, EntityID subject,
+                     EntityID object) {
+  if (dft_relation_is_event(relation)) return;
+  auto core = py_core();
+  if (core != nullptr) core->relate_entities(relation, subject, object);
+}
+
+EntityID entity_hash(std::string type, std::string key) {
+  char t[DFT_ENTITY_TYPE_LEN];
+  dft_entity_sanitize(t, sizeof(t), type.c_str());
+  return dft_entity_hash(t, key.c_str());
+}
+
+std::string entity_hex(EntityID id) {
+  char hex[DFT_ENTITY_HEX_LEN];
+  dft_entity_hex(id, hex);
+  return std::string(hex);
 }
 
 void log_metadata_event(std::string key, std::string value) {

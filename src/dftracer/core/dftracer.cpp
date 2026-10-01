@@ -89,7 +89,8 @@ DFTracer::DFTracer(ConstEventNameType _name, ConstEventNameType _cat,
       name(_name),
       cat(_cat),
       type(_type),
-      metadata(nullptr) {
+      metadata(nullptr),
+      relations(nullptr) {
   DFTRACER_LOG_DEBUG("DFTracer::DFTracer event %s cat %s ", _name, _cat);
   auto dftracer_core = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
                                                ProfileType::PROFILER_CPP_APP);
@@ -129,12 +130,76 @@ void DFTracer::update(const char* key, const char* value, MetadataType type) {
   }
 }
 
+// Relations are kept per event as EntityRelation -> entity ids (integers), in
+// the order they were added, and rendered to 16-hex JSON arrays only when the
+// event is written (attach_relations).
+using RelationMap =
+    std::vector<std::pair<EntityRelation, std::vector<EntityID>>>;
+
+void DFTracer::relate(EntityRelation relation, EntityID entity) {
+  if (event_type != DF_DATA_EVENT || entity == DFT_ENTITY_NONE ||
+      !dft_relation_is_event(relation))
+    return;
+  auto* rel = static_cast<RelationMap*>(relations);
+  if (rel == nullptr) {
+    rel = new RelationMap();
+    relations = rel;
+  }
+  for (auto& [r, ids] : *rel) {
+    if (r == relation) {
+      ids.push_back(entity);
+      return;
+    }
+  }
+  rel->emplace_back(relation, std::vector<EntityID>{entity});
+}
+
+EntityID DFTracer::relate(EntityRelation relation, ConstEntityTypeName type,
+                          ConstEntityKey key, EntityStore store,
+                          ConstEntityURI uri) {
+  EntityID id = dftracer_declare_entity(type, key, store, uri);
+  relate(relation, id);
+  return id;
+}
+
+// Fold relations into the event's metadata as JSON arrays of 16-hex ids,
+// keyed by dft_relation_name(). Relations are the event's semantic content,
+// so unlike update() they do not depend on DFTRACER_INC_METADATA.
+static void attach_relations(void*& relations, dftracer::Metadata*& metadata) {
+  auto* rel = static_cast<RelationMap*>(relations);
+  if (rel == nullptr) return;
+  if (metadata == nullptr) metadata = new dftracer::Metadata();
+  char hex[DFT_ENTITY_HEX_LEN];
+  std::string obj = "{";
+  bool first_rel = true;
+  for (const auto& [r, ids] : *rel) {
+    if (!first_rel) obj += ",";
+    first_rel = false;
+    obj += "\"";
+    obj += dft_relation_name(r);
+    obj += "\":[";
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      if (i) obj += ",";
+      dft_entity_hex(ids[i], hex);
+      obj += "\"";
+      obj += hex;
+      obj += "\"";
+    }
+    obj += "]";
+  }
+  obj += "}";
+  metadata->insert_or_assign(DFT_RELATIONS_ARG, dftracer::RawJson(obj));
+  delete rel;
+  relations = nullptr;
+}
+
 void DFTracer::finalize() {
   DFTRACER_LOG_DEBUG("DFTracer::finalize event %s cat %s", name, cat);
   auto dftracer_core = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
                                                ProfileType::PROFILER_CPP_APP);
   if (dftracer_core != nullptr && dftracer_core->is_active()) {
     if (event_type == DF_DATA_EVENT) {
+      attach_relations(relations, metadata);
       TimeResolution end_time = dftracer_core->get_time();
       bool consumed = dftracer_core->log(name, cat, type, start_time,
                                          end_time - start_time, metadata);
@@ -150,6 +215,10 @@ void DFTracer::finalize() {
   if (metadata != nullptr) {
     delete metadata;
     metadata = nullptr;
+  }
+  if (relations != nullptr) {
+    delete static_cast<RelationMap*>(relations);
+    relations = nullptr;
   }
   initialized = false;
 }
@@ -243,6 +312,21 @@ void finalize_region_cleanup(struct DFTracerData** data) {
   *data = nullptr;
 }
 
+void update_relation(struct DFTracerData* data, EntityRelation relation,
+                     EntityID entity) {
+  if (data && data->profiler)
+    static_cast<DFTracer*>(data->profiler)->relate(relation, entity);
+}
+
+EntityID update_relation_entity(struct DFTracerData* data,
+                                EntityRelation relation,
+                                ConstEntityTypeName type, ConstEntityKey key,
+                                EntityStore store, ConstEntityURI uri) {
+  EntityID id = dftracer_declare_entity(type, key, store, uri);
+  update_relation(data, relation, id);
+  return id;
+}
+
 void update_metadata_int(struct DFTracerData* data, const char* key,
                          int value) {
   DFTRACER_LOG_DEBUG("dftracer.update_metadata_int");
@@ -326,6 +410,35 @@ extern "C" void set_app_metadata_string(const char* key, const char* value) {
   else
     DFTRACER_LOG_ERROR(
         "dftracer.cpp.set_app_metadata_string dftracer not initialized");
+}
+
+extern "C" EntityID dftracer_declare_entity(ConstEntityTypeName type,
+                                            ConstEntityKey key,
+                                            EntityStore store,
+                                            ConstEntityURI uri) {
+  DFTRACER_LOG_DEBUG("dftracer.declare_entity");
+  auto core = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
+                                      ProfileType::PROFILER_CPP_APP);
+  if (core == nullptr) return DFT_ENTITY_NONE;
+  return core->declare_entity(type, key, store, uri);
+}
+
+extern "C" void dftracer_declare_entity_type(
+    ConstEntityTypeName type, EntityRole role,
+    ConstEntityDescription description) {
+  DFTRACER_LOG_DEBUG("dftracer.declare_entity_type");
+  auto core = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
+                                      ProfileType::PROFILER_CPP_APP);
+  if (core != nullptr) core->declare_entity_type(type, role, description);
+}
+
+extern "C" void dftracer_relate_entities(EntityRelation relation,
+                                         EntityID subject, EntityID object) {
+  DFTRACER_LOG_DEBUG("dftracer.relate_entities");
+  if (dft_relation_is_event(relation)) return;  // event relations go on events
+  auto core = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
+                                      ProfileType::PROFILER_CPP_APP);
+  if (core != nullptr) core->relate_entities(relation, subject, object);
 }
 
 extern "C" void mark_used(const char* name) {

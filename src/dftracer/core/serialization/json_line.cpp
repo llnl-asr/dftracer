@@ -1,5 +1,6 @@
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/datastructure.h>
+#include <dftracer/core/common/entity.h>
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/singleton.h>
 #include <dftracer/core/serialization/json_line.h>
@@ -8,6 +9,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <typeinfo>
 
 static constexpr size_t DFTRACER_SERIALIZATION_EVENT_MAX = 16 * 1024;
 namespace dftracer {
@@ -75,7 +77,27 @@ size_t JsonLines::data(char* buffer, int index, ConstEventNameType event_name,
                        ThreadID thread_id) {
   size_t written_size = 0;
   int n = 0;
-  if (include_metadata && metadata != nullptr) {
+  // Entity relations (the "relations" arg) are an event's semantic content,
+  // not optional metadata: keep them even when DFTRACER_INC_METADATA is off,
+  // and drop only the optional keys.
+  if (!include_metadata && metadata != nullptr) {
+    auto* rel_only = new dftracer::Metadata();
+    for (const auto& item : *metadata) {
+      if (item.first == DFT_RELATIONS_ARG &&
+          std::get<1>(item.second).type() == typeid(dftracer::RawJson)) {
+        rel_only->insert_or_assign(
+            item.first,
+            std::any_cast<const dftracer::RawJson&>(std::get<1>(item.second)));
+      }
+    }
+    delete metadata;
+    metadata = nullptr;
+    if (rel_only->size() > 0)
+      metadata = rel_only;
+    else
+      delete rel_only;
+  }
+  if (metadata != nullptr) {
     std::stringstream all_stream;
     std::stringstream meta_stream;
     bool has_meta = convert_metadata(metadata, meta_stream);
@@ -173,6 +195,32 @@ size_t JsonLines::series(char* buffer, int index, ConstEventNameType event_name,
     buffer[DFTRACER_SERIALIZATION_EVENT_MAX - 1] = '\0';
   }
   DFTRACER_LOG_DEBUG("JsonLines.serialize %s", buffer);
+  return written_size;
+}
+
+size_t JsonLines::record(char* buffer, ConstEventNameType record_name,
+                         const char* fields, TraceEventType type,
+                         ProcessID process_id, ThreadID thread_id) {
+  int n = dftracer_logging_real_snprintf()(
+      buffer, DFTRACER_SERIALIZATION_EVENT_MAX,
+      R"({"name":"%s","cat":"dftracer","type":%u,"pid":%d,"tid":%lu,"ph":%u,"args":{"hhash":"%s",%s}})",
+      record_name, static_cast<unsigned>(type), process_id, thread_id,
+      static_cast<unsigned>(TracePhaseType::TRACE_PHASE_METADATA),
+      this->hostname_hash, fields);
+  if (n < 0) return 0;
+  size_t written_size =
+      (static_cast<size_t>(n) >= DFTRACER_SERIALIZATION_EVENT_MAX)
+          ? DFTRACER_SERIALIZATION_EVENT_MAX - 1
+          : static_cast<size_t>(n);
+  if (static_cast<size_t>(n) >= DFTRACER_SERIALIZATION_EVENT_MAX)
+    DFTRACER_LOG_WARN("JsonLines.record truncated %s record to %zu bytes",
+                      record_name, DFTRACER_SERIALIZATION_EVENT_MAX - 1);
+  if (written_size + 1 < DFTRACER_SERIALIZATION_EVENT_MAX) {
+    buffer[written_size++] = '\n';
+    buffer[written_size] = '\0';
+  } else {
+    buffer[DFTRACER_SERIALIZATION_EVENT_MAX - 1] = '\0';
+  }
   return written_size;
 }
 

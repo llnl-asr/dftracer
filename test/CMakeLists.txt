@@ -32,6 +32,14 @@ target_link_libraries(test_c ${PROJECT_NAME}_core_dbg testlib)
 add_dependencies(test_c ${PROJECT_NAME}_core_dbg)
 add_dependencies(test_c ${PROJECT_NAME}_preload_dbg)
 
+# Entity/relation API tests (C and C++); traces checked by check_entity_trace.py
+add_executable(test_entity_c c/test_entity.c)
+target_link_libraries(test_entity_c ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_entity_c ${PROJECT_NAME}_core_dbg)
+add_executable(test_entity_cpp cpp/test_entity.cpp)
+target_link_libraries(test_entity_cpp ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_entity_cpp ${PROJECT_NAME}_core_dbg)
+
 # C API Coverage Test
 add_executable(test_c_api_coverage c/test_c_api_coverage.c)
 target_compile_options(test_c_api_coverage PRIVATE ${DFTRACER_FUNCTION_FLAGS})
@@ -102,6 +110,33 @@ if(DEFINED DFTRACER_PYTHON_EXE AND NOT "${DFTRACER_PYTHON_EXE}" STREQUAL "")
         set(DFTRACER_PYTHON_H5PY_LIBDIR "${_h5py_libdir}")
     endif()
 endif()
+
+# ---- Entity/relation API: C, C++ and Python, with and without INC_METADATA
+# (relations must be recorded either way). Each run writes its own trace and
+# check_entity_trace.py validates the EH/ET/ER records and relation arrays.
+find_program(DFTRACER_ENTITY_CHECK_PYTHON NAMES python3 python)
+set(_entity_runs "c;${CMAKE_BINARY_DIR}/bin/test_entity_c" "cpp;${CMAKE_BINARY_DIR}/bin/test_entity_cpp")
+if(DEFINED DFTRACER_PYTHON_EXE AND NOT "${DFTRACER_PYTHON_EXE}" STREQUAL "")
+    list(APPEND _entity_runs "py;${DFTRACER_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/py/entity_test.py")
+endif()
+foreach(_entity_run ${_entity_runs})
+    list(GET _entity_run 0 _lang)
+    list(GET _entity_run 1 _cmd)
+    separate_arguments(_cmd)
+    foreach(_meta 1 0)
+        set(test_name test_entity_${_lang}_meta${_meta})
+        df_add_test(${test_name} ${_cmd})
+        set_common_properties(${test_name})
+        set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
+        set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=${_meta})
+        if(DFTRACER_ENTITY_CHECK_PYTHON)
+            df_add_test(check_${test_name} ${DFTRACER_ENTITY_CHECK_PYTHON}
+                ${CMAKE_CURRENT_SOURCE_DIR}/check_entity_trace.py
+                "${CMAKE_CURRENT_BINARY_DIR}/${test_name}*.pfw*")
+            set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
+        endif()
+    endforeach()
+endforeach()
 
 set(test_name test_cpp_basic_only)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_cpp ${CMAKE_CURRENT_BINARY_DIR}/data)
