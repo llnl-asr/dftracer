@@ -165,6 +165,16 @@ void BufferManager::log_counter_event(int index, ConstEventNameType name,
   compress_and_write_if_needed(size);
 }
 
+void BufferManager::log_record(ConstEventNameType record_name,
+                               const char* fields, TraceEventType type,
+                               ProcessID process_id, ThreadID tid) {
+  if (!is_ready()) return;
+  std::unique_lock<std::shared_mutex> lock(mtx);
+  size_t size = this->serializer->record(buffer + buffer_pos, record_name,
+                                         fields, type, process_id, tid);
+  compress_and_write_if_needed(size);
+}
+
 void BufferManager::log_metadata_event(ConstEventNameType name,
                                        ConstEventNameType value,
                                        ConstEventNameType record_name,

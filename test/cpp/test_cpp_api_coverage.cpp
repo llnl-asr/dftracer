@@ -25,6 +25,43 @@ void test_function_tracing() {
   usleep(1000);
 }
 
+// Test the C++ entity/relation API: declare entities and entity types, relate
+// them to events (function and region scope, static and dynamic) and to each
+// other.
+void test_entities() {
+  DFTRACER_CPP_FUNCTION();
+
+  // Entity types carry a role and a description
+  DFTRACER_CPP_ENTITY_TYPE("cpp_raw_sample", DFT_ROLE_INPUT, "An input sample");
+  DFTRACER_CPP_ENTITY_TYPE("cpp_result", DFT_ROLE_OUTPUT, "A computed result");
+
+  // Declare entities directly: store and uri are recorded with the id
+  EntityID sample = DFTRACER_CPP_ENTITY("cpp_raw_sample", "sample-0",
+                                        DFT_STORE_MEMORY, nullptr);
+  EntityID archive = DFTRACER_CPP_ENTITY("cpp_archive", "a.tar",
+                                         DFT_STORE_PARALLEL_FS, "/p/out/a.tar");
+
+  // Event relations on the enclosing function: by id, and declared inline
+  DFTRACER_CPP_FUNCTION_RELATE(DFT_REL_USED, sample);
+  DFTRACER_CPP_FUNCTION_USES("cpp_raw_sample", "sample-1");
+  DFTRACER_CPP_FUNCTION_GENERATES("cpp_result", "result-0");
+
+  // The same relations on a static and on a dynamic region
+  {
+    DFTRACER_CPP_REGION(CPP_ENTITY_REGION);
+    DFTRACER_CPP_REGION_RELATE(CPP_ENTITY_REGION, DFT_REL_USED, sample);
+    usleep(200);
+  }
+  DFTRACER_CPP_REGION_START(CPP_ENTITY_DYN_REGION);
+  DFTRACER_CPP_REGION_DYN_RELATE(CPP_ENTITY_DYN_REGION, DFT_REL_GENERATED,
+                                 archive);
+  usleep(200);
+  DFTRACER_CPP_REGION_END(CPP_ENTITY_DYN_REGION);
+
+  // Entity -> entity relation (>= 16)
+  DFTRACER_CPP_ENTITY_RELATE(DFT_REL_CONTAINS, archive, sample);
+}
+
 // Test region-based tracing APIs
 void test_region_tracing() {
   DFTRACER_CPP_FUNCTION();
@@ -115,6 +152,7 @@ int main(int argc, char* argv[]) {
   test_metadata();
   test_function_tracing();
   test_region_tracing();
+  test_entities();
   test_io_operations(argv[1]);
 
   // Finalize

@@ -58,6 +58,38 @@ void test_c_function_tracing_typed() {
   DFTRACER_C_FUNCTION_END();
 }
 
+/* Test the C entity/relation API: declare entities and entity types, relate
+ * them to events (function and region scope) and to each other. */
+void test_c_entities() {
+  DFTRACER_C_FUNCTION_START();
+
+  /* Entity types carry a role and a description */
+  DFTRACER_C_ENTITY_TYPE("c_raw_sample", DFT_ROLE_INPUT, "An input sample");
+  DFTRACER_C_ENTITY_TYPE("c_result", DFT_ROLE_OUTPUT, "A computed result");
+
+  /* Declare entities directly: store and uri are recorded with the id */
+  EntityID sample =
+      DFTRACER_C_ENTITY("c_raw_sample", "sample-0", DFT_STORE_MEMORY, NULL);
+  EntityID archive = DFTRACER_C_ENTITY("c_archive", "a.tar",
+                                       DFT_STORE_PARALLEL_FS, "/p/out/a.tar");
+
+  /* Event relations on the enclosing function: by id, and declared inline */
+  DFTRACER_C_FUNCTION_RELATE(DFT_REL_USED, sample);
+  DFTRACER_C_FUNCTION_USES("c_raw_sample", "sample-1");
+  DFTRACER_C_FUNCTION_GENERATES("c_result", "result-0");
+
+  /* The same relations on a region */
+  DFTRACER_C_REGION_START(C_ENTITY_REGION);
+  DFTRACER_C_REGION_RELATE(C_ENTITY_REGION, DFT_REL_GENERATED, archive);
+  sleep_ms(1);
+  DFTRACER_C_REGION_END(C_ENTITY_REGION);
+
+  /* Entity -> entity relation (>= 16) */
+  DFTRACER_C_ENTITY_RELATE(DFT_REL_CONTAINS, archive, sample);
+
+  DFTRACER_C_FUNCTION_END();
+}
+
 /* Test C region tracing */
 void test_c_region_tracing() {
   DFTRACER_C_FUNCTION_START();
@@ -168,12 +200,13 @@ int main(int argc, char* argv[]) {
   test_c_function_tracing_typed();
   test_c_region_tracing();
   test_c_region_tracing_typed();
+  test_c_entities();
   test_c_io_operations(argv[1]);
 
   /* Finalize */
   DFTRACER_C_FINI();
 
-  printf("All C API tests completed successfully (16/16 APIs tested)\n");
+  printf("All C API tests completed successfully (16/16 APIs + entities)\n");
 
   return 0;
 }
