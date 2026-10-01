@@ -42,7 +42,8 @@ PYBIND11_MODULE(dftracer, m) {
             std::unordered_map<std::string, std::tuple<int, float>>(),
         py::arg("relations") =
             std::unordered_map<EntityRelation, std::vector<EntityID>>());
-  py::enum_<EntityStore>(m, "EntityStore", "Where an entity instance lives")
+  py::enum_<EntityStore>(m, "EntityStore", "Where an entity instance lives",
+                        py::module_local())
       .value("MEMORY", DFT_STORE_MEMORY)
       .value("GPU_MEMORY", DFT_STORE_GPU_MEMORY)
       .value("LOCAL_DISK", DFT_STORE_LOCAL_DISK)
@@ -52,7 +53,8 @@ PYBIND11_MODULE(dftracer, m) {
       .value("DATABASE", DFT_STORE_DATABASE)
       .value("NETWORK", DFT_STORE_NETWORK)
       .value("OTHER", DFT_STORE_OTHER);
-  py::enum_<EntityRole>(m, "EntityRole", "Role of an entity type")
+  py::enum_<EntityRole>(m, "EntityRole", "Role of an entity type",
+                       py::module_local())
       .value("UNKNOWN", DFT_ROLE_UNKNOWN)
       .value("INPUT", DFT_ROLE_INPUT)
       .value("OUTPUT", DFT_ROLE_OUTPUT)
@@ -60,7 +62,8 @@ PYBIND11_MODULE(dftracer, m) {
       .value("PARAMETER", DFT_ROLE_PARAMETER)
       .value("REFERENCE", DFT_ROLE_REFERENCE);
   py::enum_<EntityRelation>(m, "EntityRelation",
-                            "Event->entity (< 16) and entity->entity relations")
+                            "Event->entity (< 16) and entity->entity relations",
+                            py::module_local())
       .value("USED", DFT_REL_USED)
       .value("GENERATED", DFT_REL_GENERATED)
       .value("INVALIDATED", DFT_REL_INVALIDATED)
