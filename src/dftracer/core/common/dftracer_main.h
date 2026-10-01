@@ -89,6 +89,25 @@ class DFTracerCore {
     logger->mark_used(name);
   }
 
+  // Entities (see DFTLogger::declare_entity). No-ops returning
+  // DFT_ENTITY_NONE when tracing isn't active.
+  inline EntityID declare_entity(ConstEntityTypeName type, ConstEntityKey key,
+                                 EntityStore store, ConstEntityURI uri) {
+    if (!is_initialized || !is_active() || logger == nullptr)
+      return DFT_ENTITY_NONE;
+    return logger->declare_entity(type, key, store, uri);
+  }
+  inline void declare_entity_type(ConstEntityTypeName type, EntityRole role,
+                                  ConstEntityDescription description) {
+    if (!is_initialized || !is_active() || logger == nullptr) return;
+    logger->declare_entity_type(type, role, description);
+  }
+  inline void relate_entities(EntityRelation relation, EntityID subject,
+                              EntityID object) {
+    if (!is_initialized || !is_active() || logger == nullptr) return;
+    logger->relate_entities(relation, subject, object);
+  }
+
   inline int enter_event() { return logger->enter_event(); }
 
   inline void exit_event() { logger->exit_event(); }

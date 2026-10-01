@@ -259,5 +259,12 @@ inline double time_metric_units_per_second(const TimeMetricType& type) {
 #define METADATA_NAME_FILE_HASH "FH"
 #define METADATA_NAME_HOSTNAME_HASH "HH"
 #define METADATA_NAME_STRING_HASH "SH"
+// Entities (see dftracer/core/common/entity.h):
+//   EH  args: {"id":"<16-hex>","type":"<type>","store":<int>,"uri":"<uri>"}
+//   ET  args: {"type":"<type>","role":<int>,"description":"<text>"}
+//   ER  args: {"relation":<int>,"subject":"<16-hex>","object":"<16-hex>"}
+#define METADATA_NAME_ENTITY_HASH "EH"
+#define METADATA_NAME_ENTITY_TYPE "ET"
+#define METADATA_NAME_ENTITY_RELATION "ER"
 #define CUSTOM_METADATA "CM"
 #endif  // DFTRACER_ENUMERATION_H

@@ -41,6 +41,13 @@ class JsonLines {
                   ConstEventNameType value, ConstEventNameType record_name,
                   TraceEventType type, ProcessID process_id, ThreadID thread_id,
                   bool is_string = true);
+  // A metadata record whose args are named fields (entity records EH/ET/ER).
+  // `fields` is the inside of the args object after hhash, e.g.
+  // "\"id\":\"8f0d...\",\"type\":\"x\",\"store\":3" -- the caller guarantees it
+  // is valid JSON (entity fields are sanitized to a JSON-safe charset).
+  size_t record(char* buffer, ConstEventNameType record_name,
+                const char* fields, TraceEventType type, ProcessID process_id,
+                ThreadID thread_id);
   size_t counter(char* buffer, int index, ConstEventNameType name,
                  ConstEventNameType category, TraceEventType type,
                  TimeResolution start_time, ProcessID process_id,

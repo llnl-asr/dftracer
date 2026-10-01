@@ -75,6 +75,9 @@ class BufferManager {
                       dftracer::Metadata* metadata, ProcessID process_id,
                       ThreadID tid);
 
+  // Metadata record with named JSON fields (see JsonLines::record).
+  void log_record(ConstEventNameType record_name, const char* fields,
+                  TraceEventType type, ProcessID process_id, ThreadID tid);
   void log_metadata_event(ConstEventNameType name, ConstEventNameType value,
                           ConstEventNameType record_name, TraceEventType type,
                           ProcessID process_id, ThreadID tid,
