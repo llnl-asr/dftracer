@@ -89,7 +89,10 @@ ENV Variables supported
    DFTRACER_DISABLE_IO              INT     Disable automatic binding of all I/O calls (default: 0).
    DFTRACER_DISABLE_POSIX           INT     Disable automatic binding of POSIX I/O calls (default: 0).
    DFTRACER_DISABLE_STDIO           INT     Disable automatic binding of STDIO I/O calls (default: 0).
-   DFTRACER_TRACE_COMPRESSION       INT     Enable trace compression (default 0).
+   DFTRACER_TRACE_COMPRESSION       INT     Enable gzip compression for application traces (default ``1``).
+                                            Set to ``1`` for compressed ``.pfw.gz`` output or ``0`` for uncompressed ``.pfw`` output.
+                                            Overrides YAML ``profiler.compression``; if unset, the YAML value is used when provided.
+                                            If neither is configured, compression is enabled.
    DFTRACER_DISABLE_TIDS            INT     Disable tracing of thread ids (default 0).
    DFTRACER_WRITE_BUFFER_SIZE       INT     Setup the buffering size for write optimization (default 0). Note: Disabled as
                                             this won't work for AI workloads which uses ``fork`` and ``spawn`` without a clear ``exit``.
