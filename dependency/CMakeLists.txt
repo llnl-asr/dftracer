@@ -173,20 +173,6 @@ if(_dftracer_dep_hdf5_version_str)
     "-DBRAHMA_HDF5_VERSION_STRING:STRING=${_dftracer_dep_hdf5_version_str}")
 endif()
 
-# brahma fetches cpp-logger and gotcha itself. Its find_package() should resolve
-# both from the install prefix we populate first, but cpp-logger's repository is
-# private, so point brahma at the staged sources as a fallback instead of letting
-# it try a clone that cannot succeed.
-foreach(_staged_dep cpp-logger gotcha)
-  dftracer_stage_dependency_source(${_staged_dep} _staged_dir)
-  if(_staged_dir)
-    string(TOUPPER "${_staged_dep}" _staged_upper)
-    string(APPEND BRAHMA_CONFIGURE_ARGS
-      ";-DFETCHCONTENT_SOURCE_DIR_${_staged_upper}=${_staged_dir}")
-    message(STATUS "[${PROJECT_NAME}] brahma: ${_staged_dep} source staged at ${_staged_dir}")
-  endif()
-endforeach()
-
 find_package(brahma 5.1.0 QUIET)
 if(brahma_FOUND)
   message(STATUS "[${PROJECT_NAME}] found brahma already installed")
@@ -195,7 +181,9 @@ else()
     brahma
     PREFIX ${CMAKE_BINARY_DIR}
     GIT_REPOSITORY https://github.com/llnl-asr/brahma.git
-    GIT_TAG v1.1.0
+    # TODO(rayandrew): replace this commit with the brahma release tag before the
+    # dftracer release, and update dependency/manifest.txt to match.
+    GIT_TAG c86a1338697265d8c29d74b17718290e30de7fbf
     TIMEOUT 10
     PATCH_COMMAND ${CMAKE_COMMAND}
       -DSOURCE_DIR=<SOURCE_DIR>

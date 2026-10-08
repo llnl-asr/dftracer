@@ -125,14 +125,9 @@ provides `std::filesystem` (GCC 9 or newer; note that a system `libstdc++` older
 than the compiler on the `PATH` can shadow it and fail the link), CMake 3.24 or
 newer, and the development packages of whatever you enable.
 
-The C/C++ dependencies (cpp-logger, GOTCHA, brahma, yaml-cpp, libuv) are built
-automatically. Their source archives ship inside the source distribution, so a
-source install needs no access to their repositories. When building from a git
-clone, fetch the ones that are not committed first:
-
-```bash
-scripts/wheel/fetch_deps.sh
-```
+The C/C++ dependencies (cpp-logger, GOTCHA, brahma, yaml-cpp, libuv) are cloned
+and built automatically, so a source install needs access to their GitHub
+repositories.
 
 To confirm the build traces what you enabled, run your application with
 `DFTRACER_ENABLE=1` and check that the trace contains the matching categories

@@ -97,10 +97,7 @@ jobs:
           python-version: "3.12"
 
       - name: Check the manifest matches the CMake pins
-        run: python3 scripts/wheel/manifest.py --check
-
-      - name: Fetch the public dependency archives
-        run: scripts/wheel/fetch_deps.sh --verify
+        run: python3 scripts/wheel/manifest.py
 
       - name: Build and test wheel
         env:
@@ -110,7 +107,6 @@ jobs:
           scripts/wheel/build_wheels.sh \
             --python "${{ matrix.python }}" \
             --glibc "${{ needs.plan.outputs.glibc }}" \
-            --no-fetch \
             --output wheelhouse
 
       - uses: actions/upload-artifact@v4

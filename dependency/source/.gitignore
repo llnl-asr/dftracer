@@ -1,5 +1,0 @@
-# Every archive here is produced by scripts/wheel/fetch_deps.sh.
-*.tar.gz
-*.tar.bz2
-*.tar.xz
-*.zip

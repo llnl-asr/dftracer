@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 #
-# Build and install DFTracer's C/C++ dependencies from the vendored archives in
-# dependency/source/ into a single prefix. This runs INSIDE the manylinux
-# container as cibuildwheel's CIBW_BEFORE_ALL step, so it must never touch the
-# network: everything comes from the archives listed in manifest.txt.
+# Build and install DFTracer's C/C++ dependencies into a single prefix, cloning
+# each pinned tag listed in dependency/manifest.txt. This runs INSIDE the
+# manylinux container as cibuildwheel's CIBW_BEFORE_ALL step.
 #
 # It also writes $PREFIX/cmake-args.txt, the -D flags the wheel build feeds back
 # to setup.py via DFTRACER_CMAKE_ARGS so CMake resolves these packages with
@@ -11,7 +10,6 @@
 #
 # Environment:
 #   DFTRACER_PROJECT_DIR   project root inside container (default /project)
-#   DFTRACER_DEPS_DIR      archives dir  (default $PROJECT_DIR/dependency/source)
 #   DFTRACER_DEPS_PREFIX   install prefix            (default /opt/dftracer-deps)
 #   DFTRACER_DEPS_WORKDIR  scratch build dir         (default /tmp/dftracer-deps)
 #   JOBS                   parallel build jobs       (default nproc)
@@ -19,11 +17,10 @@
 set -euo pipefail
 
 PROJECT_DIR="${DFTRACER_PROJECT_DIR:-/project}"
-DEPS_DIR="${DFTRACER_DEPS_DIR:-$PROJECT_DIR/dependency/source}"
 PREFIX="${DFTRACER_DEPS_PREFIX:-/opt/dftracer-deps}"
 WORK="${DFTRACER_DEPS_WORKDIR:-/tmp/dftracer-deps}"
 JOBS="${JOBS:-$(nproc)}"
-MANIFEST="$DEPS_DIR/manifest.txt"
+MANIFEST="$PROJECT_DIR/dependency/manifest.txt"
 
 STAMP="$PREFIX/.dftracer-deps-complete"
 
@@ -143,30 +140,33 @@ dep_args() {
   esac
 }
 
-extract() {
-  local name="$1" archive="$2"
-  local tarball="$DEPS_DIR/$archive"
-  [ -f "$tarball" ] || {
-    echo "[deps] missing archive $tarball -- run scripts/wheel/fetch_deps.sh" >&2
-    exit 1
-  }
-  local top
-  top="$(tar tzf "$tarball" | head -1 | cut -d/ -f1)"
-  rm -rf "$WORK/src/$name" "$WORK/src/$top"
-  tar xzf "$tarball" -C "$WORK/src"
-  # Archives use tag-derived names (GOTCHA-1.0.10, yaml-cpp-yaml-cpp-0.6.3), so
-  # normalise for FETCHCONTENT_SOURCE_DIR_* and the logs.
-  [ "$top" = "$name" ] || mv "$WORK/src/$top" "$WORK/src/$name"
+fetch() {
+  local name="$1" tag="$2" url="$3"
+  rm -rf "$WORK/src/$name"
+  # Fetching by ref works for a tag, a branch or a commit hash; clone --branch
+  # does not accept a hash.
+  git init --quiet "$WORK/src/$name"
+  git -C "$WORK/src/$name" remote add origin "$url"
+  git -C "$WORK/src/$name" fetch --quiet --depth 1 origin "$tag"
+  git -C "$WORK/src/$name" checkout --quiet FETCH_HEAD
   echo "$WORK/src/$name"
 }
 
-while read -r name archive sha url; do
+while read -r name tag url; do
   case "${name:-#}" in '' | '#'*) continue ;; esac
 
-  src="$(extract "$name" "$archive")"
+  src="$(fetch "$name" "$tag" "$url")"
   build="$WORK/build/$name"
   rm -rf "$build"
   mkdir -p "$build"
+
+  if [ "$name" = "gotcha" ]; then
+    # GOTCHA builds with -D_POSIX_C_SOURCE and calls getpagesize(), which glibc
+    # 2.34 and newer then leave undeclared; gcc 14 rejects that.
+    wrappers="$src/src/libc_wrappers.h"
+    grep -q "extern int getpagesize" "$wrappers" ||
+      sed -i 's/^#define gotcha_getpagesize getpagesize$/extern int getpagesize(void);\n&/' "$wrappers"
+  fi
 
   if [ "$name" = "brahma" ]; then
     # The same patch dftracer applies in its ExternalProject path.
