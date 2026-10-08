@@ -33,7 +33,7 @@ class DFTracerService {
     conf->metadata = true;
     conf->enable = true;
     conf->write_buffer_size = 16 * 1024 * 1024;
-    interval = conf->trace_interval_ms;
+    if (conf->trace_interval_explicit) interval = conf->trace_interval_ms;
     if (conf->log_file.empty()) {
       throw std::runtime_error(
           "Configuration error: Please set the log_file prefix in the "
