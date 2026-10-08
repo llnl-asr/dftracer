@@ -11,8 +11,14 @@
 #include <vector>
 namespace dftracer {
 class Metadata;
+struct ExecInfo {
+  std::string name;
+  std::string cmd;
+};
 class ConfigurationManager {
  private:
+  ExecInfo exec_info_;
+  bool exec_info_ready_ = false;
   void derive_configurations();
   std::string aggregation_file;
 
@@ -66,6 +72,9 @@ class ConfigurationManager {
   // Falls back to the defaults for a log file or data dirs that are still
   // empty.
   void resolve_defaults();
+  // Program name and command line of this process, read from /proc once and
+  // cached. Call it after POSIXBypass is initialized, never from a constructor.
+  const ExecInfo& exec_info();
   // <log_file>-<hash>-<suffix>.pfw[.gz]
   std::string make_log_file(const char* hash, const std::string& suffix) const;
 
