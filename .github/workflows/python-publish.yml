@@ -28,11 +28,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      # MANIFEST.in grafts dependency/, so fetching first makes the sdist
-      # self-contained: a source build needs no dependency downloads.
-      - name: Fetch the public dependency archives
-        run: scripts/wheel/fetch_deps.sh --verify
-
       - name: Build sdist
         run: |
           python -m pip install --upgrade pip build

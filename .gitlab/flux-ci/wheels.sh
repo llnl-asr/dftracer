@@ -4,12 +4,11 @@
 set -eo pipefail
 cd "$CI_PROJECT_DIR"
 source /etc/profile.d/z00_lmod.sh 2>/dev/null || true
-python3 scripts/wheel/manifest.py --check
-scripts/wheel/fetch_deps.sh --verify
+python3 scripts/wheel/manifest.py
 # postdev: .postN outranks the tag, .dev0 keeps it a pre-release. A bare
 # .postN is a final release and would be installed without --pre.
 scripts/wheel/build_wheels.sh --python "${PYTHON}" --glibc "${GLIBC}" \
-  --version-scheme postdev --jobs "${WHEEL_JOBS:-6}" --no-fetch --output wheelhouse
+  --version-scheme postdev --jobs "${WHEEL_JOBS:-6}" --output wheelhouse
 
 # The wheels carry no MPI or HDF5, so `pip install --no-binary dftracer` needs
 # an sdist beside them. Versioned from git describe to match the wheels.

@@ -183,14 +183,9 @@ matching interception:
 Dependencies
 *******************************
 
-The C/C++ dependencies (cpp-logger, GOTCHA, brahma, yaml-cpp, libuv) are built
-automatically as part of the build. Their source archives ship inside the source
-distribution, so a source install needs no access to their repositories. When
-building from a git clone, fetch the archives that are not committed first:
-
-.. code-block:: Bash
-
-    scripts/wheel/fetch_deps.sh
+The C/C++ dependencies (cpp-logger, GOTCHA, brahma, yaml-cpp, libuv) are cloned
+and built automatically as part of the build, so a source install needs access to
+their GitHub repositories.
 
 Verifying
 *******************************

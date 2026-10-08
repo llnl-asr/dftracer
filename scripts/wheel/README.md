@@ -1,15 +1,8 @@
-# Offline manylinux wheel builds (cibuildwheel + podman)
+# manylinux wheel builds (cibuildwheel + podman)
 
-Builds `dftracer` wheels for CPython 3.9 – 3.14 locally, without any git access
-to the dependency repositories. Every C/C++ dependency is a tarball in
-[`dependency/source/`](../../dependency/source/), listed in
-[`manifest.txt`](../../dependency/source/manifest.txt), built once into a shared
-prefix and then bundled into the wheel.
-
-Only **cpp-logger** is committed there -- its repository is not publicly
-reachable. The other four (gotcha, brahma, yaml-cpp, libuv) are public and
-`fetch_deps.sh` downloads them on demand; `.gitignore` keeps them out of the
-repository.
+Builds `dftracer` wheels for CPython 3.9 – 3.14 locally. Every C/C++ dependency
+is a git tag listed in [`dependency/manifest.txt`](../../dependency/manifest.txt),
+cloned and built once into a shared prefix and then bundled into the wheel.
 
 ## Quick start
 
@@ -36,9 +29,9 @@ dftracer-2.0.3-cp314-cp314-manylinux_2_28_x86_64.whl
 
 | script | where it runs | what it does |
 | --- | --- | --- |
-| `fetch_deps.sh` | host | downloads the archives in `deps/manifest.txt` that are missing, verifies sha256 |
 | `build_wheels.sh` | host | picks manylinux images, prepares podman, drives `cibuildwheel` |
-| `build_deps.sh` | inside the container (`CIBW_BEFORE_ALL`) | builds gotcha → cpp-logger → yaml-cpp → libuv → brahma into `/opt/dftracer-deps` and normalises where their CMake configs live |
+| `manifest.py` | host or CI | checks that `dependency/manifest.txt` and the pins in `dependency/CMakeLists.txt` agree |
+| `build_deps.sh` | inside the container (`CIBW_BEFORE_ALL`) | clones and builds gotcha → cpp-logger → yaml-cpp → libuv → brahma into `/opt/dftracer-deps` and normalises where their CMake configs live |
 | `repair_wheel.sh` | inside the container (`CIBW_REPAIR_WHEEL_COMMAND`) | points `LD_LIBRARY_PATH` at dftracer's own libs and the dependency prefix, then runs `bundle_wheel.py prepare` → `auditwheel repair` → `bundle_wheel.py finish` |
 | `bundle_wheel.py` | inside the container | bundles the dependency libraries under their real sonames and keeps auditwheel's patchelf pass away from the native executables |
 | `test_wheel.py` | inside the container (`CIBW_TEST_COMMAND`) | validates each installed wheel: imports, bundled libraries, executables, a real trace |
@@ -118,25 +111,13 @@ to overwrite `CMAKE_INSTALL_RPATH`, discarding any value the caller passed on th
 command line. It now keeps the caller's entries and appends the dependency
 directories after them.
 
-## The CMake source path uses the same archives
+## The CMake source path
 
 `pip install .` and `autobuild.sh` do not go through this directory's scripts --
 they run CMake's own dependency pass (`-DDFTRACER_INSTALL_DEPENDENCIES=ON`), which
-used to clone every dependency. `dftracer_install_external_project` in
-[cmake/modules/dftracer-utils.cmake](../../cmake/modules/dftracer-utils.cmake)
-now prefers a staged archive when it finds one:
-
-```
--- [dftracer] cpp-logger: using staged archive .../dependency/source/cpp-logger-0.0.8.tar.gz
--- [dftracer] libuv: no staged archive, cloning https://github.com/libuv/libuv.git@v1.52.1
-```
-
-so a source build needs no access to the private cpp-logger repository either,
-and `find_package` still short-circuits both when the dependency is already
-installed. brahma fetches cpp-logger and gotcha itself, so
-[dependency/CMakeLists.txt](../../dependency/CMakeLists.txt) passes it
-`FETCHCONTENT_SOURCE_DIR_*` pointing at the staged sources. Override the search
-location with `-DDFTRACER_DEPENDENCY_SOURCE_DIR=...`.
+clones each dependency at the tag pinned in
+[dependency/CMakeLists.txt](../../dependency/CMakeLists.txt). `find_package`
+short-circuits a clone when the dependency is already installed.
 
 ## Caching
 
@@ -185,29 +166,12 @@ DFTRACER_ENABLE_MPI=ON DFTRACER_ENABLE_HDF5=ON \
 `DFTRACER_ENABLE_*` toggles from the environment and CMake links against the
 MPI/HDF5 it finds on the host.
 
-The sdist carries the dependency archives (`MANIFEST.in` grafts `dependency/`),
-so this needs no access to any dependency repository, including the private
-cpp-logger. pybind11 is the exception and does not need vendoring: pip installs it
-as a build requirement and `setup.py` points CMake at it.
+The build clones the dependencies from GitHub. pybind11 is not cloned: pip
+installs it as a build requirement and `setup.py` points CMake at it.
 
 ```
--- [dftracer] cpp-logger: using staged archive .../dependency/source/cpp-logger-0.0.8.tar.gz
 -- [dftracer] dependency: MPI C probe: impl=MVAPICH brahma_version=200307
 -- [dftracer] Forwarding BRAHMA_MPI_IMPL=MVAPICH to brahma
-```
-
-## Private or unreachable repositories
-
-`fetch_deps.sh` never overwrites an archive that is already present. For a
-dependency that cannot be downloaded, commit the tarball to
-`dependency/source/` (a GitHub style `<name>-<version>.tar.gz` with a single
-top-level directory), set its `sha256` column to the real hash — or `-` to skip
-the check — and its `url` column to `-`, which is how cpp-logger is handled. A
-whole directory or base URL of pre-staged archives also works:
-
-```bash
-DFTRACER_DEPS_MIRROR=/shared/dftracer-deps scripts/wheel/fetch_deps.sh
-scripts/wheel/build_wheels.sh --no-fetch
 ```
 
 ## glibc baselines
@@ -229,7 +193,7 @@ therefore cannot support RHEL 7 / Ubuntu 14.04–18.04 until brahma guards that
 binding. `--glibc 2.17` is still accepted (with a warning) for anyone who wants
 to retry it after a brahma fix.
 
-## How the offline build hangs together
+## How the wheel build hangs together
 
 `setup.py` normally clones cpp-logger, brahma, yaml-cpp, libuv with
 `ExternalProject`/`FetchContent`. Instead:
@@ -247,8 +211,8 @@ to retry it after a brahma fix.
   evaluates `CIBW_ENVIRONMENT` before `CIBW_BEFORE_ALL` runs.
 * brahma is built with `BRAHMA_BUILD_DEPENDENCIES=ON`, but since gotcha and
   cpp-logger are already installed its `fetch_package()` resolves them through
-  `find_package()`; `FETCHCONTENT_SOURCE_DIR_*` point at the extracted local
-  sources as a second line of defence, so no download can happen either way.
+  `find_package()`; `FETCHCONTENT_SOURCE_DIR_*` point at the cloned local
+  sources as a second line of defence, so nothing is cloned twice.
   The same `cmake/patches/brahma_version_override.cmake` patch dftracer applies
   in its network path is applied here too.
 * the dependency libraries are copied into `dftracer/lib64` under their real
@@ -293,8 +257,7 @@ pydftracer release fixes that import.
   `DFTRACER_PODMAN_KEEP_STORAGE=1` to use podman's own configuration instead.
 * The repo working tree carries several GB of virtualenvs and build trees, and
   cibuildwheel copies the project into every container. By default the script
-  stages a clean copy of the git-tracked files plus the dependency archives and
-  builds from that; `--in-place` builds from the repo directly.
+  stages a clean copy of the git-tracked files and builds from that; `--in-place` builds from the repo directly.
 * Version stamping: setuptools-scm has no usable git checkout in the staged
   copy, so `SETUPTOOLS_SCM_PRETEND_VERSION` is derived the way setuptools-scm
   would from the git tag -- `v2.1.1` gives `2.1.1`, N commits past it gives

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build manylinux wheels for DFTracer with cibuildwheel + podman, using the
-# C/C++ dependency archives in dependency/source/ instead of cloning them.
-# Nothing here needs access to a private git remote.
+# C/C++ dependencies cloned at the tags in dependency/manifest.txt.
 #
 #   scripts/wheel/build_wheels.sh                     # 3.9 .. 3.14, glibc 2.28
 #   scripts/wheel/build_wheels.sh --python 3.11,3.12  # subset
@@ -33,7 +32,6 @@
 #                       a prerelease, so it needs pip --pre; what setup.py emits
 #                     dev             2.1.1.dev5
 #   --no-cache        do not reuse the host-side dependency prefix and ccache
-#   --no-fetch        do not run fetch_deps.sh first
 #   --rebuild-deps    discard the cached dependency prefix and rebuild it
 #   --in-place        hand the repo itself to cibuildwheel instead of a clean
 #                     staged copy of the git-tracked files (the repo carries
@@ -63,7 +61,6 @@ ARCH="x86_64"
 OUTPUT="$PROJECT_DIR/wheelhouse"
 FREE_THREADED=0
 RUN_TESTS="full"
-DO_FETCH=1
 REBUILD_DEPS=0
 IN_PLACE=0
 LIST_ONLY=0
@@ -119,10 +116,6 @@ while [ $# -gt 0 ]; do
       ;;
     --no-cache)
       USE_CACHE=0
-      shift
-      ;;
-    --no-fetch)
-      DO_FETCH=0
       shift
       ;;
     --rebuild-deps)
@@ -225,13 +218,6 @@ log "image        : $IMAGE_MAIN"
 log "  builds     :$builds_main"
 [ "$LIST_ONLY" -eq 1 ] && exit 0
 
-if [ "$DO_FETCH" -eq 1 ]; then
-  log "fetching vendored dependencies"
-  "$SCRIPT_DIR/fetch_deps.sh"
-else
-  log "skipping dependency fetch (--no-fetch)"
-fi
-
 # Rootless podman defaults its storage to $HOME, which on NFS/Lustre cannot hold
 # the xattrs image layers need ("lsetxattr: operation not supported").
 STATE_DIR="${DFTRACER_WHEEL_STATE:-${TMPDIR:-/tmp}/${USER:-$(id -un)}/dftracer-wheels}"
@@ -295,13 +281,13 @@ CIBW="$VENV/bin/cibuildwheel"
 
 # cibuildwheel copies the whole project directory into each container, and this
 # repo also holds build/, .git and several multi-GB virtualenvs, so stage a clean
-# copy of the working tree's git-tracked files plus the dependency archives.
+# copy of the working tree's git-tracked files.
 if [ "$IN_PLACE" -eq 1 ]; then
   SOURCE_DIR="$PROJECT_DIR"
   log "source       : $SOURCE_DIR (in place)"
 else
   SOURCE_DIR="$STATE_DIR/src"
-  log "source       : $SOURCE_DIR (staged copy of git-tracked files + archives)"
+  log "source       : $SOURCE_DIR (staged copy of git-tracked files)"
   git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1 ||
     die "not a git checkout; rerun with --in-place"
   rm -rf "$SOURCE_DIR"
@@ -310,10 +296,6 @@ else
   (cd "$PROJECT_DIR" && git ls-files -z --cached --others --exclude-standard) |
     tar -C "$PROJECT_DIR" --null -T - --ignore-failed-read -cf - |
     tar -C "$SOURCE_DIR" -xf -
-  # The public archives are gitignored, so copy the whole set explicitly.
-  mkdir -p "$SOURCE_DIR/dependency/source"
-  cp "$PROJECT_DIR"/dependency/source/manifest.txt \
-    "$PROJECT_DIR"/dependency/source/*.tar.gz "$SOURCE_DIR/dependency/source/"
 fi
 
 # setup.py appends DFTRACER_CMAKE_ARGS last, so its -D values override the ones

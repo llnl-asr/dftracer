@@ -133,68 +133,6 @@ endfunction()
 # ###############################################################
 include(ExternalProject)
 
-# Directory holding pre-downloaded dependency source archives. Dependencies whose
-# repository is private (cpp-logger) are committed there; the public ones are
-# fetched by scripts/wheel/fetch_deps.sh when needed. An archive found here is
-# used instead of cloning, so a build needs no access to the dependency remotes.
-set(DFTRACER_DEPENDENCY_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../dependency/source"
-  CACHE PATH "Directory of pre-downloaded dependency source archives")
-
-# Case-insensitive: GOTCHA ships as GOTCHA-1.0.10.tar.gz, package name gotcha.
-function(dftracer_find_dependency_archive name out_var)
-  set(${out_var} "" PARENT_SCOPE)
-
-  if(NOT IS_DIRECTORY "${DFTRACER_DEPENDENCY_SOURCE_DIR}")
-    return()
-  endif()
-
-  string(TOLOWER "${name}" _wanted)
-  file(GLOB _archives
-    "${DFTRACER_DEPENDENCY_SOURCE_DIR}/*.tar.gz"
-    "${DFTRACER_DEPENDENCY_SOURCE_DIR}/*.tar.bz2"
-    "${DFTRACER_DEPENDENCY_SOURCE_DIR}/*.tar.xz"
-    "${DFTRACER_DEPENDENCY_SOURCE_DIR}/*.zip")
-  list(SORT _archives)
-
-  foreach(_archive IN LISTS _archives)
-    get_filename_component(_file "${_archive}" NAME)
-    string(TOLOWER "${_file}" _file)
-    if(_file MATCHES "^${_wanted}-[0-9]")
-      set(${out_var} "${_archive}" PARENT_SCOPE)
-      return()
-    endif()
-  endforeach()
-endfunction()
-
-# Extract a staged archive once and return its source directory, for
-# dependencies that fetch their own copies (brahma does, for cpp-logger).
-function(dftracer_stage_dependency_source name out_var)
-  set(${out_var} "" PARENT_SCOPE)
-
-  dftracer_find_dependency_archive(${name} _archive)
-  if(NOT _archive)
-    return()
-  endif()
-
-  set(_staged "${CMAKE_BINARY_DIR}/dependency-src/${name}")
-  if(NOT EXISTS "${_staged}/CMakeLists.txt")
-    set(_extract "${CMAKE_BINARY_DIR}/dependency-src/.extract-${name}")
-    file(REMOVE_RECURSE "${_extract}" "${_staged}")
-    file(MAKE_DIRECTORY "${_extract}")
-    file(ARCHIVE_EXTRACT INPUT "${_archive}" DESTINATION "${_extract}")
-    file(GLOB _top LIST_DIRECTORIES true "${_extract}/*")
-    list(LENGTH _top _top_count)
-    if(NOT _top_count EQUAL 1)
-      message(WARNING "[${PROJECT_NAME}] unexpected layout in ${_archive}")
-      return()
-    endif()
-    file(RENAME "${_top}" "${_staged}")
-    file(REMOVE_RECURSE "${_extract}")
-  endif()
-
-  set(${out_var} "${_staged}" PARENT_SCOPE)
-endfunction()
-
 function(dftracer_install_external_project name version var_name url tag install_prefix configure_args)
   find_package(${name} ${version} QUIET)
   set(found_var ${name}_FOUND)
@@ -206,19 +144,11 @@ function(dftracer_install_external_project name version var_name url tag install
     link_directories(${library_var})
     message(STATUS "[${PROJECT_NAME}] found dependency already installed ${name} with include ${include_var} and library ${library_var}")
   else()
-    dftracer_find_dependency_archive(${name} archive)
-    if(archive)
-      message(STATUS "[${PROJECT_NAME}] ${name}: using staged archive ${archive}")
-      set(download_args URL "${archive}" DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-    else()
-      message(STATUS "[${PROJECT_NAME}] ${name}: no staged archive, cloning ${url}@${tag}")
-      set(download_args GIT_REPOSITORY ${url} GIT_TAG ${tag})
-    endif()
-
     ExternalProject_Add(
       ${name}
       PREFIX ${CMAKE_BINARY_DIR}
-      ${download_args}
+      GIT_REPOSITORY ${url}
+      GIT_TAG ${tag}
       TIMEOUT 10
       CMAKE_ARGS
       "-DCMAKE_INSTALL_PREFIX=${install_prefix}"

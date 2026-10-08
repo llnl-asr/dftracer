@@ -1,0 +1,11 @@
+# C/C++ dependencies the wheel build compiles into its prefix, in build order.
+# Columns: name, git tag or commit, repository. dependency/CMakeLists.txt pins the
+# same refs for the CMake source build; scripts/wheel/manifest.py compares them.
+
+gotcha       v1.0.10          https://github.com/LLNL/GOTCHA.git
+cpp-logger   v0.0.8           https://github.com/llnl-asr/cpp-logger.git
+yaml-cpp     yaml-cpp-0.6.3   https://github.com/jbeder/yaml-cpp.git
+libuv        v1.52.1          https://github.com/libuv/libuv.git
+# TODO(rayandrew): replace the brahma commit with its release tag before the
+# dftracer release, and update dependency/CMakeLists.txt to match.
+brahma       c86a1338697265d8c29d74b17718290e30de7fbf  https://github.com/llnl-asr/brahma.git
