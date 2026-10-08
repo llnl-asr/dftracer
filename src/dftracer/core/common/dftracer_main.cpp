@@ -287,8 +287,7 @@ void dftracer::DFTracerCore::reinitialize() {
     } else if (!conf->log_file.empty()) {
       this->log_file_prefix = conf->log_file;
     } else {
-      DFTRACER_LOG_ERROR(DFTRACER_UNDEFINED_LOG_FILE_MSG);
-      throw std::runtime_error(DFTRACER_UNDEFINED_LOG_FILE_CODE);
+      this->log_file_prefix = DFTRACER_DEFAULT_LOG_FILE;
     }
   }
   conf->log_file = this->log_file_prefix;
@@ -301,8 +300,7 @@ void dftracer::DFTracerCore::reinitialize() {
     } else if (!conf->data_dirs.empty()) {
       this->data_dirs = conf->data_dirs;
     } else {
-      DFTRACER_LOG_ERROR(DFTRACER_UNDEFINED_DATA_DIR_MSG);
-      throw std::runtime_error(DFTRACER_UNDEFINED_DATA_DIR_CODE);
+      this->data_dirs = DFTRACER_ALL_FILES;
     }
   }
   conf->data_dirs = this->data_dirs;
@@ -392,52 +390,11 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char* _log_file,
                                        sizeof(log_filename_str), "%s-%s-%d",
                                        exec_name, hostname, this->process_id);
       char* log_file_hash = logger->get_hash(log_filename_str);
-      if (_log_file == nullptr) {
-        if (!conf->log_file.empty()) {
-          DFTRACER_LOG_DEBUG("Conf has log file %s", conf->log_file.c_str());
-          std::string extension = ".pfw";
-          if (conf->compression) {
-            extension += ".gz";
-          }
-          this->log_file_prefix = std::string(conf->log_file);
-          this->log_file = std::string(conf->log_file) + "-" +
-                           std::string(log_file_hash) + "-" + log_file_suffix +
-                           extension;
-        } else {  // GCOV_EXCL_START
-          DFTRACER_LOG_ERROR(DFTRACER_UNDEFINED_LOG_FILE_MSG);
-          throw std::runtime_error(DFTRACER_UNDEFINED_LOG_FILE_CODE);
-        }  // GCOV_EXCL_STOP
-      } else {
-        this->log_file = _log_file;
-        // Ensure log file extension matches compression setting
-        std::string extension = ".pfw";
-        if (conf->compression) {
-          extension += ".gz";
-        }
-        // Strip the extension from the basename only. Handles compound
-        // .pfw[.gz] and skips a parent-dir '.' or a dotfile, which would empty
-        // the base.
-        size_t sep_pos = this->log_file.find_last_of("/\\");
-        size_t base_start = (sep_pos == std::string::npos) ? 0 : sep_pos + 1;
-        std::string basename = this->log_file.substr(base_start);
-        size_t strip = std::string::npos;
-        if (basename.size() > 7 &&
-            basename.compare(basename.size() - 7, 7, ".pfw.gz") == 0) {
-          strip = basename.size() - 7;
-        } else if (basename.size() > 4 &&
-                   basename.compare(basename.size() - 4, 4, ".pfw") == 0) {
-          strip = basename.size() - 4;
-        } else {
-          size_t dot = basename.find_last_of(".");
-          if (dot != std::string::npos && dot != 0) strip = dot;
-        }
-        if (strip != std::string::npos) {
-          this->log_file = this->log_file.substr(0, base_start + strip);
-        }
-        this->log_file_prefix = this->log_file;
-        this->log_file += "-" + std::string(log_file_hash) + "-" +
-                          log_file_suffix + extension;
-      }
+      conf->set_log_file(_log_file);
+      conf->set_data_dirs(_data_dirs);
+      conf->resolve_defaults();
+      this->log_file_prefix = conf->log_file;
+      this->log_file = conf->make_log_file(log_file_hash, log_file_suffix);
       free(log_file_hash);
       DFTRACER_LOG_DEBUG("Setting log file to %s", this->log_file.c_str());
       logger->update_log_file(this->log_file, exec_name, exec_cmd,
@@ -457,19 +414,7 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char* _log_file,
             trie->exclude_reverse(ext, strlen(ext));
           }
           if (!conf->trace_all_files) {
-            if (_data_dirs == nullptr) {
-              if (!conf->data_dirs.empty()) {
-                this->data_dirs = conf->data_dirs;
-              } else {  // GCOV_EXCL_START
-                DFTRACER_LOG_ERROR("%s", DFTRACER_UNDEFINED_DATA_DIR_MSG);
-                throw std::runtime_error(DFTRACER_UNDEFINED_DATA_DIR_CODE);
-              }  // GCOV_EXCL_STOP
-            } else {
-              this->data_dirs = _data_dirs;
-              if (!conf->data_dirs.empty()) {
-                this->data_dirs += ":" + conf->data_dirs;
-              }
-            }
+            this->data_dirs = conf->data_dirs;
             DFTRACER_LOG_DEBUG("Setting data_dirs to %s",
                                this->data_dirs.c_str());
           } else {
