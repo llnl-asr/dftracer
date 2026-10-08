@@ -7,6 +7,7 @@
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/singleton.h>
+#include <strings.h>
 #include <sys/resource.h>
 #include <yaml-cpp/yaml.h>
 
@@ -69,6 +70,12 @@ bool dftracer::Singleton<
 
 namespace {
 
+bool env_flag(const char* value) {
+  if (value == nullptr) return false;
+  return strcmp(value, "1") == 0 || strcasecmp(value, "true") == 0 ||
+         strcasecmp(value, "on") == 0 || strcasecmp(value, "yes") == 0;
+}
+
 void trim_in_place(std::string& value) {
   auto first = value.find_first_not_of(" \t\n\r");
   if (first == std::string::npos) {
@@ -118,9 +125,9 @@ void load_list_value(const YAML::Node& node, std::vector<std::string>& target) {
 dftracer::ConfigurationManager::ConfigurationManager()
     : enable(false),
       init_type(PROFILER_INIT_FUNCTION),
-      log_file("./trace"),
+      log_file("./app"),
       data_dirs("all"),
-      metadata(false),
+      metadata(true),
       core_affinity(false),
       gotcha_priority(1),
       logger_level(cpplogger::CPP_LOGGER_ERROR),
@@ -135,7 +142,8 @@ dftracer::ConfigurationManager::ConfigurationManager()
       bind_signals(false),
       throw_error(false),
       write_buffer_size(16 * 1024 * 1024),
-      trace_interval_ms(1000),
+      trace_interval_ms(10),
+      trace_interval_explicit(false),
       libuv_thread_count(1),
       papi_tracing(false),
       papi_multiplex(false),
@@ -147,8 +155,8 @@ dftracer::ConfigurationManager::ConfigurationManager()
       // collector like cpu/memory/omnistat, not something a traced process
       // pays for, and a build without variorum ignores it anyway.
       variorum_power(true),
-      aggregation_enable(false),
-      aggregation_type(AggregationType::AGGREGATION_TYPE_FULL),
+      aggregation_enable(true),
+      aggregation_type(AggregationType::AGGREGATION_TYPE_SELECTIVE),
       aggregation_inclusion_rules(),
       aggregation_exclusion_rules() {
   const char* env_conf = getenv(DFTRACER_CONFIGURATION);
@@ -259,6 +267,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
       if (config[DFT_YAML_FEATURES][DFT_YAML_TRACER_INTERVAL]) {
         this->trace_interval_ms =
             config[DFT_YAML_FEATURES][DFT_YAML_TRACER_INTERVAL].as<size_t>();
+        this->trace_interval_explicit = true;
       }
       DFTRACER_LOG_DEBUG("YAML ConfigurationManager.trace_interval_ms %d",
                          this->trace_interval_ms);
@@ -392,7 +401,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
   DFTRACER_LOG_DEBUG("ConfigurationManager.time_metric %s",
                      to_string(this->time_metric).c_str());
   const char* env_enable = getenv(DFTRACER_ENABLE);
-  if (env_enable != nullptr && strcmp(env_enable, "1") == 0) {
+  if (env_flag(env_enable)) {
     this->enable = true;
   }
   DFTRACER_LOG_DEBUG("ENV ConfigurationManager.enable %d", this->enable);
@@ -400,6 +409,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
     const char* env_trace_interval = getenv(DFTRACER_TRACE_INTERVAL_MS);
     if (env_trace_interval != nullptr) {
       this->trace_interval_ms = atoi(env_trace_interval);
+      this->trace_interval_explicit = true;
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.trace_interval_ms %d",
                        this->trace_interval_ms);
@@ -419,19 +429,19 @@ dftracer::ConfigurationManager::ConfigurationManager()
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.init_type %d",
                        this->init_type);
     const char* env_bind_signals = getenv(DFTRACER_BIND_SIGNALS);
-    if (env_bind_signals != nullptr && strcmp(env_bind_signals, "1") == 0) {
+    if (env_flag(env_bind_signals)) {
       bind_signals = true;
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.bind_signals %d",
                        this->bind_signals);
     const char* env_meta = getenv(DFTRACER_INC_METADATA);
-    if (env_meta != nullptr && strcmp(env_meta, "1") == 0) {
-      metadata = true;
+    if (env_meta != nullptr) {
+      metadata = env_flag(env_meta);
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.metadata %d", this->metadata);
 
     const char* env_core = getenv(DFTRACER_SET_CORE_AFFINITY);
-    if (env_core != nullptr && strcmp(env_core, "1") == 0) {
+    if (env_flag(env_core)) {
       core_affinity = true;
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.core_affinity %d",
@@ -462,18 +472,18 @@ dftracer::ConfigurationManager::ConfigurationManager()
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.trace_all_files %d",
                        this->trace_all_files);
     const char* disable_io = getenv(DFTRACER_DISABLE_IO);
-    if (disable_io != nullptr && strcmp(disable_io, "1") == 0) {
+    if (env_flag(disable_io)) {
       this->io = false;
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.io %d", this->io);
     if (this->io) {
       const char* disable_posix = getenv(DFTRACER_DISABLE_POSIX);
-      if (disable_posix != nullptr && strcmp(disable_posix, "1") == 0) {
+      if (env_flag(disable_posix)) {
         this->posix = false;
       }
       DFTRACER_LOG_DEBUG("ENV ConfigurationManager.posix %d", this->posix);
       const char* disable_stdio = getenv(DFTRACER_DISABLE_STDIO);
-      if (disable_stdio != nullptr && strcmp(disable_stdio, "1") == 0) {
+      if (env_flag(disable_stdio)) {
         this->stdio = false;
       }
       DFTRACER_LOG_DEBUG("ENV ConfigurationManager.stdio %d", this->stdio);
@@ -484,11 +494,11 @@ dftracer::ConfigurationManager::ConfigurationManager()
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.tids %d", this->tids);
     const char* env_enable_papi = getenv(DFTRACER_ENABLE_PAPI_TRACING);
-    if (env_enable_papi != nullptr && strcmp(env_enable_papi, "1") == 0) {
+    if (env_flag(env_enable_papi)) {
       this->papi_tracing = true;
     }
     const char* env_papi_multiplex = getenv(DFTRACER_PAPI_MULTIPLEX);
-    if (env_papi_multiplex != nullptr && strcmp(env_papi_multiplex, "1") == 0) {
+    if (env_flag(env_papi_multiplex)) {
       this->papi_multiplex = true;
     }
     const char* env_papi_interval = getenv(DFTRACER_PAPI_SAMPLE_INTERVAL_MS);
@@ -506,16 +516,14 @@ dftracer::ConfigurationManager::ConfigurationManager()
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.papi_sample_interval_ms %d",
                        this->papi_sample_interval_ms);
     const char* env_disable_variorum = getenv(DFTRACER_DISABLE_VARIORUM_POWER);
-    if (env_disable_variorum != nullptr &&
-        strcmp(env_disable_variorum, "1") == 0) {
+    if (env_flag(env_disable_variorum)) {
       this->variorum_power = false;
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.variorum_power %d",
                        this->variorum_power);
     const char* env_enable_aggregation = getenv(DFTRACER_ENABLE_AGGREGATION);
-    if (env_enable_aggregation != nullptr &&
-        strcmp(env_enable_aggregation, "1") == 0) {
-      this->aggregation_enable = true;
+    if (env_enable_aggregation != nullptr) {
+      this->aggregation_enable = env_flag(env_enable_aggregation);
       if (this->aggregation_enable) {
         this->aggregation_type = AggregationType::AGGREGATION_TYPE_FULL;
         const char* env_aggregation_type = getenv(DFTRACER_AGGREGATION_TYPE);
@@ -538,14 +546,14 @@ dftracer::ConfigurationManager::ConfigurationManager()
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.aggregation_file %s",
                        this->aggregation_file.c_str());
     const char* env_throw_error = getenv(DFTRACER_ERROR);
-    if (env_throw_error != nullptr && strcmp(env_throw_error, "1") == 0) {
+    if (env_flag(env_throw_error)) {
       this->throw_error = true;  // GCOVR_EXCL_LINE
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.throw_error %d",
                        this->throw_error);
     const char* env_compression = getenv(DFTRACER_TRACE_COMPRESSION);
     if (env_compression != nullptr) {
-      if (strcmp(env_compression, "1") == 0)
+      if (env_flag(env_compression))
         this->compression = true;
       else
         this->compression = false;
@@ -584,7 +592,12 @@ void dftracer::ConfigurationManager::derive_configurations() {
   DFTRACER_LOG_DEBUG("Derived ConfigurationManager.papi_sample_interval_ms %d",
                      this->papi_sample_interval_ms);
   // Derive configurations based on the current settings
-  if (this->aggregation_type == AggregationType::AGGREGATION_TYPE_SELECTIVE) {
+  if (this->aggregation_type == AggregationType::AGGREGATION_TYPE_SELECTIVE &&
+      this->aggregation_file.empty()) {
+    this->aggregation_inclusion_rules.push_back(
+        DFTRACER_DEFAULT_AGGREGATION_RULE);
+  } else if (this->aggregation_type ==
+             AggregationType::AGGREGATION_TYPE_SELECTIVE) {
     if (!this->aggregation_file.empty() &&
         std::filesystem::exists(this->aggregation_file)) {
       // Load aggregation rules from the specified file

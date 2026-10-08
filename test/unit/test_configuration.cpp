@@ -40,9 +40,16 @@ void test_default_configuration() {
   // Check defaults
   DFT_CHECK(config->enable ==
             false);  // Defaults to false, only true if DFTRACER_ENABLE=1
-  DFT_CHECK(config->aggregation_enable == false);
-  DFT_CHECK(config->compression == true);  // Constructor default is true
-  DFT_CHECK(config->metadata == false);
+  DFT_CHECK(config->aggregation_enable == true);
+  DFT_CHECK(config->aggregation_type ==
+            AggregationType::AGGREGATION_TYPE_SELECTIVE);
+  DFT_CHECK(config->aggregation_inclusion_rules.size() == 1);
+  DFT_CHECK(config->aggregation_inclusion_rules[0] == "dur < 100");
+  DFT_CHECK(config->compression == true);
+  DFT_CHECK(config->metadata == true);
+  DFT_CHECK(config->trace_interval_ms == 10);
+  DFT_CHECK(config->log_file == "./app");
+  DFT_CHECK(config->data_dirs == "all");
   DFT_CHECK(config->libuv_thread_count == 1);
 
   std::cout << "✓ Default configuration tests passed" << std::endl;
@@ -79,6 +86,22 @@ void test_environment_variables() {
             AggregationType::AGGREGATION_TYPE_SELECTIVE);
   unsetenv("DFTRACER_ENABLE_AGGREGATION");
   unsetenv("DFTRACER_AGGREGATION_TYPE");
+  unsetenv("DFTRACER_ENABLE");
+
+  // Boolean switches accept 1, true, on and yes (any case)
+  for (const char* truthy : {"1", "true", "TRUE", "on", "Yes"}) {
+    setenv("DFTRACER_ENABLE", "1", 1);
+    setenv("DFTRACER_ENABLE_AGGREGATION", truthy, 1);
+    auto cfg = std::make_shared<ConfigurationManager>();
+    DFT_CHECK(cfg->aggregation_enable == true);
+  }
+  for (const char* falsy : {"0", "false", "off", "no", ""}) {
+    setenv("DFTRACER_ENABLE", "1", 1);
+    setenv("DFTRACER_ENABLE_AGGREGATION", falsy, 1);
+    auto cfg = std::make_shared<ConfigurationManager>();
+    DFT_CHECK(cfg->aggregation_enable == false);
+  }
+  unsetenv("DFTRACER_ENABLE_AGGREGATION");
   unsetenv("DFTRACER_ENABLE");
 
   // Test compression (requires DFTRACER_ENABLE=1)

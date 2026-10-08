@@ -39,6 +39,7 @@ class ConfigurationManager {
   bool throw_error;
   size_t write_buffer_size;
   size_t trace_interval_ms;
+  bool trace_interval_explicit;
   size_t libuv_thread_count;
   bool papi_tracing;
   bool papi_multiplex;

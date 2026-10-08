@@ -78,7 +78,7 @@ void test_aggregator_basic() {
   std::cout << "=== Test: Aggregator Basic Functionality ===\n" << std::endl;
 
   // Configure aggregation to FULL mode
-  setenv("DFTRACER_ENABLE_AGGREGATION", "true", 1);
+  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
   setenv("DFTRACER_AGGREGATION_TYPE", "FULL", 1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
 
@@ -119,7 +119,7 @@ void test_aggregator_selective() {
   unsetenv("DFTRACER_AGGREGATION_INCLUSION_RULES");
   unsetenv("DFTRACER_TRACE_INTERVAL_MS");
 
-  setenv("DFTRACER_ENABLE_AGGREGATION", "true", 1);
+  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
   setenv("DFTRACER_AGGREGATION_TYPE", "SELECTIVE", 1);
   setenv("DFTRACER_AGGREGATION_INCLUSION_RULES", "cat == 'posix'", 1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
@@ -168,7 +168,7 @@ void test_aggregator_with_metadata() {
             << std::endl;
 
   setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_ENABLE_AGGREGATION", "true", 1);
+  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
   setenv("DFTRACER_AGGREGATION_TYPE", "FULL", 1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
 
@@ -218,7 +218,7 @@ void test_aggregator_exclusion_rules() {
   std::cout << "=== Test: Aggregator with Exclusion Rules ===\n" << std::endl;
 
   setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_ENABLE_AGGREGATION", "true", 1);
+  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
   setenv("DFTRACER_AGGREGATION_TYPE", "SELECTIVE", 1);
   setenv("DFTRACER_AGGREGATION_INCLUSION_RULES", "cat == 'posix'", 1);
   setenv("DFTRACER_AGGREGATION_EXCLUSION_RULES", "name == 'stat'", 1);
@@ -262,7 +262,7 @@ void test_aggregator_time_intervals() {
             << std::endl;
 
   setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_ENABLE_AGGREGATION", "true", 1);
+  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
   setenv("DFTRACER_AGGREGATION_TYPE", "FULL", 1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "500", 1);  // 500ms intervals
 
@@ -319,7 +319,7 @@ void test_aggregator_finalize() {
   std::cout << "=== Test: Aggregator Finalize ===\n" << std::endl;
 
   setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_ENABLE_AGGREGATION", "true", 1);
+  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
   setenv("DFTRACER_AGGREGATION_TYPE", "FULL", 1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
 
@@ -351,7 +351,7 @@ void test_aggregator_multiple_threads() {
             << std::endl;
 
   setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_ENABLE_AGGREGATION", "true", 1);
+  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
   setenv("DFTRACER_AGGREGATION_TYPE", "FULL", 1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
 
@@ -394,6 +394,11 @@ void test_aggregator_multiple_threads() {
 
 int main() {
   std::cout << "\n=== Running Aggregator Unit Tests ===\n" << std::endl;
+
+  // The singletons read the environment once. FULL no longer is the default.
+  setenv("DFTRACER_ENABLE", "1", 1);
+  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
+  setenv("DFTRACER_AGGREGATION_TYPE", "FULL", 1);
 
   try {
     test_rules_parsing();
