@@ -1,5 +1,6 @@
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/utils/configuration_manager.h>
+#include <dftracer/core/utils/posix_bypass.h>
 
 #include <filesystem>
 #include <fstream>
@@ -232,6 +233,11 @@ void test_caller_supplied_paths() {
 
   config->set_data_dirs("all");
   DFT_CHECK(config->trace_all_files == true);
+
+  dftracer::POSIXBypass::get_instance().initialize();
+  const auto& exec = config->exec_info();
+  DFT_CHECK(exec.cmd.find("test_configuration") != std::string::npos);
+  DFT_CHECK(&config->exec_info() == &exec);
 
   unsetenv("DFTRACER_ENABLE");
   std::cout << "OK caller-supplied path tests passed" << std::endl;

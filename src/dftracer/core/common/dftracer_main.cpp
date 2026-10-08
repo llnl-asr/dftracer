@@ -343,45 +343,9 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char* _log_file,
     if (conf->enable) {
       DFTRACER_LOG_DEBUG("DFTracer enabled");
       DFTRACER_LOG_DEBUG("Setting process_id to %d", this->process_id);
-      char exec_name[128] = "DEFAULT";
-      char exec_cmd[DFT_PATH_MAX] = "DEFAULT";
-      char cmd[128];
-      dftracer_logging_real_sprintf()(cmd, "/proc/%d/cmdline", df_getpid());
-      auto& posix_bypass = dftracer::POSIXBypass::get_instance();
-      int fd = posix_bypass.open(cmd, O_RDONLY);
-      if (fd != -1) {
-        ssize_t read_bytes = posix_bypass.read(fd, exec_cmd, DFT_PATH_MAX);
-        posix_bypass.close(fd);
-        ssize_t index = 0;
-        size_t last_index = 0;
-        bool has_extracted = false;
-        while (index < read_bytes - 1 && index < DFT_PATH_MAX - 2) {
-          if (exec_cmd[index] == '\0') {
-            if (!has_extracted) {
-              strcpy(exec_name, basename(exec_cmd + last_index));
-              if (exec_name[0] != '-' && strstr(exec_name, "python") == NULL &&
-                  strstr(exec_name, "env") == NULL &&
-                  strstr(exec_name, "multiprocessing") == NULL) {
-                has_extracted = true;
-                DFTRACER_LOG_INFO("Extracted process_name %s", exec_name);
-              }
-            }
-            exec_cmd[index] = SEPARATOR;
-            last_index = index + 1;
-          }
-          index++;
-        }
-        if (!has_extracted) {
-          if (strstr(exec_name, "multiprocessing") != NULL) {
-            dftracer_logging_real_sprintf()(exec_name, "DEFAULT-spawn");
-          } else {
-            dftracer_logging_real_sprintf()(exec_name, "DEFAULT");
-          }
-        }
-        exec_cmd[DFT_PATH_MAX - 1] = '\0';
-        DFTRACER_LOG_DEBUG("Exec command line %s", exec_cmd);
-      }
-      DFTRACER_LOG_INFO("Extracted process_name %s", exec_name);
+      const auto& exec = conf->exec_info();
+      const char* exec_name = exec.name.c_str();
+      const char* exec_cmd = exec.cmd.c_str();
       char log_filename_str[DFT_PATH_MAX];
       char hostname[256] = "unknown";
       gethostname(hostname, sizeof(hostname));
