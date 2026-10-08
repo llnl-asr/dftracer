@@ -7,6 +7,10 @@ on:
     branches: [ develop, stage-in ]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   cpp-format-check:
     runs-on: ubuntu-24.04
