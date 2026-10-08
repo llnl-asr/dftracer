@@ -16,6 +16,10 @@ name: Valgrind Gates
       - '.readthedocs.yaml'
       - 'LICENSE'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   valgrind-gates:
     name: Valgrind Gates (Python-3.11 GCC-11)

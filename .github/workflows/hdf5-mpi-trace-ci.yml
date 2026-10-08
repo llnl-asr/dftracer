@@ -9,6 +9,10 @@ on:
       - '.readthedocs.yaml'
       - 'LICENSE'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   hdf5-mpi-trace:
     name: ${{ matrix.mpi }}-${{ matrix.mpi_version }}-hdf5-${{ matrix.hdf5_version }}
