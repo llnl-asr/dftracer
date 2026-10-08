@@ -75,6 +75,10 @@ class ConfigurationManager {
   // Program name and command line of this process, read from /proc once and
   // cached. Call it after POSIXBypass is initialized, never from a constructor.
   const ExecInfo& exec_info();
+  // Parses the NUL separated bytes of a /proc/<pid>/cmdline file. The name is
+  // the first argument that is not python, env, a multiprocessing helper or
+  // an option.
+  static ExecInfo parse_cmdline(const char* data, ssize_t size);
   // <log_file>-<hash>-<suffix>.pfw[.gz]
   std::string make_log_file(const char* hash, const std::string& suffix) const;
 
