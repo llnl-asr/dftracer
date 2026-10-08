@@ -57,6 +57,18 @@ class ConfigurationManager {
   ConfigurationManager();
   void finalize() {}
 
+  // Caller-supplied values replace the configured ones. A null or empty
+  // argument keeps the configured value. The path loses a .pfw, .pfw.gz or
+  // other extension, so the suffix and extension are added in make_log_file.
+  void set_log_file(const char* path);
+  // "all" selects tracing of all files. Any other value replaces data_dirs.
+  void set_data_dirs(const char* dirs);
+  // Falls back to the defaults for a log file or data dirs that are still
+  // empty.
+  void resolve_defaults();
+  // <log_file>-<hash>-<suffix>.pfw[.gz]
+  std::string make_log_file(const char* hash, const std::string& suffix) const;
+
   // Writes the effective configuration (and compile-time layer availability)
   // into `meta` as a single batch, so callers fold it into one trace event
   // instead of emitting one metadata event per setting. `bind` and

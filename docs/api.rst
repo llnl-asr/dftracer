@@ -33,7 +33,7 @@ YAML configuration supported. WE need to set DFTRACER_CONFIGURATION ENV variable
     enable: True        # Enable DFTracer (default False).
     profiler:
       init: FUNCTION    # DFTracer Mode FUNCTION/PRELOAD (default FUNCTION). For Hybrid use PRELOAD mode.
-      log_file: app     # PATH To log file. In this case process id and app name is appended to file.
+      log_file: trace   # PATH To log file. In this case process id and app name is appended to file.
       data_dirs: ./data # Colon separated paths that will be traced for I/O accesses by profiler. For tracing all directories use the string "all" (not recommended).
       log_level: DEBUG  # Logging level within DFTracer ERROR/WARN/INFO/DEBUG (default ERROR).
       compression: True # Enable trace compression (default True)

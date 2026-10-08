@@ -48,7 +48,7 @@ void test_default_configuration() {
   DFT_CHECK(config->compression == true);
   DFT_CHECK(config->metadata == true);
   DFT_CHECK(config->trace_interval_ms == 10);
-  DFT_CHECK(config->log_file == "./app");
+  DFT_CHECK(config->log_file == "./trace");
   DFT_CHECK(config->data_dirs == "all");
   DFT_CHECK(config->libuv_thread_count == 1);
 
@@ -208,6 +208,33 @@ void test_data_dirs_configuration() {
   unsetenv("DFTRACER_DATA_DIR");
 
   std::cout << "✓ Data dirs configuration tests passed" << std::endl;
+}
+
+void test_caller_supplied_paths() {
+  std::cout << "Testing caller-supplied log file and data dirs..." << std::endl;
+  unsetenv("DFTRACER_LOG_FILE");
+  unsetenv("DFTRACER_DATA_DIR");
+  setenv("DFTRACER_ENABLE", "1", 1);
+
+  auto config = std::make_shared<ConfigurationManager>();
+  config->set_log_file(nullptr);
+  config->set_data_dirs("");
+  config->resolve_defaults();
+  DFT_CHECK(config->log_file == "./trace");
+  DFT_CHECK(config->trace_all_files == true);
+  DFT_CHECK(config->make_log_file("abc", "app") == "./trace-abc-app.pfw.gz");
+
+  config->set_log_file("/tmp/run.pfw.gz");
+  config->set_data_dirs("/data:/scratch");
+  DFT_CHECK(config->log_file == "/tmp/run");
+  DFT_CHECK(config->data_dirs == "/data:/scratch");
+  DFT_CHECK(config->trace_all_files == false);
+
+  config->set_data_dirs("all");
+  DFT_CHECK(config->trace_all_files == true);
+
+  unsetenv("DFTRACER_ENABLE");
+  std::cout << "OK caller-supplied path tests passed" << std::endl;
 }
 
 void test_io_flags() {
@@ -432,6 +459,7 @@ int main(int argc, char* argv[]) {
 
   try {
     test_default_configuration();
+    test_caller_supplied_paths();
     test_environment_variables();
     test_aggregation_rules_from_file();
     test_log_file_configuration();

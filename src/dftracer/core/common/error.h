@@ -20,9 +20,9 @@ const char* DFTRACER_##name##_MSG = message;
 
 // Invalid configurations
 #define DFTRACER_UNDEFINED_DATA_DIR_CODE "2001"
-#define DFTRACER_UNDEFINED_DATA_DIR_MSG "Code 2001: Data dirs not defined. Please set data_dirs in the configuration or env variable DFTRACER_DATA_DIR"
+#define DFTRACER_UNDEFINED_DATA_DIR_MSG "Code 2001: Data dirs not defined. Please define env variable DFTRACER_DATA_DIR"
 #define DFTRACER_UNDEFINED_LOG_FILE_CODE "2002"
-#define DFTRACER_UNDEFINED_LOG_FILE_MSG "Code 2002: log file not defined. Please set log_file in the configuration or env variable DFTRACER_LOG_FILE"
+#define DFTRACER_UNDEFINED_LOG_FILE_MSG "Code 2002: log file not defined. Please define env variable DFTRACER_LOG_FILE"
 
 // clang-format on
 #endif  // DFTRACER_ERROR_H

@@ -125,7 +125,7 @@ void load_list_value(const YAML::Node& node, std::vector<std::string>& target) {
 dftracer::ConfigurationManager::ConfigurationManager()
     : enable(false),
       init_type(PROFILER_INIT_FUNCTION),
-      log_file("./app"),
+      log_file(DFTRACER_DEFAULT_LOG_FILE),
       data_dirs("all"),
       metadata(true),
       core_affinity(false),
@@ -569,6 +569,52 @@ dftracer::ConfigurationManager::ConfigurationManager()
   }
   derive_configurations();
   DFTRACER_LOG_DEBUG("ENV ConfigurationManager finished");
+}
+
+void dftracer::ConfigurationManager::set_log_file(const char* path) {
+  if (path == nullptr || path[0] == '\0') return;
+  std::string file = path;
+  // Strip the extension from the basename only. Handles compound .pfw[.gz]
+  // and skips a parent-dir '.' or a dotfile, which would empty the base.
+  size_t sep_pos = file.find_last_of("/\\");
+  size_t base_start = (sep_pos == std::string::npos) ? 0 : sep_pos + 1;
+  std::string basename = file.substr(base_start);
+  size_t strip = std::string::npos;
+  if (basename.size() > 7 &&
+      basename.compare(basename.size() - 7, 7, ".pfw.gz") == 0) {
+    strip = basename.size() - 7;
+  } else if (basename.size() > 4 &&
+             basename.compare(basename.size() - 4, 4, ".pfw") == 0) {
+    strip = basename.size() - 4;
+  } else {
+    size_t dot = basename.find_last_of(".");
+    if (dot != std::string::npos && dot != 0) strip = dot;
+  }
+  if (strip != std::string::npos) file = file.substr(0, base_start + strip);
+  this->log_file = file;
+}
+
+void dftracer::ConfigurationManager::set_data_dirs(const char* dirs) {
+  if (dirs == nullptr || dirs[0] == '\0') return;
+  if (strcmp(dirs, DFTRACER_ALL_FILES) == 0) {
+    this->trace_all_files = true;
+  } else {
+    this->data_dirs = dirs;
+    this->trace_all_files = false;
+  }
+}
+
+void dftracer::ConfigurationManager::resolve_defaults() {
+  if (this->log_file.empty()) this->log_file = DFTRACER_DEFAULT_LOG_FILE;
+  if (this->data_dirs.empty() || this->data_dirs == DFTRACER_ALL_FILES) {
+    this->trace_all_files = true;
+  }
+}
+
+std::string dftracer::ConfigurationManager::make_log_file(
+    const char* hash, const std::string& suffix) const {
+  return this->log_file + "-" + hash + "-" + suffix +
+         (this->compression ? ".pfw.gz" : ".pfw");
 }
 
 void dftracer::ConfigurationManager::derive_configurations() {
