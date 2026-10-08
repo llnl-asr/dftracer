@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <vector>
 
 #include "check.h"
 
@@ -234,8 +235,34 @@ void test_caller_supplied_paths() {
   config->set_data_dirs("all");
   DFT_CHECK(config->trace_all_files == true);
 
+  // Every argument is followed by a NUL, as in /proc/<pid>/cmdline
+  auto parse = [](const std::vector<std::string>& argv) {
+    std::string raw;
+    for (const auto& arg : argv) raw += arg + '\0';
+    return ConfigurationManager::parse_cmdline(raw.data(), raw.size());
+  };
+  auto one = parse({"./prog"});
+  DFT_CHECK(one.name == "prog");
+  DFT_CHECK(one.cmd == "./prog");
+  auto args = parse({"/bin/prog", "--size", "4"});
+  DFT_CHECK(args.name == "prog");
+  DFT_CHECK(args.cmd == "/bin/prog;--size;4");
+  auto py = parse({"python3", "train.py", "--lr", "0.1"});
+  DFT_CHECK(py.name == "train.py");
+  auto py_opts = parse({"python", "-u", "train.py"});
+  DFT_CHECK(py_opts.name == "train.py");
+  auto env = parse({"/usr/bin/env", "python3", "run.py"});
+  DFT_CHECK(env.name == "run.py");
+  auto spawn =
+      parse({"python", "-c", "from multiprocessing.spawn import spawn_main"});
+  DFT_CHECK(spawn.name == "DEFAULT-spawn");
+  auto empty = ConfigurationManager::parse_cmdline("", 0);
+  DFT_CHECK(empty.name == "DEFAULT");
+  DFT_CHECK(empty.cmd == "DEFAULT");
+
   dftracer::POSIXBypass::get_instance().initialize();
   const auto& exec = config->exec_info();
+  DFT_CHECK(exec.name == "test_configuration");
   DFT_CHECK(exec.cmd.find("test_configuration") != std::string::npos);
   DFT_CHECK(&config->exec_info() == &exec);
 

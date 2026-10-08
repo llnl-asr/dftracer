@@ -10,6 +10,7 @@
 #include <dftracer/core/utils/posix_bypass.h>
 #include <fcntl.h>
 #include <libgen.h>
+#include <string.h>
 #include <strings.h>
 #include <sys/resource.h>
 #include <yaml-cpp/yaml.h>
@@ -614,48 +615,60 @@ void dftracer::ConfigurationManager::resolve_defaults() {
   }
 }
 
-const dftracer::ExecInfo& dftracer::ConfigurationManager::exec_info() {
-  if (exec_info_ready_) return exec_info_;
+dftracer::ExecInfo dftracer::ConfigurationManager::parse_cmdline(
+    const char* data, ssize_t size) {
   char exec_name[128] = "DEFAULT";
   char exec_cmd[DFT_PATH_MAX] = "DEFAULT";
-  char cmd[128];
-  dftracer_logging_real_sprintf()(cmd, "/proc/%d/cmdline", df_getpid());
-  auto& posix_bypass = dftracer::POSIXBypass::get_instance();
-  int fd = posix_bypass.open(cmd, O_RDONLY);
-  if (fd != -1) {
-    ssize_t read_bytes = posix_bypass.read(fd, exec_cmd, DFT_PATH_MAX);
-    posix_bypass.close(fd);
+  if (size > 0) {
+    if (size > DFT_PATH_MAX) size = DFT_PATH_MAX;
+    memcpy(exec_cmd, data, size);
     ssize_t index = 0;
     size_t last_index = 0;
     bool has_extracted = false;
-    while (index < read_bytes - 1 && index < DFT_PATH_MAX - 2) {
+    while (index < size && index < DFT_PATH_MAX - 2) {
       if (exec_cmd[index] == '\0') {
         if (!has_extracted) {
-          strcpy(exec_name, basename(exec_cmd + last_index));
+          strncpy(exec_name, basename(exec_cmd + last_index),
+                  sizeof(exec_name) - 1);
+          exec_name[sizeof(exec_name) - 1] = '\0';
           if (exec_name[0] != '-' && strstr(exec_name, "python") == NULL &&
               strstr(exec_name, "env") == NULL &&
               strstr(exec_name, "multiprocessing") == NULL) {
             has_extracted = true;
           }
         }
-        exec_cmd[index] = SEPARATOR;
+        if (index < size - 1) exec_cmd[index] = SEPARATOR;
         last_index = index + 1;
       }
       index++;
     }
     if (!has_extracted) {
       if (strstr(exec_name, "multiprocessing") != NULL) {
-        dftracer_logging_real_sprintf()(exec_name, "DEFAULT-spawn");
+        strcpy(exec_name, "DEFAULT-spawn");
       } else {
-        dftracer_logging_real_sprintf()(exec_name, "DEFAULT");
+        strcpy(exec_name, "DEFAULT");
       }
     }
     exec_cmd[DFT_PATH_MAX - 1] = '\0';
   }
-  DFTRACER_LOG_INFO("Extracted process_name %s", exec_name);
-  DFTRACER_LOG_DEBUG("Exec command line %s", exec_cmd);
-  exec_info_.name = exec_name;
-  exec_info_.cmd = exec_cmd;
+  return ExecInfo{exec_name, exec_cmd};
+}
+
+const dftracer::ExecInfo& dftracer::ConfigurationManager::exec_info() {
+  if (exec_info_ready_) return exec_info_;
+  char cmd[128];
+  dftracer_logging_real_sprintf()(cmd, "/proc/%d/cmdline", df_getpid());
+  auto& posix_bypass = dftracer::POSIXBypass::get_instance();
+  int fd = posix_bypass.open(cmd, O_RDONLY);
+  char data[DFT_PATH_MAX];
+  ssize_t read_bytes = 0;
+  if (fd != -1) {
+    read_bytes = posix_bypass.read(fd, data, DFT_PATH_MAX);
+    posix_bypass.close(fd);
+  }
+  exec_info_ = parse_cmdline(data, read_bytes);
+  DFTRACER_LOG_INFO("Extracted process_name %s", exec_info_.name.c_str());
+  DFTRACER_LOG_DEBUG("Exec command line %s", exec_info_.cmd.c_str());
   exec_info_ready_ = true;
   return exec_info_;
 }
