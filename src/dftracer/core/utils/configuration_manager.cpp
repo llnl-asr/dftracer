@@ -7,6 +7,7 @@
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/singleton.h>
+#include <sys/resource.h>
 #include <yaml-cpp/yaml.h>
 
 #include <dftracer/core/dftracer_config.hpp>
@@ -129,6 +130,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
       stdio(true),
       compression(true),
       trace_all_files(false),
+      max_fd(DFT_DEFAULT_MAX_FD),
       tids(true),
       bind_signals(false),
       throw_error(false),
@@ -562,6 +564,20 @@ dftracer::ConfigurationManager::ConfigurationManager()
 }
 
 void dftracer::ConfigurationManager::derive_configurations() {
+  struct rlimit nofile;
+  if (getrlimit(RLIMIT_NOFILE, &nofile) == 0) {
+    if (nofile.rlim_cur == RLIM_INFINITY ||
+        nofile.rlim_cur > DFT_MAX_TRACKED_FD) {
+      DFTRACER_LOG_WARN(
+          "Open-file soft limit is above %zu, so descriptors from %zu up are "
+          "not traced",
+          DFT_MAX_TRACKED_FD, DFT_MAX_TRACKED_FD);
+      this->max_fd = DFT_MAX_TRACKED_FD;
+    } else {
+      this->max_fd = nofile.rlim_cur;
+    }
+  }
+  DFTRACER_LOG_DEBUG("Derived ConfigurationManager.max_fd %zu", this->max_fd);
   if (this->papi_sample_interval_ms == 0) {
     this->papi_sample_interval_ms = this->trace_interval_ms;
   }

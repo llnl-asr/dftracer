@@ -267,7 +267,8 @@ class DFTLogger {
       if (include_metadata) {
         meta = new dftracer::Metadata();
         char cwd[PATH_MAX];
-        if (getcwd(cwd, sizeof(cwd)) != NULL) {
+        if (dftracer::POSIXBypass::get_instance().getcwd(cwd, sizeof(cwd)) !=
+            NULL) {
           auto cwd_hash = hash_and_store(cwd, METADATA_NAME_FILE_HASH);
           meta->insert_or_assign("cwd", cwd_hash);
         }
@@ -765,12 +766,13 @@ class DFTLogger {
     this->logger->enter_event();                                  \
     start_time = this->logger->get_time();                        \
   }
-#define DFT_LOGGER_END()                                                     \
-  if (trace) {                                                               \
-    TimeResolution end_time = this->logger->get_time();                      \
-    this->logger->log((char*)__FUNCTION__, CATEGORY, TRACE_TYPE, start_time, \
-                      end_time - start_time, metadata);                      \
-    this->logger->exit_event();                                              \
+#define DFT_LOGGER_END_AS(name)                                        \
+  if (trace) {                                                         \
+    TimeResolution end_time = this->logger->get_time();                \
+    this->logger->log((char*)(name), CATEGORY, TRACE_TYPE, start_time, \
+                      end_time - start_time, metadata);                \
+    this->logger->exit_event();                                        \
   }
+#define DFT_LOGGER_END() DFT_LOGGER_END_AS(__FUNCTION__)
 
 #endif  // DFTRACER_GENERIC_LOGGER_H

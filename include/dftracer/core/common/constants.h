@@ -4,6 +4,9 @@
 
 #ifndef DFTRACER_CONSTANTS_H
 #define DFTRACER_CONSTANTS_H
+
+#include <stddef.h>
+
 #define DFTRACER_CONFIGURATION "DFTRACER_CONFIGURATION"
 #define DFTRACER_ENABLE "DFTRACER_ENABLE"
 #define DFTRACER_GOTCHA_PRIORITY "DFTRACER_GOTCHA_PRIORITY"
@@ -42,5 +45,9 @@ static const unsigned int DFT_PATH_MAX = 1024 * 4;
 static const char SEPARATOR = ';';
 static const int HASH_OUTPUT = 16;
 #define NO_HASH_DEFAULT 0
+// Size of the traced-descriptor table when no limit is known, and its cap. The
+// cap is 32 MB of address space for 8-byte hashes.
+static const size_t DFT_DEFAULT_MAX_FD = 1024;
+static const size_t DFT_MAX_TRACKED_FD = 4194304;
 
 #endif  // DFTRACER_CONSTANTS_H

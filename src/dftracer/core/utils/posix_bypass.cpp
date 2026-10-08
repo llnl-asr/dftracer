@@ -38,6 +38,8 @@ void POSIXBypass::initialize() {
   real_unlink_ = reinterpret_cast<unlink_fn>(dlsym(libc, "unlink"));
   real_fsync_ = reinterpret_cast<fsync_fn>(dlsym(libc, "fsync"));
   real_readlink_ = reinterpret_cast<readlink_fn>(dlsym(libc, "readlink"));
+  real_getcwd_ = reinterpret_cast<getcwd_fn>(dlsym(libc, "getcwd"));
+  real_dirfd_ = reinterpret_cast<dirfd_fn>(dlsym(libc, "dirfd"));
   assert(real_open_ != nullptr);
   assert(real_close_ != nullptr);
   assert(real_read_ != nullptr);
@@ -45,6 +47,8 @@ void POSIXBypass::initialize() {
   assert(real_unlink_ != nullptr);
   assert(real_fsync_ != nullptr);
   assert(real_readlink_ != nullptr);
+  assert(real_getcwd_ != nullptr);
+  assert(real_dirfd_ != nullptr);
   initialized_ = true;
 }
 
@@ -69,6 +73,12 @@ int POSIXBypass::fsync(int fd) { return real_fsync_(fd); }
 ssize_t POSIXBypass::readlink(const char* path, char* buf, size_t bufsize) {
   return real_readlink_(path, buf, bufsize);
 }
+
+char* POSIXBypass::getcwd(char* buf, size_t size) {
+  return real_getcwd_(buf, size);
+}
+
+int POSIXBypass::dirfd(DIR* dir) { return real_dirfd_(dir); }
 
 }  // namespace dftracer
 

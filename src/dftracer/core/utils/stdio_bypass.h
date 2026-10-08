@@ -67,6 +67,7 @@ class STDIOBypass {
   int fseek(FILE* fp, long offset, int whence);
   long ftell(FILE* fp);
   int fclose(FILE* fp);
+  int fileno(FILE* fp);
 
   // printf/scanf family: brahma's base class declares these to take a
   // va_list (its GOTCHA_MACRO_TYPEDEF_VARFMT wrapper already turns the
@@ -88,11 +89,10 @@ class STDIOBypass {
   int vfscanf(FILE* stream, const char* format, va_list args);
   int vscanf(const char* format, va_list args);
   int vsscanf(const char* str, const char* format, va_list args);
-#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 38)
+  int __isoc99_vfscanf(FILE* stream, const char* format, va_list args);
   int __isoc23_vfscanf(FILE* stream, const char* format, va_list args);
   int __isoc23_vscanf(const char* format, va_list args);
   int __isoc23_vsscanf(const char* str, const char* format, va_list args);
-#endif
 
  private:
   STDIOBypass() = default;
@@ -111,6 +111,7 @@ class STDIOBypass {
   using fseek_fn = int (*)(FILE*, long, int);
   using ftell_fn = long (*)(FILE*);
   using fclose_fn = int (*)(FILE*);
+  using fileno_fn = int (*)(FILE*);
   using vfprintf_fn = int (*)(FILE*, const char*, va_list);
   using vprintf_fn = int (*)(const char*, va_list);
   using vsprintf_fn = int (*)(char*, const char*, va_list);
@@ -129,6 +130,7 @@ class STDIOBypass {
   fseek_fn real_fseek_ = nullptr;
   ftell_fn real_ftell_ = nullptr;
   fclose_fn real_fclose_ = nullptr;
+  fileno_fn real_fileno_ = nullptr;
   vfprintf_fn real_vfprintf_ = nullptr;
   vprintf_fn real_vprintf_ = nullptr;
   vsprintf_fn real_vsprintf_ = nullptr;
@@ -136,11 +138,10 @@ class STDIOBypass {
   vfscanf_fn real_vfscanf_ = nullptr;
   vscanf_fn real_vscanf_ = nullptr;
   vsscanf_fn real_vsscanf_ = nullptr;
-#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 38)
+  vfscanf_fn real_isoc99_vfscanf_ = nullptr;
   vfscanf_fn real_isoc23_vfscanf_ = nullptr;
   vscanf_fn real_isoc23_vscanf_ = nullptr;
   vsscanf_fn real_isoc23_vsscanf_ = nullptr;
-#endif
 };
 
 }  // namespace dftracer

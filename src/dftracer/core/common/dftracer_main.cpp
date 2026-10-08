@@ -484,8 +484,8 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char* _log_file,
             }
           }
           if (conf->posix) {
-            auto posix =
-                brahma::POSIXDFTracer::get_instance(conf->trace_all_files);
+            auto posix = brahma::POSIXDFTracer::get_instance(
+                conf->trace_all_files, conf->max_fd);
             posix->bind<brahma::POSIXDFTracer>("dftracer",
                                                conf->gotcha_priority);
           }
