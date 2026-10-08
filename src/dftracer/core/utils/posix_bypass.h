@@ -6,16 +6,18 @@
 #define DFTRACER_POSIX_BYPASS_H
 
 #include <dftracer/core/common/typedef.h>
+#include <dirent.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 namespace dftracer {
 
 // Real libc POSIX I/O function pointers for the functions POSIXDFTracer
-// actually intercepts (open/close/read/write/unlink/fsync/readlink),
-// resolved once by initialize() via dlopen(DFTRACER_LIBC_SO_PATH,
-// RTLD_NOLOAD) + dlsym(handle, ...) -- the same mechanism as, and for the
-// same reasons as, dftracer::STDIOBypass (see stdio_bypass.h): GOTCHA's
+// actually intercepts
+// (open/close/read/write/unlink/fsync/readlink/getcwd/dirfd), resolved once by
+// initialize() via dlopen(DFTRACER_LIBC_SO_PATH, RTLD_NOLOAD) + dlsym(handle,
+// ...) -- the same mechanism as, and for the same reasons as,
+// dftracer::STDIOBypass (see stdio_bypass.h): GOTCHA's
 // gotcha_get_wrappee()/__real_* cannot be trusted to resolve to true libc
 // for symbols this library intercepts when loaded via LD_PRELOAD, and a
 // plain `&::function` doesn't help either since it's just this library's
@@ -44,6 +46,8 @@ class POSIXBypass {
   int unlink(const char* pathname);
   int fsync(int fd);
   ssize_t readlink(const char* path, char* buf, size_t bufsize);
+  char* getcwd(char* buf, size_t size);
+  int dirfd(DIR* dir);
 
  private:
   POSIXBypass() = default;
@@ -59,6 +63,8 @@ class POSIXBypass {
   using unlink_fn = int (*)(const char*);
   using fsync_fn = int (*)(int);
   using readlink_fn = ssize_t (*)(const char*, char*, size_t);
+  using getcwd_fn = char* (*)(char*, size_t);
+  using dirfd_fn = int (*)(DIR*);
 
   open_fn real_open_ = nullptr;
   close_fn real_close_ = nullptr;
@@ -67,6 +73,8 @@ class POSIXBypass {
   unlink_fn real_unlink_ = nullptr;
   fsync_fn real_fsync_ = nullptr;
   readlink_fn real_readlink_ = nullptr;
+  getcwd_fn real_getcwd_ = nullptr;
+  dirfd_fn real_dirfd_ = nullptr;
 };
 
 }  // namespace dftracer

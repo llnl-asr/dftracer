@@ -31,6 +31,9 @@ class ConfigurationManager {
   bool stdio;
   bool compression;
   bool trace_all_files;
+  // Size of the traced-descriptor table, from the open-file soft limit at
+  // startup. A descriptor above it is untraced.
+  size_t max_fd;
   bool tids;
   bool bind_signals;
   bool throw_error;

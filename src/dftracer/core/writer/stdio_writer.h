@@ -25,7 +25,7 @@ class STDIOWriter {
       // traced/intercepted) to avoid fflush/flockfile on a FILE* whose
       // internal mutex state was copied from the parent and may be
       // inconsistent in this child process.
-      int fd = fileno(fh_);
+      int fd = stdio_bypass.fileno(fh_);
       fh_ = nullptr;
       if (fd >= 0) posix_bypass.close(fd);
     }

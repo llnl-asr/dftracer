@@ -149,6 +149,39 @@ find_program(BASH_PROGRAM bash)
 df_add_test(check_file_exists_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_file_at_least.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}* 29)
 set_tests_properties(check_file_exists_${test_name} PROPERTIES DEPENDS ${test_name})
 
+add_executable(test_posix_parity c/test_posix_parity.c)
+add_dependencies(test_posix_parity ${PROJECT_NAME}_preload_dbg)
+
+set(test_name test_posix_parity)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_posix_parity ${CMAKE_CURRENT_BINARY_DIR}/data)
+set_common_properties(${test_name})
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+
+df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*
+    mkdirat openat unlinkat renameat fchmod fchmodat fchown fchownat openat64 fcntl64 ftruncate64 truncate64
+    getcwd pipe sysconf mmap=2 munmap msync madvise mprotect mlock munlock mlockall munlockall
+    opendir readdir readdir64 rewinddir closedir
+    "stat|__xstat" "lstat|__lxstat" "stat64|__xstat64" "fstat|__fxstat" "fstatat|__fxstatat" "mknod|__xmknod"
+    fileno fdopen tmpfile tmpfile64 fseeko ftello fseeko64 ftello64 fgetpos64 fsetpos64
+    "fscanf|__isoc99_fscanf|__isoc23_fscanf")
+set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
+
+add_executable(test_posix_fortify c/test_posix_fortify.c)
+target_compile_options(test_posix_fortify PRIVATE -O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)
+add_dependencies(test_posix_fortify ${PROJECT_NAME}_preload_dbg)
+
+set(test_name test_posix_fortify)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_posix_fortify ${CMAKE_CURRENT_BINARY_DIR}/data)
+set_common_properties(${test_name})
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+
+df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*
+    __open_2 __open64_2 __openat_2 __openat64_2 __read_chk __pread_chk __pread64_chk
+    __readlink_chk __readlinkat_chk __getcwd_chk __realpath_chk __fread_chk __fgets_chk)
+set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
+
 set(test_name test_cpp_basic_app_only)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_cpp ${CMAKE_CURRENT_BINARY_DIR}/data 1)
 set_common_properties(${test_name})

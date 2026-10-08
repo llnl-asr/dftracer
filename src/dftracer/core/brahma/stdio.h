@@ -6,6 +6,7 @@
 #define DFTRACER_STDIO_H
 
 #include <brahma/brahma.h>
+#include <dftracer/core/brahma/posix.h>
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/typedef.h>
@@ -43,6 +44,13 @@ class STDIODFTracer : public STDIO {
       return iter->second;
     }
     return NO_HASH_DEFAULT;
+  }
+
+  inline HashType is_traced(int fd, const char* func) {
+    DFTRACER_LOG_DEBUG("Calling STDIODFTracer.is_traced with fd for %s", func);
+    if (stop_trace) return NO_HASH_DEFAULT;
+    auto posix = POSIXDFTracer::get_instance();
+    return posix == nullptr ? NO_HASH_DEFAULT : posix->fd_hash(fd);
   }
 
   inline HashType is_traced(const char* filename, const char* func) {
@@ -95,6 +103,37 @@ class STDIODFTracer : public STDIO {
   FILE* fopen64(const char* path, const char* mode) override;
 
   int fclose(FILE* fp) override;
+
+  int fileno(FILE* stream) override;
+
+  size_t __fread_chk(void* ptr, size_t ptrlen, size_t size, size_t count,
+                     FILE* fp) override;
+
+  size_t __fread_unlocked_chk(void* ptr, size_t ptrlen, size_t size,
+                              size_t count, FILE* fp) override;
+
+  char* __fgets_chk(char* str, size_t buflen, int num, FILE* fp) override;
+
+  char* __fgets_unlocked_chk(char* str, size_t buflen, int num,
+                             FILE* fp) override;
+
+  FILE* fdopen(int fd, const char* mode) override;
+
+  FILE* tmpfile(void) override;
+
+  FILE* tmpfile64(void) override;
+
+  int fseeko(FILE* stream, off_t offset, int whence) override;
+
+  int fseeko64(FILE* stream, off64_t offset, int whence) override;
+
+  off_t ftello(FILE* stream) override;
+
+  off64_t ftello64(FILE* stream) override;
+
+  int fgetpos64(FILE* stream, fpos64_t* pos) override;
+
+  int fsetpos64(FILE* stream, const fpos64_t* pos) override;
 
   size_t fread(void* ptr, size_t size, size_t count, FILE* fp) override;
 
@@ -196,10 +235,10 @@ class STDIODFTracer : public STDIO {
   int vfprintf(FILE* stream, const char* format, va_list args) override;
   int fscanf(FILE* stream, const char* format, va_list args) override;
   int vfscanf(FILE* stream, const char* format, va_list args) override;
-#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 38)
+  int __isoc99_fscanf(FILE* stream, const char* format, va_list args) override;
+  int __isoc99_vfscanf(FILE* stream, const char* format, va_list args) override;
   int __isoc23_fscanf(FILE* stream, const char* format, va_list args) override;
   int __isoc23_vfscanf(FILE* stream, const char* format, va_list args) override;
-#endif
 
   int puts(const char* s) override;
   int putchar(int c) override;

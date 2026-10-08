@@ -430,3 +430,65 @@ jobs:
               --args "$EXE" "${CMD_ARGS[@]}" || true
             echo "::endgroup::"
           done
+
+  glibc:
+    # manylinux_2_28 is the baseline of the wheels. 2_34 is the first glibc
+    # without the __xstat family and with stat as a real export, so together
+    # they cover both ways an application can call stat.
+    name: glibc ${{ matrix.glibc }}
+    runs-on: ubuntu-24.04
+    container:
+      image: quay.io/pypa/manylinux_${{ matrix.tag }}_x86_64
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { tag: "2_28", glibc: "2.28" }
+          - { tag: "2_34", glibc: "2.34" }
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+      DFTRACER_BIND_SIGNALS: 1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Check glibc version
+        run: ldd --version | head -1 | grep -q " ${{ matrix.glibc }}$"
+
+      - name: Install test tools
+        run: |
+          dnf install -y jq
+          echo /opt/python/cp311-cp311/bin >> "$GITHUB_PATH"
+
+      # pydftracer 2.0.5 imports typing_extensions without declaring it.
+      - name: Install Python test dependencies
+        run: python3 -m pip install numpy pillow typing_extensions "pydftracer>=2.0.5"
+
+      - name: Build dependencies
+        run: |
+          cmake -S . -B deps \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/opt/dftracer \
+            -DDFTRACER_INSTALL_DEPENDENCIES=ON
+          cmake --build deps
+
+      - name: Build
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/opt/dftracer \
+            -DCMAKE_PREFIX_PATH=/opt/dftracer \
+            -Dyaml-cpp_DIR=/opt/dftracer \
+            -DDFTRACER_INSTALL_DEPENDENCIES=OFF \
+            -DDFTRACER_ENABLE_TESTS=ON
+          cmake --build build
+
+      # pydftracer imports the extension as dftracer.dftracer, and the Python
+      # tests look for it under venv/lib64.
+      - name: Install Python bindings for the tests
+        run: |
+          mkdir -p venv/lib64/dftracer
+          cp build/lib64/dftracer*.so venv/lib64/dftracer/
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

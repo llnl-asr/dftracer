@@ -11,10 +11,13 @@
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/df_logger.h>
 #include <dftracer/core/utils/md5.h>
+#include <dftracer/core/utils/posix_bypass.h>
 #include <dftracer/core/utils/utils.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <features.h>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/param.h>
 #include <sys/sendfile.h>
 #include <sys/statvfs.h>
@@ -36,15 +39,19 @@ class POSIXDFTracer : public POSIX {
     static auto* leaked_instance = new std::shared_ptr<POSIXDFTracer>();
     return *leaked_instance;
   }
-  static const int MAX_FD = 1024;
-  HashType tracked_fd[MAX_FD];
+  // One slot per descriptor number, allocated once at startup. Slots are
+  // zero when the descriptor is not traced, and calloc leaves pages that are
+  // never touched unused, so a large table costs address space only.
+  size_t max_fd;
+  HashType* tracked_fd;
+
   std::shared_ptr<DFTLogger> logger;
   bool trace_all_files;
 
   inline HashType is_traced(int fd, const char* func) {
     if (stop_trace) return NO_HASH_DEFAULT;
-    if (fd < 0) return NO_HASH_DEFAULT;
-    HashType trace = tracked_fd[fd % MAX_FD];
+    if (fd < 0 || static_cast<size_t>(fd) >= max_fd) return NO_HASH_DEFAULT;
+    HashType trace = tracked_fd[fd];
     if (trace == NO_HASH_DEFAULT) {
       DFTRACER_LOG_DEBUG(
           "Calling POSIXDFTracer.is_traced for %s and"
@@ -70,35 +77,68 @@ class POSIXDFTracer : public POSIX {
     }
   }
 
+  struct AtRef {
+    int dirfd;
+    const char* path;
+    AtRef(int d, const char* p) : dirfd(d), path(p) {}
+  };
+
+  // An AT_FDCWD or absolute path has no directory fd to look up, so those
+  // are matched by path like the non-at variants.
+  inline HashType is_traced(const AtRef& ref, const char* func) {
+    if (ref.path != nullptr && (ref.dirfd == AT_FDCWD || ref.path[0] == '/'))
+      return is_traced(ref.path, func);
+    return is_traced(ref.dirfd, func);
+  }
+
+  inline int dir_fd(DIR* dir) {
+    return dir == nullptr ? -1
+                          : dftracer::POSIXBypass::get_instance().dirfd(dir);
+  }
+
   inline void trace(int fd, HashType hash) {
     DFTRACER_LOG_DEBUG("Calling POSIXDFTracer.trace for %d and %s", fd, hash);
-    if (fd == -1) return;
-    tracked_fd[fd % MAX_FD] = hash;
+    if (fd < 0 || static_cast<size_t>(fd) >= max_fd) return;
+    tracked_fd[fd] = hash;
   }
 
   inline void remove_trace(int fd) {
     DFTRACER_LOG_DEBUG("Calling POSIXDFTracer.remove_trace for %d", fd);
-    if (fd == -1) return;
-    tracked_fd[fd % MAX_FD] = NO_HASH_DEFAULT;
+    if (fd < 0 || static_cast<size_t>(fd) >= max_fd) return;
+    tracked_fd[fd] = NO_HASH_DEFAULT;
   }
 
  public:
-  POSIXDFTracer(bool trace_all) : POSIX(), trace_all_files(trace_all) {
+  POSIXDFTracer(bool trace_all, size_t table_size)
+      : POSIX(),
+        max_fd(table_size),
+        tracked_fd(static_cast<HashType*>(calloc(max_fd, sizeof(HashType)))),
+        trace_all_files(trace_all) {
     DFTRACER_LOG_DEBUG("POSIX class intercepted");
-    for (int i = 0; i < MAX_FD; ++i) tracked_fd[i] = NO_HASH_DEFAULT;
+    if (tracked_fd == nullptr) {
+      DFTRACER_LOG_ERROR("unable to allocate the descriptor table of %zu",
+                         max_fd);
+      max_fd = 0;
+    }
     logger = DFT_LOGGER_INIT();
   }
+  // File hash of a traced fd, or NO_HASH_DEFAULT; lets STDIO follow fdopen().
+  HashType fd_hash(int fd) { return is_traced(fd, __FUNCTION__); }
+
   void finalize() {
     if (stop_trace) return;
     DFTRACER_LOG_DEBUG("Finalizing POSIXDFTracer");
     stop_trace = true;
   }
-  ~POSIXDFTracer() = default;
-  static std::shared_ptr<POSIXDFTracer> get_instance(bool trace_all = false) {
+  POSIXDFTracer(const POSIXDFTracer&) = delete;
+  POSIXDFTracer& operator=(const POSIXDFTracer&) = delete;
+  ~POSIXDFTracer() { free(tracked_fd); }
+  static std::shared_ptr<POSIXDFTracer> get_instance(
+      bool trace_all = false, size_t max_fd = DFT_DEFAULT_MAX_FD) {
     DFTRACER_LOG_DEBUG("POSIX class get_instance");
     auto& instance = instance_ref();
     if (!stop_trace && instance == nullptr) {
-      instance = std::make_shared<POSIXDFTracer>(trace_all);
+      instance = std::make_shared<POSIXDFTracer>(trace_all, max_fd);
       POSIX::set_instance(instance);
     }
     return instance;
@@ -153,6 +193,43 @@ class POSIXDFTracer : public POSIX {
   int __fxstat(int vers, int fd, struct stat* buf) override;
 
   int __fxstat64(int vers, int fd, struct stat64* buf) override;
+
+  int __fxstatat(int vers, int dirfd, const char* path, struct stat* buf,
+                 int flags) override;
+
+  int __fxstatat64(int vers, int dirfd, const char* path, struct stat64* buf,
+                   int flags) override;
+
+  int __xmknod(int vers, const char* path, mode_t mode, dev_t* dev) override;
+
+  // _FORTIFY_SOURCE entry points: distro builds call these instead of
+  // open/read/pread/readlink/getcwd/realpath.
+  int __open_2(const char* path, int flags) override;
+
+  int __open64_2(const char* path, int flags) override;
+
+  int __openat_2(int dirfd, const char* path, int flags) override;
+
+  int __openat64_2(int dirfd, const char* path, int flags) override;
+
+  ssize_t __read_chk(int fd, void* buf, size_t count, size_t buflen) override;
+
+  ssize_t __pread_chk(int fd, void* buf, size_t count, off_t offset,
+                      size_t buflen) override;
+
+  ssize_t __pread64_chk(int fd, void* buf, size_t count, off64_t offset,
+                        size_t buflen) override;
+
+  ssize_t __readlink_chk(const char* path, char* buf, size_t bufsize,
+                         size_t buflen) override;
+
+  ssize_t __readlinkat_chk(int dirfd, const char* path, char* buf,
+                           size_t bufsize, size_t buflen) override;
+
+  char* __getcwd_chk(char* buf, size_t size, size_t buflen) override;
+
+  char* __realpath_chk(const char* path, char* resolved,
+                       size_t resolvedlen) override;
 
   int mkdir(const char* pathname, mode_t mode) override;
 
@@ -274,9 +351,61 @@ class POSIXDFTracer : public POSIX {
                           off64_t* off_out, size_t len,
                           unsigned int flags) override;
 
-#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 32)
-  // Before glibc 2.32 these weren't real exported dynamic symbols -- see
-  // the identical guard and rationale in brahma/interface/posix.h.
+  int closedir(DIR* dir) override;
+
+  dirent* readdir(DIR* dir) override;
+
+  dirent64* readdir64(DIR* dir) override;
+
+  void rewinddir(DIR* dir) override;
+
+  int mkdirat(int dirfd, const char* pathname, mode_t mode) override;
+
+  int unlinkat(int dirfd, const char* pathname, int flags) override;
+
+  int renameat(int olddirfd, const char* oldpath, int newdirfd,
+               const char* newpath) override;
+
+  int fchmod(int fd, mode_t mode) override;
+
+  int fchmodat(int dirfd, const char* pathname, mode_t mode,
+               int flags) override;
+
+  int fchown(int fd, uid_t owner, gid_t group) override;
+
+  int fchownat(int dirfd, const char* pathname, uid_t owner, gid_t group,
+               int flags) override;
+
+  int openat64(int dirfd, const char* pathname, int flags, ...) override;
+
+  int fcntl64(int fd, int cmd, ...) override;
+
+  int ftruncate64(int fd, off64_t length) override;
+
+  int truncate64(const char* pathname, off64_t length) override;
+
+  char* getcwd(char* buf, size_t size) override;
+
+  int pipe(int pipefd[2]) override;
+
+  long sysconf(int name) override;
+
+  int munmap(void* addr, size_t len) override;
+
+  int msync(void* addr, size_t len, int flags) override;
+
+  int madvise(void* addr, size_t length, int advice) override;
+
+  int mprotect(void* addr, size_t length, int prot) override;
+
+  int mlock(const void* addr, size_t len) override;
+
+  int munlock(const void* addr, size_t len) override;
+
+  int mlockall(int flags) override;
+
+  int munlockall(void) override;
+
   int mknod(const char* pathname, mode_t mode, dev_t dev) override;
 
   int stat(const char* path, struct stat* buf) override;
@@ -296,7 +425,6 @@ class POSIXDFTracer : public POSIX {
 
   int fstatat64(int dirfd, const char* path, struct stat64* buf,
                 int flags) override;
-#endif
 
   int posix_fadvise(int fd, off_t offset, off_t len, int advice) override;
 
