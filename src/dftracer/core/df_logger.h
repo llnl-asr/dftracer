@@ -141,6 +141,7 @@ class DFTLogger {
   DFTLogger(bool init_log = false)
       : is_init(false),
         dftracer_tid(false),
+        process_id(-1),
         computed_hash(),
         index(0),
         is_aggregated(false),
@@ -215,6 +216,7 @@ class DFTLogger {
   // Interceptors should treat a false return as a signal to skip tracing
   // and pass through to the real function.
   inline bool is_active() const { return is_init; }
+  inline ProcessID get_process_id() const { return process_id; }
 
   inline HashType get_hash(char* name) {
     uint8_t result[HASH_OUTPUT];
