@@ -8,4 +8,4 @@ yaml-cpp     yaml-cpp-0.6.3   https://github.com/jbeder/yaml-cpp.git
 libuv        v1.52.1          https://github.com/libuv/libuv.git
 # TODO(rayandrew): replace the brahma commit with its release tag before the
 # dftracer release, and update dependency/CMakeLists.txt to match.
-brahma       c86a1338697265d8c29d74b17718290e30de7fbf  https://github.com/llnl-asr/brahma.git
+brahma       b33368847b76c5dc7b15cc68f987a330cfb0601a  https://github.com/llnl-asr/brahma.git

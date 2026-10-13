@@ -183,7 +183,7 @@ else()
     GIT_REPOSITORY https://github.com/llnl-asr/brahma.git
     # TODO(rayandrew): replace this commit with the brahma release tag before the
     # dftracer release, and update dependency/manifest.txt to match.
-    GIT_TAG c86a1338697265d8c29d74b17718290e30de7fbf
+    GIT_TAG b33368847b76c5dc7b15cc68f987a330cfb0601a
     TIMEOUT 10
     PATCH_COMMAND ${CMAKE_COMMAND}
       -DSOURCE_DIR=<SOURCE_DIR>
