@@ -288,6 +288,39 @@ inline std::string get_filename(int fd) {
   return filename;
 }
 
+// Joins a relative path to the cwd and drops "." and ".." by text, so it
+// matches the data dir prefixes. realpath would fail for a file that
+// open(O_CREAT) has not made yet. The cwd is read each time because libc can
+// chdir without a wrapper (nftw with FTW_CHDIR). Valid until the next call.
+inline const char* absolute_path(const char* filename) {
+  if (filename == nullptr || filename[0] == '/' || filename[0] == '\0')
+    return filename;
+  static thread_local char buf[PATH_MAX];
+  if (dftracer::POSIXBypass::get_instance().getcwd(buf, PATH_MAX) == nullptr)
+    return filename;
+  size_t len = strlen(buf);
+  if (len == 1) len = 0;  // "/" is the root; every part adds its own '/'.
+  const char* p = filename;
+  while (*p != '\0') {
+    const char* end = strchr(p, '/');
+    size_t n = end == nullptr ? strlen(p) : static_cast<size_t>(end - p);
+    if (n == 2 && p[0] == '.' && p[1] == '.') {
+      while (len > 0 && buf[len - 1] != '/') --len;
+      if (len > 0) --len;
+    } else if (n > 0 && !(n == 1 && p[0] == '.')) {
+      if (len + 1 + n >= PATH_MAX) return filename;
+      buf[len++] = '/';
+      memcpy(buf + len, p, n);
+      len += n;
+    }
+    p += n;
+    if (*p == '/') ++p;
+  }
+  if (len == 0) buf[len++] = '/';
+  buf[len] = '\0';
+  return buf;
+}
+
 inline const char* is_traced_common(const char* filename, const char* func) {
   DFTRACER_LOG_DEBUG("is_traced_common");
   auto tri_ptr = dftracer::Singleton<Trie>::get_instance();

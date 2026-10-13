@@ -190,6 +190,16 @@ foreach(variant plain fortify)
     set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
 endforeach()
 
+add_executable(test_relative_path c/test_relative_path.c)
+add_dependencies(test_relative_path ${PROJECT_NAME}_preload_dbg)
+df_add_test(test_relative_path ${CMAKE_BINARY_DIR}/bin/test_relative_path ${CMAKE_CURRENT_BINARY_DIR}/data)
+set_common_properties(test_relative_path)
+set_property(TEST test_relative_path APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
+set_property(TEST test_relative_path APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+df_add_test(check_events_test_relative_path ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh ${CMAKE_CURRENT_BINARY_DIR}/test_relative_path*
+    open=1 write=1 close=1 access=2 fopen=1 fclose=1 rename=1 unlink=2)
+set_tests_properties(check_events_test_relative_path PROPERTIES DEPENDS test_relative_path)
+
 include(CheckSymbolExists)
 set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
 check_symbol_exists(close_range unistd.h DFTRACER_TEST_HAVE_CLOSE_RANGE)

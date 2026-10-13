@@ -59,6 +59,7 @@ class STDIODFTracer : public STDIO {
     DFTRACER_LOG_DEBUG("Calling STDIODFTracer.is_traced with filename for %s",
                        func);
     if (stop_trace) return NO_HASH_DEFAULT;
+    filename = absolute_path(filename);
     if (trace_all_files)
       return logger->hash_and_store(filename, METADATA_NAME_FILE_HASH);
     else {
