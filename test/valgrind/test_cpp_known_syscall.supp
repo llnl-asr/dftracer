@@ -130,3 +130,22 @@
    ...
    fun:_dl_init
 }
+
+{
+   glibc_aio_worker_thread_tls
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   ...
+   fun:pthread_create*
+   ...
+   fun:__aio_enqueue_request
+}
+
+{
+   glibc_aio_freeres_uninit
+   Memcheck:Cond
+   fun:free
+   fun:free_res
+   fun:__libc_freeres
+}

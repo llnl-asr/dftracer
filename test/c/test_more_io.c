@@ -1,0 +1,83 @@
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#define CHECK(cond)                                          \
+  do {                                                       \
+    if (!(cond)) {                                           \
+      fprintf(stderr, "failed: %s (%d)\n", #cond, __LINE__); \
+      return 1;                                              \
+    }                                                        \
+  } while (0)
+
+static int call_vdprintf(int fd, const char* format, ...) {
+  va_list args;
+  va_start(args, format);
+  int ret = vdprintf(fd, format, args);
+  va_end(args);
+  return ret;
+}
+
+int main(int argc, char* argv[]) {
+  CHECK(argc > 1);
+  char dir[4096];
+  char path[4096];
+  char buf[64];
+  /* The plain and fortify builds run in parallel, so each gets its own dir. */
+  snprintf(dir, sizeof(dir), "%s/%s", argv[1], basename(argv[0]));
+  mkdir(argv[1], 0755);
+  CHECK(mkdir(dir, 0755) == 0 || access(dir, F_OK) == 0);
+
+  snprintf(path, sizeof(path), "%s/a.txt", dir);
+  int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+  CHECK(fd >= 0);
+  CHECK(dprintf(fd, "%s %d\n", "line", 1) > 0);
+  CHECK(call_vdprintf(fd, "%s %d\n", "line", 2) > 0);
+
+  snprintf(path, sizeof(path), "%s/b.txt", dir);
+  FILE* f = fopen(path, "w+");
+  CHECK(f != NULL);
+  /* A volatile size keeps glibc's inline fwrite_unlocked macro out. */
+  volatile size_t size = 16;
+  memset(buf, 'x', sizeof(buf));
+  CHECK(fwrite_unlocked(buf, 1, size, f) == size);
+  CHECK(fputs_unlocked("line\n", f) >= 0);
+  CHECK(fputc_unlocked('z', f) == 'z');
+  rewind(f);
+  CHECK(fread_unlocked(buf, 1, size, f) == size);
+  CHECK(fgets_unlocked(buf, sizeof(buf), f) != NULL);
+  CHECK(fgetc_unlocked(f) == 'z');
+  CHECK(fclose(f) == 0);
+
+  /* A vfork child shares the tracer's memory but not the fd table. Its
+     close calls must not untrack fd in the parent, so the write after it is
+     still traced. */
+  pid_t pid = vfork();
+  if (pid == 0) {
+    dup2(fd, 50);
+    close(fd);
+#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 34)
+    close_range(50, 50, 0);
+#endif
+    _exit(0);
+  }
+  CHECK(pid > 0);
+  CHECK(waitpid(pid, NULL, 0) == pid);
+  CHECK(write(fd, "v", 1) == 1);
+
+#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 34)
+  int fd_range = dup(fd);
+  CHECK(fd_range >= 0);
+  CHECK(close_range(fd_range, fd_range, 0) == 0);
+  int fd_from = dup(fd);
+  CHECK(fd_from > fd);
+  closefrom(fd_from);
+#endif
+  CHECK(close(fd) == 0);
+  return 0;
+}
