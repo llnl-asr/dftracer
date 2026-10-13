@@ -751,6 +751,8 @@ int brahma::POSIXDFTracer::fork() {
 
 void brahma::POSIXDFTracer::exit(int status) {
   BRAHMA_MAP_OR_FAIL(exit);
+  // Finalizing in a vfork child would stop tracing in the parent.
+  if (in_vfork_child()) __real_exit(status);
   DFTRACER_LOG_INFO("Calling finalize from exit");
   dft_finalize(true);
   __real_exit(status);
@@ -758,6 +760,8 @@ void brahma::POSIXDFTracer::exit(int status) {
 
 void brahma::POSIXDFTracer::_exit(int status) {
   BRAHMA_MAP_OR_FAIL(_exit);
+  // Finalizing in a vfork child would stop tracing in the parent.
+  if (in_vfork_child()) __real__exit(status);
   DFTRACER_LOG_INFO("Calling finalize from _exit");
   dft_finalize(true);
   __real__exit(status);

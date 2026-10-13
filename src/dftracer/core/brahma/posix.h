@@ -104,8 +104,18 @@ class POSIXDFTracer : public POSIX {
 
   inline void remove_trace(int fd) {
     DFTRACER_LOG_DEBUG("Calling POSIXDFTracer.remove_trace for %d", fd);
-    if (fd < 0 || static_cast<size_t>(fd) >= max_fd) return;
+    // A vfork child's close loop (CPython subprocess on glibc < 2.34) must not
+    // untrack the parent's open fds. Only close pays for the getpid syscall.
+    if (fd < 0 || static_cast<size_t>(fd) >= max_fd || in_vfork_child()) return;
     tracked_fd[fd] = NO_HASH_DEFAULT;
+  }
+
+  // A vfork child shares this process's memory and has not run the atfork
+  // reinit, so it must neither log nor change the table.
+  inline bool in_vfork_child() {
+    if (logger == nullptr || !logger->is_active()) return false;
+    ProcessID owner = logger->get_process_id();
+    return owner > 0 && df_getpid() != owner;
   }
 
  public:
