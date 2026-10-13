@@ -33,7 +33,7 @@ What it captures
    An event (a traced function or region) relates to entities: it **used**
    (consumed), **generated** (produced), **invalidated** (deleted or ended) or
    **updated** (modified in place) them. Any event may carry relations, in any
-   category -- a C++ function, a Python region, an MPI call.
+   category, such as a C++ function, a Python region or an MPI call.
 
 **Entity relation**
    Two entities relate directly: **derived_from**, **revision_of**,
@@ -62,18 +62,18 @@ Types and enums
 Defined in ``dftracer/core/common/entity.h`` (C-compatible) and
 ``dftracer/core/common/typedef.h``.
 
-======================== ==================================================
-Type                      Meaning
-======================== ==================================================
-``EntityID``              ``uint64_t``; 16 lowercase hex characters in traces
-``ConstEntityTypeName``   type name, at most ``DFT_ENTITY_TYPE_LEN - 1`` (31)
-``ConstEntityKey``        instance key, hashed into the id, not stored
-``ConstEntityURI``        locator unique within the app, at most 255 characters
-``ConstEntityDescription`` type description, at most 255 characters
-``EntityStore``           where the instance lives (enum below)
-``EntityRole``            role of an entity type (enum below)
-``EntityRelation``        event and entity relations (enum below)
-======================== ==================================================
+=========================== ==========================================================================
+Type                        Meaning
+=========================== ==========================================================================
+``EntityID``                ``uint64_t``; 16 lowercase hex characters in traces
+``ConstEntityTypeName``     type name, at most ``DFT_ENTITY_TYPE_LEN - 1`` (31)
+``ConstEntityKey``          instance key, hashed into the id, not stored
+``ConstEntityURI``          locator unique within the app, at most 255 characters
+``ConstEntityDescription``  type description, at most 255 characters
+``EntityStore``             where the instance lives (enum below)
+``EntityRole``              role of an entity type (enum below)
+``EntityRelation``          event and entity relations (enum below)
+=========================== ==========================================================================
 
 Strings are truncated to their capacity and restricted to ``A-Z a-z 0-9 _ - .
 : / @ + = , ~`` and space; any other character (quotes, backslash, ``|``,
@@ -207,7 +207,161 @@ colliding with other event args (the lifecycle ``end`` event has its own
      "args":{"hhash":"…","relations":{"used":["d824b0bb91487885"],
                                        "generated":["8f0de68c04eea0bf"]}}}
 
+Every record is one JSON line.
+The ``hhash`` field names the host, so records from different nodes stay apart.
+An ``EH`` record says what an id stands for.
+An ``ET`` record says what a type means and which role it plays.
+An ``ER`` record is one edge between two entities, with the ``relation`` code from the table above.
+An event record says which entities it used, generated, invalidated or updated.
+
+Each process writes its own ``EH`` and ``ET`` records, once per entity and once per type.
+A trace directory therefore holds the same entity many times, once per process that touched it.
+Readers keep the first copy and drop the rest.
+The ``store`` is a number from the ``EntityStore`` table and ``uri`` is empty when the application gave none.
+Event relations hold only ids.
+The entity behind an id is the ``EH`` record with the same ``id``, which may sit in another file.
+
 A reader joins events to entities by id; ids from different processes and
 languages join without coordination. ``dftracer-utils`` builds the graph
 (``trace::provenance::extract_provenance_graph``, ``GET /api/prov/graph`` and
 the *Provenance* tab of ``dftracer_server``).
+
+----------------------------------------
+Reading a trace
+----------------------------------------
+
+The traces of one run sit in a directory with one ``.pfw.gz`` file per process.
+Read them with the ``dftracer-utils`` dataframe API, which scans all files in one pass and joins them by id.
+
+.. code-block:: python
+
+    from dftracer.utils import TraceViewer, col
+
+    view = TraceViewer("traces/", "/tmp/traces-index").phase("any")
+
+    # One scan feeds both reads. Entity records are metadata, so the
+    # viewer must read every record family.
+    with view.session() as s:
+        eh = s.collect(view.filter('name == "EH"'))
+        prov = s.collect(view.filter('cat == "PROV"'))
+
+    entities = (
+        eh.result()
+        .select("args.id", "args.type")
+        .rename({"args.id": "entity", "args.type": "type"})
+        .distinct("entity")
+    )
+
+    # One row per (event, relation, entity), labeled with the entity type.
+    events = prov.result()
+    edges = (
+        events.unpivot(
+            id_vars=["name", "pid", "ts"],
+            value_vars=[c for c in events.columns if c.startswith("args.relations.")],
+        )
+        .drop_nulls()
+        .join(entities, left_on="value", right_on="entity")
+    )
+    edges = edges.assign(relation=edges["variable"].str.extract(r"relations\.(\w+)\."))
+
+    made = edges.filter(col("relation") == "generated")
+    print(made.group_by(["name", "type"]).agg("count:pid").sort(["name", "type"]).to_pandas())
+
+The second argument of ``TraceViewer`` is where the index goes.
+Without it the viewer writes a ``.dftindex`` directory next to the traces, which is not what you want in a shared trace directory.
+
+Two details of the dataframe shape the code.
+Metadata records have ``ph`` 4 and are left out of a default query, so ``phase("any")`` is required to see ``EH``, ``ET`` and ``ER``.
+The session registers both reads first and runs them together, so the trace is decompressed and parsed once.
+Nested fields become columns named by their path, and an array becomes one column per position, such as ``args.relations.used.0`` and ``args.relations.used.1``.
+The ``unpivot`` call turns those columns back into one row per relation, and ``distinct`` keeps one ``EH`` record for each entity, since every process writes its own copy.
+
+On a protein structure prediction run of 10 sequences the last line prints which step made which kind of entity, here cut to the first rows:
+
+.. code-block:: text
+
+                      name           type  count_pid
+    0           a3m_to_sto  stockholm_msa         10
+    1           filter_msa   filtered_msa         10
+    2  load_and_merge_msas     merged_msa         10
+    3          load_inputs       sequence         10
+    4          msa_featgen   msa_features         10
+    ...
+
+The same query in duql is one text with no dataframe code:
+
+.. code-block:: python
+
+    from dftracer.utils import TraceViewer
+
+    q = """
+    let entities = from all
+      | where name == "EH"
+      | select entity = args.id, etype = args.type
+      | distinct;
+    where cat == "PROV"
+    | unpivot args.relations.*.* as variable, entity
+    | where entity is not null
+    | derive etype = entity -> entities.etype
+    | derive relation = extract(variable, "relations[.]([a-z]+)[.]", 1)
+    | where relation == "generated"
+    | group name, etype { n = count() }
+    """
+    print(TraceViewer("traces/", "/tmp/traces-index").duql(q).collect().to_pandas())
+
+The ``let`` names a row set of the entity records, and ``from all`` reads them although they are metadata, so the viewer needs no ``phase("any")``.
+The ``*.*`` pattern in ``unpivot`` expands to every ``args.relations.<name>.<position>`` field in the trace, which does the job of the column list in the dataframe code.
+``entity -> entities.etype`` looks up the type of each entity id in the row set.
+The result is the same 16 rows, one for each step and entity type.
+
+The ``edges`` table answers the common questions with a filter.
+``edges.filter(col("relation") == "used")`` lists what each step consumed, and ``"invalidated"`` lists what each step deleted.
+Filtering on ``col("value")`` with one id gives every event that touched that entity, whichever process wrote it.
+For a ``revision_of`` or ``contains`` edge, read the ``ER`` records the same way, with ``name == "ER"`` and the columns ``args.relation``, ``args.subject`` and ``args.object``.
+
+----------------------------------------
+Walking the graph
+----------------------------------------
+
+The lineage of an entity is every entity that the steps before it used, and its impact is every entity that the steps after it made.
+Both are a walk over the ``edges`` table above, one join per hop.
+
+.. code-block:: python
+
+    from dftracer.utils import DataFrame
+
+    ACT = ["pid", "ts"]  # an activity has no id; its process and start time name it
+    generated = edges.filter(col("relation") == "generated").select(*ACT, "value")
+    used = edges.filter(col("relation") == "used").select(*ACT, "value")
+
+
+    def walk(start, backward=True):
+        into, out = (generated, used) if backward else (used, generated)
+        seen = DataFrame.from_dict({"value": [start]})
+        frontier = seen
+        while len(frontier):
+            steps = frontier.join(into, on="value").select(*ACT).distinct()
+            reached = steps.join(out, on=ACT).select("value").distinct()
+            frontier = reached.join(seen, on="value", how="anti")
+            seen = seen.concat(frontier)
+        return seen.join(entities, left_on="value", right_on="entity")
+
+
+    best = entities.filter(col("type") == "best_structure").sort("entity")["entity"].to_list()[0]
+    lineage = walk(best)
+    model = entities.filter(col("type") == "model_params")["entity"].to_list()[0]
+    impact = walk(model, backward=False)
+    print(len(lineage), len(impact.filter(col("type") == "best_structure")))
+
+.. code-block:: text
+
+    28 10
+
+A backward hop finds the activities that generated the entities in hand and then the entities those activities used.
+A forward hop goes the other way, and the anti join drops the entities already seen, so the walk ends when a hop finds nothing new.
+On the run above, each best structure comes from 28 entities, from the input chunk and the sequence to the alignments, the reference databases, both model weights and the seed.
+Each set of model weights reaches all 10 best structures, since every prediction runs both models and picks the better one.
+
+An activity record has no id field, so the walk names an activity by its ``pid`` and ``ts``.
+That is unique as long as one process does not start two activities in the same microsecond.
+The ``ER`` edges, such as ``revision_of`` and ``contains``, are not part of the walk, since no activity reads or writes through them.
