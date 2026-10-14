@@ -5,6 +5,7 @@
 #ifndef DFTRACER_POSIX_H
 #define DFTRACER_POSIX_H
 
+#include <aio.h>
 #include <brahma/brahma.h>
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/logging.h>
@@ -63,6 +64,7 @@ class POSIXDFTracer : public POSIX {
 
   inline HashType is_traced(const char* filename, const char* func) {
     if (stop_trace) return NO_HASH_DEFAULT;
+    filename = absolute_path(filename);
     if (trace_all_files) {
       return logger->hash_and_store(filename, METADATA_NAME_FILE_HASH);
     } else {
@@ -104,8 +106,43 @@ class POSIXDFTracer : public POSIX {
 
   inline void remove_trace(int fd) {
     DFTRACER_LOG_DEBUG("Calling POSIXDFTracer.remove_trace for %d", fd);
-    if (fd < 0 || static_cast<size_t>(fd) >= max_fd) return;
+    // A vfork child's close loop (CPython subprocess on glibc < 2.34) must not
+    // untrack the parent's open fds. Only close pays for the getpid syscall.
+    if (fd < 0 || static_cast<size_t>(fd) >= max_fd || in_vfork_child()) return;
     tracked_fd[fd] = NO_HASH_DEFAULT;
+  }
+
+  // Writes only traced slots, so a wide range does not fault in the
+  // untouched pages of the table.
+  inline bool remove_trace_range(size_t first, size_t last) {
+    if (stop_trace || max_fd == 0) return false;
+    bool removed = false;
+    for (size_t fd = first; fd <= last && fd < max_fd; ++fd) {
+      if (tracked_fd[fd] != NO_HASH_DEFAULT) {
+        tracked_fd[fd] = NO_HASH_DEFAULT;
+        removed = true;
+      }
+    }
+    return removed;
+  }
+
+  // A vfork child shares this process's memory and has not run the atfork
+  // reinit, so it must neither log nor change the table.
+  inline bool in_vfork_child() {
+    if (logger == nullptr || !logger->is_active()) return false;
+    ProcessID owner = logger->get_process_id();
+    return owner > 0 && df_getpid() != owner;
+  }
+
+  // The first list entry whose fd is traced, or -1.
+  template <typename T>
+  inline int traced_aio_fd(T* const list[], int nent, const char* func) {
+    for (int i = 0; i < nent; ++i) {
+      if (list[i] != nullptr && is_traced(static_cast<int>(list[i]->aio_fildes),
+                                          func) != NO_HASH_DEFAULT)
+        return list[i]->aio_fildes;
+    }
+    return -1;
   }
 
  public:
@@ -124,6 +161,9 @@ class POSIXDFTracer : public POSIX {
   }
   // File hash of a traced fd, or NO_HASH_DEFAULT; lets STDIO follow fdopen().
   HashType fd_hash(int fd) { return is_traced(fd, __FUNCTION__); }
+  // Lets STDIO register the fd behind a FILE*, whose open and close happen
+  // inside libc where no POSIX wrapper sees them. NO_HASH_DEFAULT untracks.
+  void set_fd_hash(int fd, HashType hash) { trace(fd, hash); }
 
   void finalize() {
     if (stop_trace) return;
@@ -145,6 +185,8 @@ class POSIXDFTracer : public POSIX {
   }
 
   int open(const char* pathname, int flags, ...) override;
+
+  int creat(const char* path, mode_t mode) override;
 
   int creat64(const char* path, mode_t mode) override;
 
@@ -270,6 +312,12 @@ class POSIXDFTracer : public POSIX {
   int dup(int oldfd) override;
 
   int dup2(int oldfd, int newfd) override;
+
+  int dup3(int oldfd, int newfd, int flags) override;
+
+  int close_range(unsigned int first, unsigned int last, int flags) override;
+
+  void closefrom(int lowfd) override;
 
   int mkfifo(const char* pathname, mode_t mode) override;
 
@@ -433,6 +481,219 @@ class POSIXDFTracer : public POSIX {
   int posix_fallocate(int fd, off_t offset, off_t len) override;
 
   int posix_fallocate64(int fd, off64_t offset, off64_t len) override;
+  ssize_t preadv2(int fd, const struct iovec* iov, int iovcnt, off_t offset,
+                  int flags) override;
+
+  ssize_t pwritev2(int fd, const struct iovec* iov, int iovcnt, off_t offset,
+                   int flags) override;
+
+  ssize_t preadv64v2(int fd, const struct iovec* iov, int iovcnt,
+                     off64_t offset, int flags) override;
+
+  ssize_t pwritev64v2(int fd, const struct iovec* iov, int iovcnt,
+                      off64_t offset, int flags) override;
+
+  ssize_t splice(int fd_in, off64_t* off_in, int fd_out, off64_t* off_out,
+                 size_t len, unsigned int flags) override;
+
+  ssize_t tee(int fd_in, int fd_out, size_t len, unsigned int flags) override;
+
+  ssize_t vmsplice(int fd, const struct iovec* iov, size_t nr_segs,
+                   unsigned int flags) override;
+
+  int fallocate(int fd, int mode, off_t offset, off_t len) override;
+
+  int fallocate64(int fd, int mode, off64_t offset, off64_t len) override;
+
+  ssize_t readahead(int fd, off64_t offset, size_t count) override;
+
+  void sync(void) override;
+
+  int syncfs(int fd) override;
+
+  int sync_file_range(int fd, off64_t offset, off64_t nbytes,
+                      unsigned int flags) override;
+
+  int statx(int dirfd, const char* path, int flags, unsigned int mask,
+            struct statx* buf) override;
+
+  int statfs(const char* path, struct statfs* buf) override;
+
+  int fstatfs(int fd, struct statfs* buf) override;
+
+  int statfs64(const char* path, struct statfs64* buf) override;
+
+  int fstatfs64(int fd, struct statfs64* buf) override;
+
+  int mknodat(int dirfd, const char* path, mode_t mode, dev_t dev) override;
+
+  int __xmknodat(int ver, int dirfd, const char* path, mode_t mode,
+                 dev_t* dev) override;
+
+  int euidaccess(const char* path, int mode) override;
+
+  int eaccess(const char* path, int mode) override;
+
+  int renameat2(int olddirfd, const char* oldpath, int newdirfd,
+                const char* newpath, unsigned int flags) override;
+
+  int mkfifoat(int dirfd, const char* path, mode_t mode) override;
+
+  int lchmod(const char* path, mode_t mode) override;
+
+  int utimes(const char* path, const struct timeval times[2]) override;
+
+  int futimes(int fd, const struct timeval tv[2]) override;
+
+  int lutimes(const char* path, const struct timeval tv[2]) override;
+
+  int futimesat(int dirfd, const char* path,
+                const struct timeval times[2]) override;
+
+  int utimensat(int dirfd, const char* path, const struct timespec times[2],
+                int flags) override;
+
+  int futimens(int fd, const struct timespec times[2]) override;
+
+  int fchdir(int fd) override;
+
+  DIR* fdopendir(int fd) override;
+
+  int readdir_r(DIR* dir, struct dirent* entry, struct dirent** res) override;
+
+  int readdir64_r(DIR* dir, struct dirent64* entry,
+                  struct dirent64** res) override;
+
+  void seekdir(DIR* dir, long loc) override;
+
+  long telldir(DIR* dir) override;
+
+  int scandir(const char* dir, struct dirent*** namelist,
+              int (*filter)(const struct dirent*),
+              int (*compar)(const struct dirent**,
+                            const struct dirent**)) override;
+
+  int scandir64(const char* dir, struct dirent64*** namelist,
+                int (*filter)(const struct dirent64*),
+                int (*compar)(const struct dirent64**,
+                              const struct dirent64**)) override;
+
+  int scandirat(int dirfd, const char* dir, struct dirent*** namelist,
+                int (*filter)(const struct dirent*),
+                int (*compar)(const struct dirent**,
+                              const struct dirent**)) override;
+
+  int scandirat64(int dirfd, const char* dir, struct dirent64*** namelist,
+                  int (*filter)(const struct dirent64*),
+                  int (*compar)(const struct dirent64**,
+                                const struct dirent64**)) override;
+
+  int nftw(const char* path,
+           int (*func)(const char*, const struct stat*, int, struct FTW*),
+           int nopenfd, int flags) override;
+
+  int nftw64(const char* path,
+             int (*func)(const char*, const struct stat64*, int, struct FTW*),
+             int nopenfd, int flags) override;
+
+  ssize_t getdents64(int fd, void* buf, size_t count) override;
+
+  void* mremap(void* old_addr, size_t old_size, size_t new_size, int flags,
+               void* new_addr) override;
+
+  int ioctl(int fd, unsigned long request, void* arg) override;
+
+  int lockf(int fd, int cmd, off_t len) override;
+
+  int lockf64(int fd, int cmd, off64_t len) override;
+
+  int pipe2(int pipefd[2], int flags) override;
+
+  int memfd_create(const char* name, unsigned int flags) override;
+
+  int mkstemp(char* tmpl) override;
+
+  int mkstemp64(char* tmpl) override;
+
+  int mkostemp(char* tmpl, int flags) override;
+
+  int mkostemp64(char* tmpl, int flags) override;
+
+  int mkstemps(char* tmpl, int suffixlen) override;
+
+  int mkstemps64(char* tmpl, int suffixlen) override;
+
+  int mkostemps(char* tmpl, int suffixlen, int flags) override;
+
+  int mkostemps64(char* tmpl, int suffixlen, int flags) override;
+
+  char* mkdtemp(char* tmpl) override;
+
+  ssize_t getxattr(const char* path, const char* name, void* value,
+                   size_t size) override;
+
+  ssize_t lgetxattr(const char* path, const char* name, void* value,
+                    size_t size) override;
+
+  ssize_t fgetxattr(int fd, const char* name, void* value,
+                    size_t size) override;
+
+  int setxattr(const char* path, const char* name, const void* value,
+               size_t size, int flags) override;
+
+  int lsetxattr(const char* path, const char* name, const void* value,
+                size_t size, int flags) override;
+
+  int fsetxattr(int fd, const char* name, const void* value, size_t size,
+                int flags) override;
+
+  ssize_t listxattr(const char* path, char* list, size_t size) override;
+
+  ssize_t llistxattr(const char* path, char* list, size_t size) override;
+
+  ssize_t flistxattr(int fd, char* list, size_t size) override;
+
+  int removexattr(const char* path, const char* name) override;
+
+  int lremovexattr(const char* path, const char* name) override;
+
+  int fremovexattr(int fd, const char* name) override;
+
+  int aio_read(struct aiocb* cb) override;
+
+  int aio_write(struct aiocb* cb) override;
+
+  int aio_error(const struct aiocb* cb) override;
+
+  ssize_t aio_return(struct aiocb* cb) override;
+
+  int aio_fsync(int op, struct aiocb* cb) override;
+
+  int aio_cancel(int fd, struct aiocb* cb) override;
+
+  int aio_suspend(const struct aiocb* const list[], int nent,
+                  const struct timespec* timeout) override;
+
+  int lio_listio(int mode, struct aiocb* const list[], int nent,
+                 struct sigevent* sig) override;
+
+  int aio_read64(struct aiocb64* cb) override;
+
+  int aio_write64(struct aiocb64* cb) override;
+
+  int aio_error64(const struct aiocb64* cb) override;
+
+  ssize_t aio_return64(struct aiocb64* cb) override;
+
+  int aio_fsync64(int op, struct aiocb64* cb) override;
+
+  int aio_cancel64(int fd, struct aiocb64* cb) override;
+
+  int aio_suspend64(const struct aiocb64* const list[], int nent,
+                    const struct timespec* timeout) override;
+
+  int lio_listio64(int mode, struct aiocb64* const list[], int nent,
+                   struct sigevent* sig) override;
 };
 
 }  // namespace brahma

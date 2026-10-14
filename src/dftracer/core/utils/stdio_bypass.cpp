@@ -46,6 +46,11 @@ void STDIOBypass::initialize() {
   real_fclose_ = reinterpret_cast<fclose_fn>(dlsym(libc, "fclose"));
   real_fileno_ = reinterpret_cast<fileno_fn>(dlsym(libc, "fileno"));
   real_vfprintf_ = reinterpret_cast<vfprintf_fn>(dlsym(libc, "vfprintf"));
+  real_vfprintf_chk_ =
+      reinterpret_cast<vfprintf_chk_fn>(dlsym(libc, "__vfprintf_chk"));
+  real_vdprintf_ = reinterpret_cast<vdprintf_fn>(dlsym(libc, "vdprintf"));
+  real_vdprintf_chk_ =
+      reinterpret_cast<vdprintf_chk_fn>(dlsym(libc, "__vdprintf_chk"));
   real_vprintf_ = reinterpret_cast<vprintf_fn>(dlsym(libc, "vprintf"));
   real_vsprintf_ = reinterpret_cast<vsprintf_fn>(dlsym(libc, "vsprintf"));
   real_vsnprintf_ = reinterpret_cast<vsnprintf_fn>(dlsym(libc, "vsnprintf"));
@@ -60,6 +65,14 @@ void STDIOBypass::initialize() {
       reinterpret_cast<vscanf_fn>(dlsym(libc, "__isoc23_vscanf"));
   real_isoc23_vsscanf_ =
       reinterpret_cast<vsscanf_fn>(dlsym(libc, "__isoc23_vsscanf"));
+  real_vfwprintf_ = reinterpret_cast<vfwprintf_fn>(dlsym(libc, "vfwprintf"));
+  real_vfwprintf_chk_ =
+      reinterpret_cast<vfwprintf_chk_fn>(dlsym(libc, "__vfwprintf_chk"));
+  real_vfwscanf_ = reinterpret_cast<vfwscanf_fn>(dlsym(libc, "vfwscanf"));
+  real_isoc99_vfwscanf_ =
+      reinterpret_cast<vfwscanf_fn>(dlsym(libc, "__isoc99_vfwscanf"));
+  real_isoc23_vfwscanf_ =
+      reinterpret_cast<vfwscanf_fn>(dlsym(libc, "__isoc23_vfwscanf"));
   assert(real_fopen_ != nullptr);
   assert(real_setvbuf_ != nullptr);
   assert(real_flockfile_ != nullptr);
@@ -72,16 +85,24 @@ void STDIOBypass::initialize() {
   assert(real_fclose_ != nullptr);
   assert(real_fileno_ != nullptr);
   assert(real_vfprintf_ != nullptr);
+  assert(real_vfprintf_chk_ != nullptr);
+  assert(real_vdprintf_ != nullptr);
+  assert(real_vdprintf_chk_ != nullptr);
   assert(real_vprintf_ != nullptr);
   assert(real_vsprintf_ != nullptr);
   assert(real_vsnprintf_ != nullptr);
   assert(real_vfscanf_ != nullptr);
   assert(real_vscanf_ != nullptr);
   assert(real_vsscanf_ != nullptr);
+  assert(real_vfwprintf_ != nullptr);
+  assert(real_vfwprintf_chk_ != nullptr);
+  assert(real_vfwscanf_ != nullptr);
   if (real_isoc99_vfscanf_ == nullptr) real_isoc99_vfscanf_ = real_vfscanf_;
   if (real_isoc23_vfscanf_ == nullptr) real_isoc23_vfscanf_ = real_vfscanf_;
   if (real_isoc23_vscanf_ == nullptr) real_isoc23_vscanf_ = real_vscanf_;
   if (real_isoc23_vsscanf_ == nullptr) real_isoc23_vsscanf_ = real_vsscanf_;
+  if (real_isoc99_vfwscanf_ == nullptr) real_isoc99_vfwscanf_ = real_vfwscanf_;
+  if (real_isoc23_vfwscanf_ == nullptr) real_isoc23_vfwscanf_ = real_vfwscanf_;
   initialized_ = true;
 }
 
@@ -118,6 +139,20 @@ int STDIOBypass::fileno(FILE* fp) { return real_fileno_(fp); }
 
 int STDIOBypass::vfprintf(FILE* stream, const char* format, va_list args) {
   return real_vfprintf_(stream, format, args);
+}
+
+int STDIOBypass::__vfprintf_chk(FILE* stream, int flag, const char* format,
+                                va_list args) {
+  return real_vfprintf_chk_(stream, flag, format, args);
+}
+
+int STDIOBypass::vdprintf(int fd, const char* format, va_list args) {
+  return real_vdprintf_(fd, format, args);
+}
+
+int STDIOBypass::__vdprintf_chk(int fd, int flag, const char* format,
+                                va_list args) {
+  return real_vdprintf_chk_(fd, flag, format, args);
 }
 
 int STDIOBypass::vprintf(const char* format, va_list args) {
@@ -162,6 +197,29 @@ int STDIOBypass::__isoc23_vscanf(const char* format, va_list args) {
 int STDIOBypass::__isoc23_vsscanf(const char* str, const char* format,
                                   va_list args) {
   return real_isoc23_vsscanf_(str, format, args);
+}
+
+int STDIOBypass::vfwprintf(FILE* stream, const wchar_t* format, va_list args) {
+  return real_vfwprintf_(stream, format, args);
+}
+
+int STDIOBypass::__vfwprintf_chk(FILE* stream, int flag, const wchar_t* format,
+                                 va_list args) {
+  return real_vfwprintf_chk_(stream, flag, format, args);
+}
+
+int STDIOBypass::vfwscanf(FILE* stream, const wchar_t* format, va_list args) {
+  return real_vfwscanf_(stream, format, args);
+}
+
+int STDIOBypass::__isoc99_vfwscanf(FILE* stream, const wchar_t* format,
+                                   va_list args) {
+  return real_isoc99_vfwscanf_(stream, format, args);
+}
+
+int STDIOBypass::__isoc23_vfwscanf(FILE* stream, const wchar_t* format,
+                                   va_list args) {
+  return real_isoc23_vfwscanf_(stream, format, args);
 }
 
 }  // namespace dftracer

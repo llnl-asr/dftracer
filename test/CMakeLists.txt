@@ -167,6 +167,92 @@ df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR
     "fscanf|__isoc99_fscanf|__isoc23_fscanf")
 set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
 
+add_executable(test_fd_tracking c/test_fd_tracking.c)
+target_compile_options(test_fd_tracking PRIVATE -O0 -U_FORTIFY_SOURCE)
+add_executable(test_fortify_fd_tracking c/test_fd_tracking.c)
+target_compile_options(test_fortify_fd_tracking PRIVATE -O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)
+foreach(variant plain fortify)
+    if(variant STREQUAL "plain")
+        set(test_name test_fd_tracking)
+        set(fprintf_event fprintf)
+    else()
+        set(test_name test_fortify_fd_tracking)
+        set(fprintf_event __fprintf_chk)
+    endif()
+    add_dependencies(${test_name} ${PROJECT_NAME}_preload_dbg)
+    df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/${test_name} ${CMAKE_CURRENT_BINARY_DIR}/data)
+    set_common_properties(${test_name})
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+    df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*
+        open=1 dup=1 dup2=1 dup3=1 fcntl=1 creat=1 write=8 close=6
+        fopen=1 fileno=2 ${fprintf_event}=1 fclose=2)
+    set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
+endforeach()
+
+add_executable(test_relative_path c/test_relative_path.c)
+add_dependencies(test_relative_path ${PROJECT_NAME}_preload_dbg)
+df_add_test(test_relative_path ${CMAKE_BINARY_DIR}/bin/test_relative_path ${CMAKE_CURRENT_BINARY_DIR}/data)
+set_common_properties(test_relative_path)
+set_property(TEST test_relative_path APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
+set_property(TEST test_relative_path APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+df_add_test(check_events_test_relative_path ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh ${CMAKE_CURRENT_BINARY_DIR}/test_relative_path*
+    open=1 write=1 close=1 access=2 fopen=1 fclose=1 rename=1 unlink=2)
+set_tests_properties(check_events_test_relative_path PROPERTIES DEPENDS test_relative_path)
+
+include(CheckSymbolExists)
+set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+check_symbol_exists(close_range unistd.h DFTRACER_TEST_HAVE_CLOSE_RANGE)
+unset(CMAKE_REQUIRED_DEFINITIONS)
+add_executable(test_more_io c/test_more_io.c)
+target_compile_options(test_more_io PRIVATE -O0 -U_FORTIFY_SOURCE)
+add_executable(test_fortify_more_io c/test_more_io.c)
+target_compile_options(test_fortify_more_io PRIVATE -O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)
+foreach(variant plain fortify)
+    if(variant STREQUAL "plain")
+        set(test_name test_more_io)
+        set(more_io_events dprintf=1 vdprintf=1 fwrite_unlocked=1 fread_unlocked=1
+            fputs_unlocked=1 fgets_unlocked=1 fputc_unlocked=1 fgetc_unlocked=1)
+    else()
+        set(test_name test_fortify_more_io)
+        set(more_io_events __dprintf_chk=1 __vdprintf_chk=1)
+    endif()
+    if(DFTRACER_TEST_HAVE_CLOSE_RANGE)
+        list(APPEND more_io_events dup=2 close_range=1 closefrom=1)
+    endif()
+    add_dependencies(${test_name} ${PROJECT_NAME}_preload_dbg)
+    df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/${test_name} ${CMAKE_CURRENT_BINARY_DIR}/data)
+    set_common_properties(${test_name})
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+    df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*
+        open=1 write=1 close ${more_io_events})
+    set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
+endforeach()
+
+add_executable(test_extra_io c/test_extra_io.c)
+target_compile_options(test_extra_io PRIVATE -O0 -U_FORTIFY_SOURCE)
+target_link_libraries(test_extra_io rt)
+add_dependencies(test_extra_io ${PROJECT_NAME}_preload_dbg)
+set(test_name test_extra_io)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/${test_name} ${CMAKE_CURRENT_BINARY_DIR}/data)
+set_common_properties(${test_name})
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*
+    pwritev2=1 preadv2=1 fallocate=1 readahead=1 sync_file_range=1 syncfs=1 sync=1 lockf=1 ioctl=1
+    fstatfs=1 statfs=1 statx=1 euidaccess=1 lchmod=1
+    utimes=1 lutimes=1 futimes=1 futimesat=1 utimensat=1 futimens=1
+    fsetxattr=1 fgetxattr=1 setxattr=1 getxattr=1 lsetxattr=1 lgetxattr=1
+    listxattr=1 llistxattr=1 flistxattr=1 removexattr=1 lremovexattr=1 fremovexattr=1
+    pipe2=1 splice=1 aio_write=1 aio_error aio_return=1
+    renameat2=1 mkfifoat=1 mkstemp=1 write=1 mkostemps=1 mkdtemp=1
+    fdopendir=1 telldir=1 readdir_r=1 seekdir=1 scandir=1 scandirat=1 scandirat64=1 nftw=1 mremap=1
+    fputws=1 fputwc=1 fwprintf=1 fflush_unlocked=1 fgetws=1 fgetwc=2 ungetwc=1
+    "fwscanf|__isoc99_fwscanf|__isoc23_fwscanf=1" feof_unlocked=1 ferror_unlocked=1 fileno_unlocked=1
+    fcloseall=1 fchdir=1)
+set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
+
 add_executable(test_posix_fortify c/test_posix_fortify.c)
 target_compile_options(test_posix_fortify PRIVATE -O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)
 add_dependencies(test_posix_fortify ${PROJECT_NAME}_preload_dbg)

@@ -11,11 +11,13 @@
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/df_logger.h>
+#include <dftracer/core/utils/stdio_bypass.h>
 #include <dftracer/core/utils/utils.h>
 #include <fcntl.h>
 #include <features.h>
 
 #include <cstdarg>
+#include <cwchar>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -57,6 +59,7 @@ class STDIODFTracer : public STDIO {
     DFTRACER_LOG_DEBUG("Calling STDIODFTracer.is_traced with filename for %s",
                        func);
     if (stop_trace) return NO_HASH_DEFAULT;
+    filename = absolute_path(filename);
     if (trace_all_files)
       return logger->hash_and_store(filename, METADATA_NAME_FILE_HASH);
     else {
@@ -65,14 +68,31 @@ class STDIODFTracer : public STDIO {
     }
   }
 
+  // libc opens and closes the fd of a FILE* without the POSIX wrappers, so
+  // the stream's fd is tracked here for write(fileno(fp)) and the like.
+  inline void trace_stream_fd(FILE* fh, HashType hash) {
+    auto posix = POSIXDFTracer::get_instance();
+    if (posix == nullptr) return;
+    posix->set_fd_hash(dftracer::STDIOBypass::get_instance().fileno(fh), hash);
+  }
+
   inline void trace(FILE* fh, HashType hash) {
     DFTRACER_LOG_DEBUG("Calling STDIODFTracer.trace with hash %s", hash);
+    if (fh == nullptr) return;
     tracked_fh.insert_or_assign(fh, hash);
+    trace_stream_fd(fh, hash);
   }
 
   inline void remove_trace(FILE* fh) {
     DFTRACER_LOG_DEBUG("Calling STDIODFTracer.remove_trace with filename");
     tracked_fh.erase(fh);
+    trace_stream_fd(fh, NO_HASH_DEFAULT);
+  }
+
+  // freopen with a null path keeps the file and only changes the mode.
+  inline void trace_reopened(FILE* fh, const char* path, HashType old_hash) {
+    HashType hash = path == nullptr ? old_hash : is_traced(path, "freopen");
+    if (hash != NO_HASH_DEFAULT) trace(fh, hash);
   }
 
  public:
@@ -228,11 +248,29 @@ class STDIODFTracer : public STDIO {
   // members of this family (vfprintf/fscanf/vfscanf, which can point at a
   // real file, not just stdin/stdout/a buffer) stay traced.
   //
-  // fprintf is deliberately NOT overridden: cpp-logger writes every log line
-  // with fprintf, so tracing it reintroduced exactly the recursion described
-  // above (cpp_logger_clog -> fprintf -> is_traced -> DFTRACER_LOG_DEBUG ->
-  // cpp_logger_clog -> ...), which hangs any binary run at DEBUG level.
+  // cpp-logger writes each log line with fprintf. The wrapper that sees it
+  // only logs, and DFTracerLogReentryGuard in logging.h drops that nested
+  // log, so tracing fprintf does not recurse.
+  int fprintf(FILE* stream, const char* format, va_list args) override;
   int vfprintf(FILE* stream, const char* format, va_list args) override;
+  int __fprintf_chk(FILE* stream, int flag, const char* format,
+                    va_list args) override;
+  int __vfprintf_chk(FILE* stream, int flag, const char* format,
+                     va_list args) override;
+  int dprintf(int fd, const char* format, va_list args) override;
+  int vdprintf(int fd, const char* format, va_list args) override;
+  int __dprintf_chk(int fd, int flag, const char* format,
+                    va_list args) override;
+  int __vdprintf_chk(int fd, int flag, const char* format,
+                     va_list args) override;
+  size_t fwrite_unlocked(const void* ptr, size_t size, size_t n,
+                         FILE* stream) override;
+  size_t fread_unlocked(void* ptr, size_t size, size_t n,
+                        FILE* stream) override;
+  int fputs_unlocked(const char* s, FILE* stream) override;
+  char* fgets_unlocked(char* s, int n, FILE* stream) override;
+  int fputc_unlocked(int c, FILE* stream) override;
+  int fgetc_unlocked(FILE* stream) override;
   int fscanf(FILE* stream, const char* format, va_list args) override;
   int vfscanf(FILE* stream, const char* format, va_list args) override;
   int __isoc99_fscanf(FILE* stream, const char* format, va_list args) override;
@@ -256,6 +294,41 @@ class STDIODFTracer : public STDIO {
   FILE* open_memstream(char** ptr, size_t* sizeloc) override;
   FILE* popen(const char* command, const char* type) override;
   char* tmpnam(char* s) override;
+
+  int fcloseall(void) override;
+  FILE* fopencookie(void* cookie, const char* mode,
+                    cookie_io_functions_t funcs) override;
+  FILE* open_wmemstream(wchar_t** ptr, size_t* sizeloc) override;
+  int fflush_unlocked(FILE* stream) override;
+  int feof_unlocked(FILE* stream) override;
+  int ferror_unlocked(FILE* stream) override;
+  int fileno_unlocked(FILE* stream) override;
+  void clearerr_unlocked(FILE* stream) override;
+  int _IO_getc(FILE* stream) override;
+  int _IO_putc(int c, FILE* stream) override;
+  wint_t fgetwc(FILE* stream) override;
+  wint_t getwc(FILE* stream) override;
+  wint_t fputwc(wchar_t wc, FILE* stream) override;
+  wint_t putwc(wchar_t wc, FILE* stream) override;
+  wint_t ungetwc(wint_t wc, FILE* stream) override;
+  wchar_t* fgetws(wchar_t* ws, int n, FILE* stream) override;
+  int fputws(const wchar_t* ws, FILE* stream) override;
+  int fwprintf(FILE* stream, const wchar_t* format, va_list args) override;
+  int vfwprintf(FILE* stream, const wchar_t* format, va_list args) override;
+  int __fwprintf_chk(FILE* stream, int flag, const wchar_t* format,
+                     va_list args) override;
+  int __vfwprintf_chk(FILE* stream, int flag, const wchar_t* format,
+                      va_list args) override;
+  int fwscanf(FILE* stream, const wchar_t* format, va_list args) override;
+  int vfwscanf(FILE* stream, const wchar_t* format, va_list args) override;
+  int __isoc99_fwscanf(FILE* stream, const wchar_t* format,
+                       va_list args) override;
+  int __isoc99_vfwscanf(FILE* stream, const wchar_t* format,
+                        va_list args) override;
+  int __isoc23_fwscanf(FILE* stream, const wchar_t* format,
+                       va_list args) override;
+  int __isoc23_vfwscanf(FILE* stream, const wchar_t* format,
+                        va_list args) override;
 };
 
 }  // namespace brahma

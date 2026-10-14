@@ -9,6 +9,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cwchar>
 
 namespace dftracer {
 
@@ -83,6 +84,9 @@ class STDIOBypass {
   // via dlopen+dlsym sidesteps the risk entirely rather than hoping it
   // works out for each new symbol as it's added.
   int vfprintf(FILE* stream, const char* format, va_list args);
+  int __vfprintf_chk(FILE* stream, int flag, const char* format, va_list args);
+  int vdprintf(int fd, const char* format, va_list args);
+  int __vdprintf_chk(int fd, int flag, const char* format, va_list args);
   int vprintf(const char* format, va_list args);
   int vsprintf(char* str, const char* format, va_list args);
   int vsnprintf(char* str, size_t size, const char* format, va_list args);
@@ -93,6 +97,12 @@ class STDIOBypass {
   int __isoc23_vfscanf(FILE* stream, const char* format, va_list args);
   int __isoc23_vscanf(const char* format, va_list args);
   int __isoc23_vsscanf(const char* str, const char* format, va_list args);
+  int vfwprintf(FILE* stream, const wchar_t* format, va_list args);
+  int __vfwprintf_chk(FILE* stream, int flag, const wchar_t* format,
+                      va_list args);
+  int vfwscanf(FILE* stream, const wchar_t* format, va_list args);
+  int __isoc99_vfwscanf(FILE* stream, const wchar_t* format, va_list args);
+  int __isoc23_vfwscanf(FILE* stream, const wchar_t* format, va_list args);
 
  private:
   STDIOBypass() = default;
@@ -113,12 +123,18 @@ class STDIOBypass {
   using fclose_fn = int (*)(FILE*);
   using fileno_fn = int (*)(FILE*);
   using vfprintf_fn = int (*)(FILE*, const char*, va_list);
+  using vfprintf_chk_fn = int (*)(FILE*, int, const char*, va_list);
+  using vdprintf_fn = int (*)(int, const char*, va_list);
+  using vdprintf_chk_fn = int (*)(int, int, const char*, va_list);
   using vprintf_fn = int (*)(const char*, va_list);
   using vsprintf_fn = int (*)(char*, const char*, va_list);
   using vsnprintf_fn = int (*)(char*, size_t, const char*, va_list);
   using vfscanf_fn = int (*)(FILE*, const char*, va_list);
   using vscanf_fn = int (*)(const char*, va_list);
   using vsscanf_fn = int (*)(const char*, const char*, va_list);
+  using vfwprintf_fn = int (*)(FILE*, const wchar_t*, va_list);
+  using vfwprintf_chk_fn = int (*)(FILE*, int, const wchar_t*, va_list);
+  using vfwscanf_fn = int (*)(FILE*, const wchar_t*, va_list);
 
   fopen_fn real_fopen_ = nullptr;
   setvbuf_fn real_setvbuf_ = nullptr;
@@ -132,6 +148,9 @@ class STDIOBypass {
   fclose_fn real_fclose_ = nullptr;
   fileno_fn real_fileno_ = nullptr;
   vfprintf_fn real_vfprintf_ = nullptr;
+  vfprintf_chk_fn real_vfprintf_chk_ = nullptr;
+  vdprintf_fn real_vdprintf_ = nullptr;
+  vdprintf_chk_fn real_vdprintf_chk_ = nullptr;
   vprintf_fn real_vprintf_ = nullptr;
   vsprintf_fn real_vsprintf_ = nullptr;
   vsnprintf_fn real_vsnprintf_ = nullptr;
@@ -142,6 +161,11 @@ class STDIOBypass {
   vfscanf_fn real_isoc23_vfscanf_ = nullptr;
   vscanf_fn real_isoc23_vscanf_ = nullptr;
   vsscanf_fn real_isoc23_vsscanf_ = nullptr;
+  vfwprintf_fn real_vfwprintf_ = nullptr;
+  vfwprintf_chk_fn real_vfwprintf_chk_ = nullptr;
+  vfwscanf_fn real_vfwscanf_ = nullptr;
+  vfwscanf_fn real_isoc99_vfwscanf_ = nullptr;
+  vfwscanf_fn real_isoc23_vfwscanf_ = nullptr;
 };
 
 }  // namespace dftracer
