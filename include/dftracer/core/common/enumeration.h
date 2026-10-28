@@ -4,7 +4,9 @@
 
 #ifndef DFTRACER_ENUMERATION_H
 #define DFTRACER_ENUMERATION_H
-#include <cpp-logger/logger.h>
+#include <cstdint>
+#include <string>
+
 enum WriterType : uint8_t { CHROME = 0 };
 enum ProfilerStage : uint8_t {
   PROFILER_INIT = 0,
@@ -177,17 +179,6 @@ inline void convert(const std::string& s, ProfileInitType& type) {
     type = ProfileInitType::PROFILER_INIT_FUNCTION;
   } else {
     type = ProfileInitType::PROFILER_INIT_NONE;
-  }
-}
-inline void convert(const std::string& s, cpplogger::LoggerType& type) {
-  if (s == "DEBUG") {
-    type = cpplogger::LoggerType::CPP_LOGGER_DEBUG;
-  } else if (s == "INFO") {
-    type = cpplogger::LoggerType::CPP_LOGGER_INFO;
-  } else if (s == "WARN") {
-    type = cpplogger::LoggerType::CPP_LOGGER_WARN;
-  } else {
-    type = cpplogger::LoggerType::CPP_LOGGER_ERROR;
   }
 }
 inline void convert(const std::string& s, AggregationType& type) {
