@@ -11,29 +11,30 @@
     BLOCK;                                        \
   }
 
-#define DFTRACER_ANY_NUM_AGGREGATE_MACRO(TYPE, VALUE, BLOCK)          \
-  if (id == typeid(TYPE)) {                                           \
-    auto num_value =                                                  \
-        dynamic_cast<dftracer::NumberAggregationValue<TYPE>*>(VALUE); \
-    if (num_value) {                                                  \
-      metadata->insert(DFTRACER_AGGREGATOR_COUNT, num_value->count);  \
-      if (num_value->count > 1) {                                     \
-        metadata->insert(base_key + "_sum", num_value->sum);          \
-        metadata->insert(base_key + "_min", num_value->min);          \
-        metadata->insert(base_key + "_max", num_value->max);          \
-      } else {                                                        \
-        metadata->insert(base_key, num_value->sum);                   \
-      }                                                               \
-    }                                                                 \
-    BLOCK;                                                            \
+#define DFTRACER_ANY_NUM_AGGREGATE_MACRO(TYPE, VALUE, BLOCK)           \
+  if (id == typeid(TYPE)) {                                            \
+    auto num_value =                                                   \
+        dynamic_cast<dftracer::NumberAggregationValue<TYPE>*>(VALUE);  \
+    if (num_value) {                                                   \
+      /* Every aggregated event has a dur; other args only some, so    \
+         only dur's count is the number of events. */                  \
+      if (base_key == "dur")                                           \
+        metadata->insert(DFTRACER_AGGREGATOR_COUNT, num_value->count); \
+      if (num_value->count > 1) {                                      \
+        metadata->insert(base_key + "_sum", num_value->sum);           \
+        metadata->insert(base_key + "_min", num_value->min);           \
+        metadata->insert(base_key + "_max", num_value->max);           \
+      } else {                                                         \
+        metadata->insert(base_key, num_value->sum);                    \
+      }                                                                \
+    }                                                                  \
+    BLOCK;                                                             \
   }
 
 #define DFTRACER_ANY_GENERAL_AGGREGATE_MACRO(TYPE, VALUE, BLOCK)            \
   if (id == typeid(TYPE)) {                                                 \
     auto num_value = dynamic_cast<dftracer::AggregatedValue<TYPE>*>(VALUE); \
-    if (num_value) {                                                        \
-      metadata->insert(DFTRACER_AGGREGATOR_COUNT, num_value->count);        \
-    }                                                                       \
+    (void)num_value; /* dft_cnt comes from dur, which is numeric */         \
     BLOCK;                                                                  \
   }
 

@@ -408,27 +408,25 @@ void test_proc_telemetry_generation_smoke() {
   std::ifstream service_check(service_bin);
   DFT_CHECK(service_check.good());
 
-  const std::string log_dir = "/tmp/dftracer_service_ctest";
   const std::string log_prefix = "/tmp/test_dftracer_proc_utils_ctest";
 
   setenv("DFTRACER_ENABLE", "1", 1);
   setenv("DFTRACER_LOG_FILE", log_prefix.c_str(), 1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "200", 1);
 
-  std::string mkdir_cmd = "mkdir -p " + log_dir;
-  DFT_CHECK(system(mkdir_cmd.c_str()) == 0);
-
   char hostname[256];
   gethostname(hostname, sizeof(hostname));
   std::string expected_trace = log_prefix + "_" + hostname + ".pfw.gz";
   std::remove(expected_trace.c_str());
 
-  std::string start_cmd = service_bin + " start " + log_dir;
+  // The service's .pid and .log go next to its trace, from the same prefix.
+  std::string start_cmd = service_bin + " start";
   DFT_CHECK(system(start_cmd.c_str()) == 0);
 
   std::this_thread::sleep_for(std::chrono::milliseconds(1200));
 
-  std::string stop_cmd = service_bin + " stop " + log_dir;
+  DFT_CHECK(std::ifstream(log_prefix + "_" + hostname + ".pid").good());
+  std::string stop_cmd = service_bin + " stop";
   DFT_CHECK(system(stop_cmd.c_str()) == 0);
 
   std::this_thread::sleep_for(std::chrono::milliseconds(500));

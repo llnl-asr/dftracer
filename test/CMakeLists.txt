@@ -10,6 +10,11 @@ function(df_add_test)
     get_property(OLD_CF GLOBAL PROPERTY COVERAGE_FILES)
     set(NEW_CF ${OLD_CF} ${CMAKE_CURRENT_BINARY_DIR}/${ARGV0}.profraw)
     set_property(GLOBAL PROPERTY COVERAGE_FILES ${NEW_CF})
+    # Remembered for the producer/consumer twins at the end of this file:
+    # CMake cannot read a test's command back.
+    list(SUBLIST ARGV 1 -1 _command)
+    set_property(GLOBAL APPEND PROPERTY DFTRACER_TEST_NAMES ${ARGV0})
+    set_property(GLOBAL PROPERTY DFTRACER_TEST_COMMAND_${ARGV0} "${_command}")
 endfunction()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
@@ -76,12 +81,10 @@ endfunction()
 
 function(set_common_dftracer_properties test_name)
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_LEVEL=${DFTRACER_TEST_LOG_LEVEL})
-    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_TRACE_COMPRESSION=1)
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_ENABLE_AGGREGATION=0)
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_CURRENT_BINARY_DIR}/data)
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/${test_name})
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_ENABLE=1)
-    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_BIND_SIGNALS=0)
 endfunction()
 
@@ -111,8 +114,7 @@ if(DEFINED DFTRACER_PYTHON_EXE AND NOT "${DFTRACER_PYTHON_EXE}" STREQUAL "")
     endif()
 endif()
 
-# ---- Entity/relation API: C and C++, with and without INC_METADATA (relations
-# must be recorded either way). Each run writes its own trace and
+# ---- Entity/relation API: C and C++. Each run writes its own trace and
 # check_entity_trace.py validates the EH/ET/ER records and relation arrays.
 # The Python entity API lives in pydftracer and is tested there, not here.
 find_program(DFTRACER_ENTITY_CHECK_PYTHON NAMES python3 python)
@@ -124,19 +126,16 @@ set(_entity_cmd_cpp "${CMAKE_BINARY_DIR}/bin/test_entity_cpp")
 foreach(_lang IN LISTS _entity_langs)
     set(_cmd "${_entity_cmd_${_lang}}")
     separate_arguments(_cmd)
-    foreach(_meta 1 0)
-        set(test_name test_entity_${_lang}_meta${_meta})
-        df_add_test(${test_name} ${_cmd})
-        set_common_properties(${test_name})
-        set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
-        set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=${_meta})
-        if(DFTRACER_ENTITY_CHECK_PYTHON)
-            df_add_test(check_${test_name} ${DFTRACER_ENTITY_CHECK_PYTHON}
-                ${CMAKE_CURRENT_SOURCE_DIR}/check_entity_trace.py
-                "${CMAKE_CURRENT_BINARY_DIR}/${test_name}*.pfw*")
-            set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
-        endif()
-    endforeach()
+    set(test_name test_entity_${_lang})
+    df_add_test(${test_name} ${_cmd})
+    set_common_properties(${test_name})
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
+    if(DFTRACER_ENTITY_CHECK_PYTHON)
+        df_add_test(check_${test_name} ${DFTRACER_ENTITY_CHECK_PYTHON}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_entity_trace.py
+            "${CMAKE_CURRENT_BINARY_DIR}/${test_name}*.pfw*")
+        set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
+    endif()
 endforeach()
 
 set(test_name test_cpp_basic_only)
@@ -280,11 +279,6 @@ df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_cpp ${CMAKE_CURRENT_BINARY
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_CONFIGURATION=${CMAKE_CURRENT_SOURCE_DIR}/yaml/conf.yaml)
 set_common_properties(${test_name})
 
-set(test_name test_cpp_basic_app_compress_only)
-df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_cpp ${CMAKE_CURRENT_BINARY_DIR}/data 1)
-set_common_properties(${test_name})
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_TRACE_COMPRESSION=1)
-
 set(test_name test_cpp_basic_app_aggregate_only)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_cpp ${CMAKE_CURRENT_BINARY_DIR}/data 1)
 set_common_properties(${test_name})
@@ -358,7 +352,6 @@ df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_cpp ${CMAKE_CURRENT_BINARY
 set_common_properties(${test_name})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
 
 df_add_test(check_file_exists_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_file_at_least.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}* 29)
 set_tests_properties(check_file_exists_${test_name} PROPERTIES DEPENDS ${test_name})
@@ -368,7 +361,6 @@ df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_cpp ${CMAKE_CURRENT_BINARY
 set_common_properties(${test_name})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_SET_CORE_AFFINITY=1)
 
 df_add_test(check_file_exists_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_file_at_least.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}* 29)
@@ -390,7 +382,6 @@ set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT PYTHONPATH=$ENV{PYTHO
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload.so)
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_BINARY_DIR})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/${test_name})
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
 
 set(test_name test_py_aggregation_both)
 df_add_test(${test_name} ${DFTRACER_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/py/test.py --format=npz --data_dir=${CMAKE_CURRENT_BINARY_DIR}/data)
@@ -399,7 +390,6 @@ set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT PYTHONPATH=$ENV{PYTHO
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload.so)
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_BINARY_DIR})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/${test_name})
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_ENABLE_AGGREGATION=1)
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_AGGREGATION_TYPE=SELECTIVE)
 
@@ -410,7 +400,6 @@ set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT PYTHONPATH=$ENV{PYTHO
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload.so)
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_BINARY_DIR})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/${test_name})
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_ENABLE_AGGREGATION=1)
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_AGGREGATION_TYPE=SELECTIVE)
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_AGGREGATION_FILE=${CMAKE_CURRENT_SOURCE_DIR}/yaml/rules.yaml)
@@ -428,7 +417,6 @@ set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BI
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_BINARY_DIR})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/${test_name})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=HYBRID)
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
 
 df_add_test(check_file_exists_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_file.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*-app.pfw* 75)
 set_tests_properties(check_file_exists_${test_name} PROPERTIES DEPENDS ${test_name})
@@ -442,7 +430,6 @@ set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BI
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_BINARY_DIR})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/${test_name})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=HYBRID)
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
 
 df_add_test(check_file_exists_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_file.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*-app.pfw* 75)
 set_tests_properties(check_file_exists_${test_name} PROPERTIES DEPENDS ${test_name})
@@ -468,7 +455,6 @@ set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BI
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_BINARY_DIR})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/${test_name})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=HYBRID)
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
 
 df_add_test(check_file_exists_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_file_not.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*-app.pfw*)
 set_tests_properties(check_file_exists_${test_name} PROPERTIES DEPENDS ${test_name})
@@ -482,7 +468,6 @@ set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BI
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_BINARY_DIR})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/${test_name})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=HYBRID)
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
 
 df_add_test(check_file_exists_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_file.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*-app.pfw* 60)
 set_tests_properties(check_file_exists_${test_name} PROPERTIES DEPENDS ${test_name})
@@ -496,7 +481,6 @@ set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BI
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_BINARY_DIR})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/${test_name})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=HYBRID)
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
 
 df_add_test(check_file_exists_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_file.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*-app.pfw* 69)
 set_tests_properties(check_file_exists_${test_name} PROPERTIES DEPENDS ${test_name})
@@ -510,7 +494,6 @@ set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BI
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_BINARY_DIR})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/${test_name})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=HYBRID)
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
 
 df_add_test(check_file_exists_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_file.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*-app.pfw* 51)
 set_tests_properties(check_file_exists_${test_name} PROPERTIES DEPENDS ${test_name})
@@ -524,7 +507,6 @@ set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BI
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_BINARY_DIR})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/${test_name})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=HYBRID)
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
 
 df_add_test(check_file_exists_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_file.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*-app.pfw* 72)
 set_tests_properties(check_file_exists_${test_name} PROPERTIES DEPENDS ${test_name})
@@ -562,14 +544,12 @@ if(ENABLE_DLIO_BENCHMARK_TESTS)
     df_add_test(${test_name} ${DFTRACER_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/py/python_test.py --format=npz --log_dir=${CMAKE_CURRENT_BINARY_DIR}/${test_name} --data_dir=${CMAKE_CURRENT_BINARY_DIR})
     set_common_properties(${test_name})
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_ENABLE=1)
-    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_CURRENT_BINARY_DIR})
 
     set(test_name python_test_py_io_all_meta_only)
     df_add_test(${test_name} ${DFTRACER_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/py/python_test.py --format=npz --log_dir=${CMAKE_CURRENT_BINARY_DIR}/${test_name} --data_dir=${CMAKE_CURRENT_BINARY_DIR})
     set_common_properties(${test_name})
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_ENABLE=1)
-    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=all)
     add_subdirectory(dlio_benchmark)
 endif()
@@ -1185,3 +1165,91 @@ endif()
 
 # Add unit tests subdirectory
 add_subdirectory(unit)
+
+# ---- Per-call overhead, in-process vs producer/consumer mode: the same
+# near-empty annotated function without dftracer, in-process (aggregation on
+# and off) and through dftracer_service. A short run here so every build shows
+# the numbers (summary.csv in the work directory); the full sweep is
+# perf_c_overhead_pc_vs_local.
+add_executable(c_overhead_base perf/c_overhead/c_overhead.c)
+target_link_libraries(c_overhead_base pthread)
+add_executable(c_overhead_dft perf/c_overhead/c_overhead.c)
+target_compile_definitions(c_overhead_dft PRIVATE WITH_DFTRACER)
+target_link_libraries(c_overhead_dft ${PROJECT_NAME}_core pthread)
+if(TARGET ${PROJECT_NAME}_service)
+    set(test_name test_c_overhead_pc_vs_local)
+    add_test(NAME ${test_name}
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/perf/c_overhead/run_c_overhead.sh
+                     ${CMAKE_BINARY_DIR} - ${CMAKE_CURRENT_BINARY_DIR}/c_overhead_quick)
+    set_common_linker_properties(${test_name})
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT
+        C_OVERHEAD_BASE=${CMAKE_BINARY_DIR}/bin/c_overhead_base
+        C_OVERHEAD_DFT=${CMAKE_BINARY_DIR}/bin/c_overhead_dft
+        "THREADS=1 2" OPS=20000 REPS=1 "META=0 1")
+    set_tests_properties(${test_name} PROPERTIES LABELS overhead TIMEOUT 600)
+
+    # The ring overflows on purpose: what does not fit spills to the
+    # producers' own files, and no event may be lost.
+    set(test_name pc_test_spill)
+    add_test(NAME ${test_name}
+             COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/pc/run_pc_spill.sh
+                     ${CMAKE_BINARY_DIR}/bin/dftracer_service
+                     ${CMAKE_BINARY_DIR}/bin/c_overhead_dft
+                     ${CMAKE_CURRENT_BINARY_DIR}/pc/spill)
+    set_common_linker_properties(${test_name})
+    set_tests_properties(${test_name} PROPERTIES LABELS pc TIMEOUT 300)
+endif()
+
+if(DFTRACER_ENABLE_PERF_TESTS)
+    add_subdirectory(perf)
+endif()
+
+# ---- Producer/consumer mode: every test above that writes a trace runs again
+# as pc_<test>, which runs its command in-process and through a private
+# dftracer_service (DFTRACER_ENABLE_PC_MODE=1) and checks that both traced the
+# same events (pc/run_pc_twin.sh, pc/compare_traces.py). Registered last, so
+# each test's environment is complete.
+option(DFTRACER_TEST_PC_MODE "Run every trace test in producer/consumer mode too" ON)
+if(DFTRACER_TEST_PC_MODE AND TARGET ${PROJECT_NAME}_service)
+    find_program(DFTRACER_PC_CHECK_PYTHON NAMES python3 python)
+    get_property(_pc_tests GLOBAL PROPERTY DFTRACER_TEST_NAMES)
+    foreach(_test IN LISTS _pc_tests)
+        get_test_property(${_test} ENVIRONMENT _env)
+        if(NOT _env MATCHES "DFTRACER_LOG_FILE=")
+            continue()
+        endif()
+        get_property(_cmd GLOBAL PROPERTY DFTRACER_TEST_COMMAND_${_test})
+        # Preload only the test's command, not the script that runs it.
+        list(TRANSFORM _env REPLACE "^LD_PRELOAD=" "DFTRACER_TWIN_LD_PRELOAD=")
+        # A data directory of its own: the tests share test/data, and a test
+        # running alongside (ctest -j, the parallel valgrind runner) would
+        # change the files under it between the twin's two runs.
+        set(_data ${CMAKE_CURRENT_BINARY_DIR}/pc/data/${_test})
+        file(MAKE_DIRECTORY ${_data})
+        string(REPLACE "${CMAKE_CURRENT_BINARY_DIR}/data" "${_data}" _cmd "${_cmd}")
+        string(REPLACE "${CMAKE_CURRENT_BINARY_DIR}/data" "${_data}" _env "${_env}")
+        set(_twin pc_${_test})
+        df_add_test(${_twin} ${BASH_PROGRAM}
+            ${CMAKE_CURRENT_SOURCE_DIR}/pc/run_pc_twin.sh
+            ${CMAKE_BINARY_DIR}/bin/dftracer_service
+            ${CMAKE_CURRENT_BINARY_DIR}/pc/${_test} ${_cmd})
+        set_tests_properties(${_twin} PROPERTIES ENVIRONMENT "${_env}")
+        set_property(TEST ${_twin} APPEND PROPERTY ENVIRONMENT
+            DFTRACER_TWIN_DATA_DIR=${_data})
+        set_property(TEST ${_twin} APPEND PROPERTY ENVIRONMENT
+            LLVM_PROFILE_FILE=${_twin}.profraw)
+        # After the original, which may set up files the test reads.
+        set_property(TEST ${_twin} APPEND PROPERTY DEPENDS ${_test})
+        get_test_property(${_test} TIMEOUT _timeout)
+        if(_timeout)
+            math(EXPR _timeout "${_timeout} * 2 + 60")
+            set_tests_properties(${_twin} PROPERTIES TIMEOUT ${_timeout})
+        endif()
+        get_test_property(${_test} LABELS _labels)
+        if(_labels)
+            set_tests_properties(${_twin} PROPERTIES LABELS "${_labels};pc")
+        else()
+            set_tests_properties(${_twin} PROPERTIES LABELS pc)
+        endif()
+    endforeach()
+endif()

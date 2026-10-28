@@ -1,5 +1,6 @@
 #include <dftracer/service/service.h>
 #include <dirent.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -21,30 +22,38 @@ std::string basename_of(const std::string& path) {
   return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
-// Returns the short hostname, used to namespace per-node state files so that
-// concurrent daemons sharing a log_dir on a network filesystem (e.g. one
-// state_dir passed to every node of a multi-node job) never clobber each
-// other's PID file.
-std::string short_hostname() {
-  char hostname[256] = {0};
-  if (gethostname(hostname, sizeof(hostname) - 1) != 0) {
-    return "unknown";
-  }
-  std::string h(hostname);
-  auto dot = h.find('.');
-  if (dot != std::string::npos) h = h.substr(0, dot);
-  return h;
+// The hostname the node trace is named with (DFTracerService), so a node's
+// pid and log files sit next to its trace. It also keeps the daemons of a
+// multi-node job, sharing one log_file prefix on a network filesystem, from
+// overwriting each other's pid file.
+std::string hostname() {
+  char name[256] = {0};
+  if (gethostname(name, sizeof(name) - 1) != 0) return "unknown";
+  return name;
 }
 
-// Finds PIDs of other "<binary_name> start <log_dir>" processes on this
-// node, excluding `self_pid`. Used to catch daemons that leaked because a
-// previous `stop` was never called (or used a mismatched/legacy pid file
-// path) — they are otherwise invisible since they hold no valid PID-file
-// reference once a later start overwrites it.
+// The value of `var` in /proc/<pid>/environ, or "" when absent or unreadable.
+std::string environ_of(const char* pid, const std::string& var) {
+  std::ifstream file("/proc/" + std::string(pid) + "/environ",
+                     std::ios::binary);
+  std::string entry;
+  while (std::getline(file, entry, '\0')) {
+    if (entry.size() > var.size() && entry.compare(0, var.size(), var) == 0 &&
+        entry[var.size()] == '=')
+      return entry.substr(var.size() + 1);
+  }
+  return "";
+}
+
+// Finds PIDs of other "<binary_name> start" processes on this node with the
+// same DFTRACER_LOG_FILE, excluding `self_pid`. Used to catch daemons that
+// leaked because a previous `stop` was never called (or used a
+// mismatched/legacy pid file path) — they are otherwise invisible since they
+// hold no valid PID-file reference once a later start overwrites it.
 //
 // Scans /proc directly rather than shelling out to `pgrep -f`. The
 // popen()-based version ran `sh -c "pgrep -f '<binary_name> start
-// <log_dir>' "`, and that wrapper shell's own argv literally contains the
+// <dir>' "`, and that wrapper shell's own argv literally contains the
 // search pattern as a substring — `pgrep -f` matched the wrapper itself,
 // treating it as a "rogue" process distinct from `self_pid`. Killing that
 // transient, about-to-exit PID (SIGINT, escalating to SIGKILL) risked
@@ -54,7 +63,7 @@ std::string short_hostname() {
 // /proc/<pid>/cmdline for real dftracer_service processes avoids ever
 // spawning a matching shell process in the first place.
 std::vector<pid_t> find_other_start_pids(const std::string& binary_name,
-                                         const std::string& log_dir,
+                                         const std::string& log_file,
                                          pid_t self_pid) {
   std::vector<pid_t> pids;
   DIR* proc = opendir("/proc");
@@ -76,8 +85,8 @@ std::vector<pid_t> find_other_start_pids(const std::string& binary_name,
     if (cmdline.empty()) continue;
 
     // cmdline is NUL-separated argv; split it out instead of doing a raw
-    // substring match so a log_dir path that happens to be a substring of
-    // some unrelated process's argv can never match.
+    // substring match so that some unrelated process whose argv merely
+    // contains these words can never match.
     std::vector<std::string> args;
     size_t start = 0;
     for (size_t i = 0; i <= cmdline.size(); ++i) {
@@ -86,10 +95,10 @@ std::vector<pid_t> find_other_start_pids(const std::string& binary_name,
         start = i + 1;
       }
     }
-    if (args.size() < 3) continue;
+    if (args.size() < 2) continue;
     if (basename_of(args[0]) != binary_name) continue;
     if (args[1] != "start") continue;
-    if (args[2] != log_dir) continue;
+    if (environ_of(name, DFTRACER_LOG_FILE) != log_file) continue;
 
     pids.push_back(pid);
   }
@@ -98,11 +107,34 @@ std::vector<pid_t> find_other_start_pids(const std::string& binary_name,
 }
 }  // namespace
 
-// Daemonize the process: detach from terminal and run in background
-void daemonize() {
+// How long `start` waits for the daemon to be ready before giving up.
+constexpr int kReadyTimeoutMs = 60000;
+
+// Daemonize the process: detach from terminal and run in background.
+//
+// The invoking process does not return at once: it waits until the daemon
+// reports that it is ready (see notify_ready), so `dftracer_service start`
+// followed by the application never races the service's set-up -- in
+// producer/consumer mode the ring is accepting events by then. It exits 0
+// then, or 1 if the daemon died first or did not report in time. Returns the
+// daemon's end of that pipe.
+int daemonize(const std::string& log_path) {
+  int ready[2];
+  if (pipe(ready) != 0) exit(EXIT_FAILURE);
   pid_t pid = fork();
   if (pid < 0) exit(EXIT_FAILURE);  // Fork failed
-  if (pid > 0) exit(EXIT_SUCCESS);  // Parent exits
+  if (pid > 0) {
+    close(ready[1]);
+    struct pollfd wait_for = {ready[0], POLLIN, 0};
+    char byte = 0;
+    if (poll(&wait_for, 1, kReadyTimeoutMs) == 1 &&
+        read(ready[0], &byte, 1) == 1 && byte == 1)
+      exit(EXIT_SUCCESS);
+    std::cerr << "dftracer_service did not start; see " << log_path
+              << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  close(ready[0]);
 
   // Child continues as session leader
   if (setsid() < 0) exit(EXIT_FAILURE);
@@ -115,43 +147,56 @@ void daemonize() {
   close(STDIN_FILENO);
   close(STDOUT_FILENO);
   close(STDERR_FILENO);
+  return ready[1];
+}
+
+// Tell the waiting `start` the service is up, and let go of the pipe.
+void notify_ready(int fd) {
+  const char byte = 1;
+  if (write(fd, &byte, 1) != 1) {
+    // `start` gave up already; nothing else to do.
+  }
+  close(fd);
 }
 
 int main(int argc, char* argv[]) {
-  // Check for correct usage
-  if (argc < 2 || argc > 3) {
-    std::cerr << "Usage: " << argv[0] << " <start|stop> [log_dir]" << std::endl;
+  if (argc != 2) {
+    std::cerr << "Usage: " << argv[0] << " <start|stop>\n"
+              << "The service writes next to the application's traces: "
+                 "<log_file>_<host>.pfw.gz (node trace), .log and .pid, with "
+                 "log_file from DFTRACER_LOG_FILE or the YAML configuration."
+              << std::endl;
     return 1;
   }
 
   std::string cmd = argv[1];
-  std::string log_dir = (argc == 3) ? argv[2] : "/tmp";
-
-  // Ensure log_dir ends without trailing slash
-  if (!log_dir.empty() && log_dir.back() == '/') log_dir.pop_back();
-
-  // Namespace state files by hostname so that multiple nodes pointed at the
-  // same (e.g. shared-filesystem) log_dir don't overwrite each other's PID
-  // file — without this, only the last node to start "wins" the PID file
-  // and every other node's daemon becomes unreachable via `stop`.
-  std::string host = short_hostname();
-  std::string pid_file_path = log_dir + "/dftracer_server_" + host + ".pid";
-  std::string out_log_path = log_dir + "/dftracer_server_" + host + ".out";
-  std::string err_log_path = log_dir + "/dftracer_server_" + host + ".err";
+  // The same log_file as the application, so its files sit next to the
+  // traces. Namespaced by hostname, as the node trace is, so the daemons of
+  // a multi-node job sharing one prefix never overwrite each other's files.
+  auto conf =
+      dftracer::Singleton<dftracer::ConfigurationManager>::get_instance();
+  // Tracing off (DFTRACER_ENABLE not set to 1, nor enabled in the YAML):
+  // there is nothing to collect, so both commands do nothing.
+  if (!conf->enable) return 0;
+  const std::string log_file = conf->log_file;
+  const std::string host = hostname();
+  const std::string prefix = log_file + "_" + host;
+  std::string pid_file_path = prefix + ".pid";
+  std::string log_path = prefix + ".log";
 
   if (cmd == "start") {
     std::string binary_name = basename_of(argv[0]);
 
     // 1. Refuse to start a second tracked instance for this node: if the
     //    PID file exists and that PID is alive, this node already has a
-    //    running daemon for this log_dir.
+    //    running daemon for this log_file.
     std::ifstream existing_pid_file(pid_file_path);
     pid_t existing_pid;
     if (existing_pid_file >> existing_pid) {
       existing_pid_file.close();
       if (kill(existing_pid, 0) == 0) {
         std::cerr << "dftracer_service is already running on " << host
-                  << " (PID " << existing_pid << ") for " << log_dir
+                  << " (PID " << existing_pid << ") for " << log_file
                   << " — refusing to start a second instance. Run `stop` "
                      "first."
                   << std::endl;
@@ -164,16 +209,16 @@ int main(int argc, char* argv[]) {
       existing_pid_file.close();
     }
 
-    // 2. Clean up any rogue/untracked processes for this log_dir on this
+    // 2. Clean up any rogue/untracked processes for this log_file on this
     //    node before starting a new one — e.g. daemons left behind by a
     //    prior `start` whose `stop` was skipped, or whose PID file got
     //    overwritten by a since-removed later start.
     pid_t self_pid = getpid();
-    auto rogue = find_other_start_pids(binary_name, log_dir, self_pid);
+    auto rogue = find_other_start_pids(binary_name, log_file, self_pid);
     if (!rogue.empty()) {
       for (pid_t pid : rogue) {
         std::cerr << "Found rogue " << binary_name << " process (PID " << pid
-                  << ") for " << log_dir << " on " << host
+                  << ") for " << log_file << " on " << host
                   << " — sending SIGINT." << std::endl;
         kill(pid, SIGINT);
       }
@@ -192,21 +237,20 @@ int main(int argc, char* argv[]) {
       }
     }
 
-    auto conf =
-        dftracer::Singleton<dftracer::ConfigurationManager>::get_instance();
     auto libuv_threads = std::to_string(conf->libuv_thread_count);
     setenv("UV_THREADPOOL_SIZE", libuv_threads.c_str(), 1);
 
     // Start the server as a daemon
-    daemonize();
+    const int ready_fd = daemonize(log_path);
 
-    // Redirect stdout and stderr to log files (truncate on running).
-    // Nothing can be reported if this fails: the streams we would report on
-    // are the ones being redirected.
-    if (freopen(out_log_path.c_str(), "w", stdout) == nullptr ||
-        freopen(err_log_path.c_str(), "w", stderr) == nullptr) {
+    // Both streams to one log (truncated on start). Nothing can be reported
+    // if this fails: the streams we would report on are the ones being
+    // redirected.
+    if (freopen(log_path.c_str(), "w", stdout) == nullptr ||
+        dup2(fileno(stdout), STDERR_FILENO) < 0) {
       _exit(EXIT_FAILURE);
     }
+    setvbuf(stdout, nullptr, _IOLBF, 0);
 
     // Write the server's PID to a file for later reference
     std::ofstream pid_file(pid_file_path);
@@ -214,7 +258,11 @@ int main(int argc, char* argv[]) {
     pid_file.close();
 
     // Create and start the DFTracerService server. start() blocks until SIGINT.
+    // Constructed means ready: in producer/consumer mode the ring is created
+    // and accepting events. A constructor that throws closes the pipe empty,
+    // and `start` reports the failure.
     auto server = dftracer::DFTracerService();
+    notify_ready(ready_fd);
     server.start();
 
     // Remove the PID file

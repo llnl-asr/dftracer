@@ -49,6 +49,16 @@ add_executable(test_aggregated_value test_aggregated_value.cpp)
 target_link_libraries(test_aggregated_value ${PROJECT_NAME}_core_dbg)
 add_dependencies(test_aggregated_value ${PROJECT_NAME}_core_dbg)
 
+# The service's packed path writes the lines the Metadata path writes.
+add_executable(test_packed test_packed.cpp)
+target_link_libraries(test_packed ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_packed ${PROJECT_NAME}_core_dbg)
+
+# Test the shared-memory event ring (core/ipc, header-only). rt: shm_open lives
+# in librt before glibc 2.34.
+add_executable(test_ring test_ring.cpp)
+target_link_libraries(test_ring pthread rt)
+
 # Add tests to CTest
 set(test_name unit_test_aggregator)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_aggregator)
@@ -82,8 +92,16 @@ set(test_name unit_test_trace_event_type)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_trace_event_type)
 set_common_properties(${test_name})
 
+set(test_name unit_test_ring)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_ring)
+set_common_properties(${test_name})
+
 set(test_name unit_test_aggregated_value)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_aggregated_value)
+set_common_properties(${test_name})
+
+set(test_name unit_test_packed)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_packed)
 set_common_properties(${test_name})
 
 # Existing mmap test

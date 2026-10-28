@@ -646,9 +646,14 @@ int brahma::POSIXDFTracer::execl(const char* pathname, const char* arg, ...) {
   va_end(args);
   argv.push_back(nullptr);
 
-  int ret = __real_execv(pathname, argv.data());
+  // exec replaces this image and does not return when it succeeds: record
+  // the call and write out everything buffered first, or it is lost. A
+  // flush, not a finalize: if exec fails, tracing goes on. Not in a vfork
+  // child, which shares the parent's buffers while the parent's other
+  // threads may still be writing to them.
   DFT_LOGGER_END();
-  return ret;
+  if (!in_vfork_child()) dft_flush();
+  return __real_execv(pathname, argv.data());
 }
 
 int brahma::POSIXDFTracer::execlp(const char* pathname, const char* arg, ...) {
@@ -672,10 +677,14 @@ int brahma::POSIXDFTracer::execlp(const char* pathname, const char* arg, ...) {
   va_end(args);
   argv.push_back(nullptr);
 
-  int ret = __real_execvp(pathname, argv.data());
-  DFT_LOGGER_UPDATE(ret);
+  // exec replaces this image and does not return when it succeeds: record
+  // the call and write out everything buffered first, or it is lost. A
+  // flush, not a finalize: if exec fails, tracing goes on. Not in a vfork
+  // child, which shares the parent's buffers while the parent's other
+  // threads may still be writing to them.
   DFT_LOGGER_END();
-  return ret;
+  if (!in_vfork_child()) dft_flush();
+  return __real_execvp(pathname, argv.data());
 }
 
 int brahma::POSIXDFTracer::execv(const char* pathname, char* const argv[]) {
@@ -710,10 +719,14 @@ int brahma::POSIXDFTracer::execv(const char* pathname, char* const argv[]) {
     val = argv[i];
   }
 
-  int ret = __real_execv(pathname, argv);
-  DFT_LOGGER_UPDATE(ret);
+  // exec replaces this image and does not return when it succeeds: record
+  // the call and write out everything buffered first, or it is lost. A
+  // flush, not a finalize: if exec fails, tracing goes on. Not in a vfork
+  // child, which shares the parent's buffers while the parent's other
+  // threads may still be writing to them.
   DFT_LOGGER_END();
-  return ret;
+  if (!in_vfork_child()) dft_flush();
+  return __real_execv(pathname, argv);
 }
 
 int brahma::POSIXDFTracer::execvp(const char* pathname, char* const argv[]) {
@@ -747,10 +760,14 @@ int brahma::POSIXDFTracer::execvp(const char* pathname, char* const argv[]) {
     i++;
     val = argv[i];
   }
-  int ret = __real_execvp(pathname, argv);
-  DFT_LOGGER_UPDATE(ret);
+  // exec replaces this image and does not return when it succeeds: record
+  // the call and write out everything buffered first, or it is lost. A
+  // flush, not a finalize: if exec fails, tracing goes on. Not in a vfork
+  // child, which shares the parent's buffers while the parent's other
+  // threads may still be writing to them.
   DFT_LOGGER_END();
-  return ret;
+  if (!in_vfork_child()) dft_flush();
+  return __real_execvp(pathname, argv);
 }
 
 int brahma::POSIXDFTracer::execvpe(const char* pathname, char* const argv[],
@@ -785,10 +802,14 @@ int brahma::POSIXDFTracer::execvpe(const char* pathname, char* const argv[],
     i++;
     val = argv[i];
   }
-  int ret = __real_execvpe(pathname, argv, envp);
-  DFT_LOGGER_UPDATE(ret);
+  // exec replaces this image and does not return when it succeeds: record
+  // the call and write out everything buffered first, or it is lost. A
+  // flush, not a finalize: if exec fails, tracing goes on. Not in a vfork
+  // child, which shares the parent's buffers while the parent's other
+  // threads may still be writing to them.
   DFT_LOGGER_END();
-  return ret;
+  if (!in_vfork_child()) dft_flush();
+  return __real_execvpe(pathname, argv, envp);
 }
 
 int brahma::POSIXDFTracer::fork() {
@@ -974,10 +995,14 @@ int brahma::POSIXDFTracer::execve(const char* pathname, char* const argv[],
     i++;
     val = argv[i];
   }
-  int ret = __real_execve(pathname, argv, envp);
-  DFT_LOGGER_UPDATE(ret);
+  // exec replaces this image and does not return when it succeeds: record
+  // the call and write out everything buffered first, or it is lost. A
+  // flush, not a finalize: if exec fails, tracing goes on. Not in a vfork
+  // child, which shares the parent's buffers while the parent's other
+  // threads may still be writing to them.
   DFT_LOGGER_END();
-  return ret;
+  if (!in_vfork_child()) dft_flush();
+  return __real_execve(pathname, argv, envp);
 }
 
 pid_t brahma::POSIXDFTracer::wait(int* wstatus) {

@@ -107,6 +107,7 @@ class CMakeBuild(build_ext):
             "brahma_DIR": dependency_cmake_dir / "brahma",
             "gotcha_DIR": dependency_cmake_dir / "gotcha",
             "libuv_DIR": dependency_cmake_dir / "libuv",
+            "libdeflate_DIR": dependency_cmake_dir / "libdeflate",
         }
 
         # if "DFTRACER_BUILD_DEPENDENCIES" not in os.environ or os.environ['DFTRACER_BUILD_DEPENDENCIES'] == "1":

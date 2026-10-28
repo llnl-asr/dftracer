@@ -9,7 +9,7 @@
 
 #ifdef DFTRACER_PAPI_TRACING_ENABLE
 
-#include <dftracer/core/buffer/buffer.h>
+#include <dftracer/core/buffer/local_buffer_manager.h>
 #include <dftracer/core/common/event_loop.h>
 #include <dftracer/core/common/singleton.h>
 #include <dftracer/core/function/generic_function.h>

@@ -226,3 +226,26 @@ endif()
 dftracer_install_external_project(pybind11 2.12.0 "pybind11" https://github.com/pybind/pybind11.git v2.12.0 ${CMAKE_INSTALL_PREFIX} "-DPYBIND11_TEST=OFF")
 
 dftracer_install_external_project(libuv 1.52.1 "libuv" https://github.com/libuv/libuv.git v1.52.1 ${CMAKE_INSTALL_PREFIX} "-DLIBUV_BUILD_TESTS=OFF")
+# libdeflate compresses the gzip members of every trace.
+dftracer_install_external_project(libdeflate 1.9 "libdeflate" https://github.com/ebiggers/libdeflate.git v1.24 ${CMAKE_INSTALL_PREFIX} "-DLIBDEFLATE_BUILD_STATIC_LIB=OFF;-DLIBDEFLATE_BUILD_GZIP=OFF;-DLIBDEFLATE_BUILD_TESTS=OFF;-DCMAKE_INSTALL_LIBDIR=lib64")
+
+# Boost: only headers are needed (Boost.Interprocess maps the shared-memory
+# event ring between traced processes and dftracer_service), so the release
+# tarball is unpacked and its boost/ directory copied into the prefix -- no b2
+# build and no recursive-submodule clone. Kept last in this file: the tarball
+# has no GIT_TAG, and scripts/wheel/manifest.py pairs each ExternalProject_Add
+# with the next GIT_TAG it finds. The wheel build takes Boost from the system
+# package manager instead (scripts/wheel/build_deps.sh).
+find_package(Boost 1.66 QUIET)
+if(NOT Boost_FOUND)
+  ExternalProject_Add(
+    boost_headers
+    PREFIX ${CMAKE_BINARY_DIR}
+    URL https://archives.boost.io/release/1.83.0/source/boost_1_83_0.tar.gz
+    URL_HASH SHA256=c0685b68dd44cc46574cce86c4e17c0f611b15e195be9848dfd0769a0a207628
+    CONFIGURE_COMMAND ""
+    BUILD_COMMAND ""
+    INSTALL_COMMAND ${CMAKE_COMMAND} -E copy_directory <SOURCE_DIR>/boost ${CMAKE_INSTALL_PREFIX}/include/boost
+    LOG_DOWNLOAD ON
+  )
+endif()

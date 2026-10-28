@@ -25,6 +25,8 @@
 #include <vector>
 
 void dft_finalize(bool force = false);
+// Write out everything buffered so far, without stopping tracing.
+void dft_flush();
 
 // Shared helper: dump backtrace to stderr and flush.  Safe to call from
 // warn_unused_result is not silenced by a (void) cast; assigning the result

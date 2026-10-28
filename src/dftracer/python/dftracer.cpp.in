@@ -38,10 +38,10 @@ std::string get_config(std::string key) {
   if (key == DFTRACER_DATA_DIR) return conf->data_dirs;
   if (key == DFTRACER_GOTCHA_PRIORITY) return std::to_string(conf->gotcha_priority);
   if (key == DFTRACER_SET_CORE_AFFINITY) return conf->core_affinity ? "1" : "0";
-  if (key == DFTRACER_INC_METADATA) return conf->metadata ? "1" : "0";
+  if (key == DFTRACER_INC_METADATA) return "1";  // always included
   if (key == DFTRACER_DISABLE_POSIX) return conf->posix ? "0" : "1";
   if (key == DFTRACER_DISABLE_STDIO) return conf->stdio ? "0" : "1";
-  if (key == DFTRACER_TRACE_COMPRESSION) return conf->compression ? "1" : "0";
+  if (key == DFTRACER_TRACE_COMPRESSION) return "1";  // always compressed
   if (key == DFTRACER_DISABLE_TIDS) return conf->tids ? "0" : "1";
   if (key == DFTRACER_ENABLE_AGGREGATION) return conf->aggregation_enable ? "1" : "0";
   if (key == DFTRACER_AGGREGATION_TYPE) return to_string(conf->aggregation_type);

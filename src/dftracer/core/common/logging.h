@@ -217,8 +217,11 @@ inline void dftracer_log_printf(FILE* stream, const char* format,
                                 Args... args) {
   dftracer_logging_real_fprintf()(stream, format, args...);
 }
+// Without cpp-logger (the release libraries and dftracer_service) only PRINT
+// is compiled in; every other level comes with cpp-logger, in the _dbg
+// builds.
 #define DFTRACER_LOG_PRINT(...) dftracer_log_printf(stdout, __VA_ARGS__);
-#define DFTRACER_LOG_ERROR(...) dftracer_log_printf(stderr, __VA_ARGS__);
+#define DFTRACER_LOG_ERROR(...) DFTRACER_NOOP_MACRO
 #define DFTRACER_LOG_WARN(...) DFTRACER_NOOP_MACRO
 #define DFTRACER_LOG_INFO(...) DFTRACER_NOOP_MACRO
 #define DFTRACER_LOG_DEBUG(...) DFTRACER_NOOP_MACRO

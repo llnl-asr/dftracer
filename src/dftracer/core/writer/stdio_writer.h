@@ -47,6 +47,11 @@ class STDIOWriter {
   void initialize() {}
 
   ~STDIOWriter() {}
+  // Hand what stdio holds to the kernel (before exec, which discards it).
+  void flush() {
+    if (fh_ != nullptr) STDIOBypass::get_instance().fflush(fh_);
+  }
+
   void finalize(int index) {
     if (fh_ != nullptr) {
       DFTRACER_LOG_INFO("Finalizing STDIOWriter");

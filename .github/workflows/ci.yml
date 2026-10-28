@@ -379,6 +379,8 @@ jobs:
       - name: C/C++ Coverage Summary
         if: github.event_name == 'pull_request' && matrix.python_version == '3.11' && matrix.gcc_version == '11'
         run: |
+          # The venv's gcovr (pip), as in the step above; the apt one is older.
+          source ${VENV_PATH:-venv}/bin/activate
           SOURCE_DIR="$PWD"
           cd "$(dirname "${{ steps.generate_coverage.outputs.coverage_file }}")"
           echo "## C/C++ Coverage Summary" >> $GITHUB_STEP_SUMMARY
@@ -392,6 +394,7 @@ jobs:
             --exclude "$SOURCE_DIR/build/" \
             --exclude "$SOURCE_DIR/install/" \
             --exclude "$SOURCE_DIR/python/" \
+            --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
             --exclude-unreachable-branches \
             --exclude-throw-branches >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
@@ -443,6 +446,8 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: quay.io/pypa/manylinux_${{ matrix.tag }}_x86_64
+      # Docker's default /dev/shm is 64 MB; dftracer_service's ring is 1 GiB.
+      options: --shm-size=2g
     strategy:
       fail-fast: false
       matrix:
@@ -484,7 +489,8 @@ jobs:
             -DCMAKE_PREFIX_PATH=/opt/dftracer \
             -Dyaml-cpp_DIR=/opt/dftracer \
             -DDFTRACER_INSTALL_DEPENDENCIES=OFF \
-            -DDFTRACER_ENABLE_TESTS=ON
+            -DDFTRACER_ENABLE_TESTS=ON \
+            -DDFTRACER_PC_RING_BLOCKS=64
           cmake --build build
 
       # pydftracer imports the extension as dftracer.dftracer, and the Python

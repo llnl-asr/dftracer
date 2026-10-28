@@ -5,7 +5,7 @@
 #ifndef DFTRACER_GENERIC_LOGGER_H
 #define DFTRACER_GENERIC_LOGGER_H
 
-#include <dftracer/core/buffer/buffer.h>
+#include <dftracer/core/buffer/local_buffer_manager.h>
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/cpp_typedefs.h>
 #include <dftracer/core/common/datastructure.h>
@@ -164,8 +164,7 @@ class DFTLogger {
       hwloc_topology_load(topology);   // actual detection
 #endif
     }
-    this->buffer_manager =
-        dftracer::Singleton<dftracer::BufferManager>::get_instance();
+    this->buffer_manager = dftracer::BufferManagerFactory::get_instance();
     this->is_init = true;
   }
   ~DFTLogger() { clear_hash_cache(); }
@@ -695,6 +694,10 @@ class DFTLogger {
     }
     app_json << "}";
     meta->insert_or_assign("app", dftracer::RawJson(app_json.str()));
+  }
+
+  inline void flush() {
+    if (this->buffer_manager != nullptr) this->buffer_manager->flush();
   }
 
   inline void finalize() {

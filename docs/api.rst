@@ -36,14 +36,12 @@ YAML configuration supported. WE need to set DFTRACER_CONFIGURATION ENV variable
       log_file: trace   # PATH To log file. In this case process id and app name is appended to file.
       data_dirs: ./data # Colon separated paths that will be traced for I/O accesses by profiler. For tracing all directories use the string "all" (not recommended).
       log_level: DEBUG  # Logging level within DFTracer ERROR/WARN/INFO/DEBUG (default ERROR).
-      compression: True # Enable trace compression (default True)
       libuv_threads: 1  # Number of libuv worker threads for dftracer_service (default 1)
       time_metric: US   # Time scale used for event timestamps US/NS/MS/SEC (default US).
     gotcha:
       priority: 1       # PRIORITY of DFTracer in GOTCHA (default: True).
     features:
-      metadata: True    # Include metadata (default True)
-      core_affinity: True # Include core affinity (default True). metadata needs to be enabled.
+      core_affinity: True # Include core affinity (default True).
       io:
         enable: True    # Enable automatic binding of all I/O calls (default True).
         posix: True     # Enable automatic binding of POSIX I/O calls (default True).
@@ -72,9 +70,7 @@ Any other value turns it off, where a default of 1 applies.
                                             ``/local/scratch/data`` are in the list, the order matters—
                                             the last one will override the first. As a result, the first path won’t be traced.
                                             To avoid this, only use ``/local/scratch``.
-   DFTRACER_INC_METADATA            INT     Include or exclude metadata (default 1)
    DFTRACER_SET_CORE_AFFINITY       INT     Include or exclude core affinity (default 0).
-                                            ``DFTRACER_INC_METADATA`` needs to be enabled.
    DFTRACER_GOTCHA_PRIORITY         INT     PRIORITY of DFTracer in GOTCHA (default: 1).
    DFTRACER_LOG_LEVEL               STRING  Logging level within DFTracer ``ERROR``/``WARN``/``INFO``/``DEBUG`` (default ``ERROR``).
    DFTRACER_TIME_METRIC             STRING  Time scale used for event timestamps ``US``/``NS``/``MS``/``SEC`` (default ``US``).
@@ -92,7 +88,6 @@ Any other value turns it off, where a default of 1 applies.
    DFTRACER_DISABLE_IO              INT     Disable automatic binding of all I/O calls (default: 0).
    DFTRACER_DISABLE_POSIX           INT     Disable automatic binding of POSIX I/O calls (default: 0).
    DFTRACER_DISABLE_STDIO           INT     Disable automatic binding of STDIO I/O calls (default: 0).
-   DFTRACER_TRACE_COMPRESSION       INT     Enable gzip trace compression (default 1).
    DFTRACER_DISABLE_TIDS            INT     Disable tracing of thread ids (default 0).
    DFTRACER_WRITE_BUFFER_SIZE       INT     Setup the buffering size for write optimization (default 0). Note: Disabled as
                                             this won't work for AI workloads which uses ``fork`` and ``spawn`` without a clear ``exit``.

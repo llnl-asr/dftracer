@@ -188,6 +188,7 @@ gcovr -r "$PROJECT_DIR" . \
     -e "$PROJECT_DIR/examples/" \
     -e "$PROJECT_DIR/dependency/" \
     -e "$PROJECT_DIR/build/" \
+    --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
     --exclude-unreachable-branches \
     --exclude-throw-branches
 

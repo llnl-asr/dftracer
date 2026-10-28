@@ -40,6 +40,7 @@ gcovr -r "$SOURCE_DIR" . \
     --exclude ".*/pybind11/.*" \
     --exclude "/usr/.*" \
     --gcov-ignore-errors=no_working_dir_found \
+    --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
     --exclude-unreachable-branches \
     --exclude-throw-branches
 

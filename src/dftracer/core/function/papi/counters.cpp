@@ -85,8 +85,7 @@ PAPICounterFunction::PAPICounterFunction()
     : dftracer::GenericFunction(),
       config(
           dftracer::Singleton<dftracer::ConfigurationManager>::get_instance()),
-      buffer_manager(
-          dftracer::Singleton<dftracer::BufferManager>::get_instance()),
+      buffer_manager(dftracer::BufferManagerFactory::get_instance()),
       groups(),
       enabled(false),
       library_ready(false),
@@ -465,8 +464,7 @@ void PAPICounterFunction::initialize() {
   if (sampler_running.load()) return;
 
   if (buffer_manager == nullptr) {
-    buffer_manager =
-        dftracer::Singleton<dftracer::BufferManager>::get_instance();
+    buffer_manager = dftracer::BufferManagerFactory::get_instance();
   }
   if (buffer_manager == nullptr || logger == nullptr) {
     enabled.store(false);
