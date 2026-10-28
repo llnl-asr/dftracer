@@ -846,6 +846,20 @@ set_tests_properties(check_file_exists_${test_name} PROPERTIES DEPENDS ${test_na
 # ########################################################################
 
 # This test verifies the CMake package config works correctly
+# Installed public headers must compile without any private dependency
+# (cpp-logger, brahma, ...), since wheels and installs do not ship those.
+set(test_name test_public_headers_self_contained)
+add_test(NAME ${test_name}
+    COMMAND ${CMAKE_COMMAND}
+    "-DHEADERS=${DFTRACER_CORE_PUBLIC_INCLUDE}"
+    -DSOURCE_ROOT=${PROJECT_SOURCE_DIR}/include
+    -DSTAGE_DIR=${CMAKE_CURRENT_BINARY_DIR}/public_headers
+    -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
+    -DC_COMPILER=${CMAKE_C_COMPILER}
+    "-DC_HEADERS=dftracer/dftracer.h;dftracer/core/common/constants.h;dftracer/core/common/typedef.h;dftracer/core/common/entity.h"
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/check_public_headers.cmake
+)
+
 set(test_name test_package_find_build_tree)
 find_program(SYSTEM_CMAKE cmake PATHS /usr/bin /usr/local/bin NO_DEFAULT_PATH)
 set(_dftracer_package_find_cmake_args

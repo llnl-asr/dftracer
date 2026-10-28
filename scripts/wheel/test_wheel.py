@@ -14,9 +14,13 @@ Checks, in order:
   3. every bundled shared library dlopen()s
   4. every native executable in dftracer/bin starts (catches ELF corruption
      from the auditwheel/patchelf rewrite, which segfaults before main)
-  5. a real trace is produced: dftracer_service + an LD_PRELOAD'd workload,
+  5. every shipped dftracer/ public header, except the bundled
+     dftracer-utils ones under dftracer/utils/, compiles against the wheel's
+     own include/ directory alone (catches a header that includes a
+     dependency whose headers the wheel does not ship, e.g. cpp-logger)
+  6. a real trace is produced: dftracer_service + an LD_PRELOAD'd workload,
      and the resulting .pfw trace contains the I/O events
-  6. the pydftracer Python API layer, if installed, can log through the wheel
+  7. the pydftracer Python API layer, if installed, can log through the wheel
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ import glob
 import gzip
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -213,6 +218,41 @@ def main() -> int:
                 print(f"starts ok  : {exe.name} (exit {proc.returncode})")
         if broken:
             raise AssertionError("executables crash on startup: " + ", ".join(broken))
+
+    @check("public headers compile standalone")
+    def _headers():
+        include_dir = pkg_dir / "include"
+        # dftracer/utils/ holds the bundled dftracer-utils headers, which are
+        # C++20 and owned by that package, so only dftracer's own are checked.
+        utils_dir = include_dir / "dftracer" / "utils"
+        headers = sorted(
+            h
+            for h in (include_dir / "dftracer").rglob("*.h")
+            if utils_dir not in h.parents
+        )
+        if not headers:
+            raise AssertionError("no dftracer/ headers found in the wheel")
+        cxx = shutil.which(os.environ.get("CXX", "c++"))
+        if cxx is None:
+            raise Skip("no C++ compiler on PATH")
+        broken = []
+        with tempfile.TemporaryDirectory() as tmp:
+            for header in headers:
+                rel = header.relative_to(include_dir).as_posix()
+                tu = Path(tmp) / "tu.cpp"
+                tu.write_text(f"#include <{rel}>\nint main() {{ return 0; }}\n")
+                # Only the wheel's include/ on the path: a user compiling
+                # against the installed wheel has nothing else.
+                proc = run(
+                    [cxx, "-std=c++17", "-fsyntax-only", f"-I{include_dir}", str(tu)]
+                )
+                if proc.returncode != 0:
+                    broken.append(rel)
+                    print(f"BROKEN     : {rel}\n{proc.stdout.strip()}")
+                else:
+                    print(f"compiles   : {rel}")
+        if broken:
+            raise AssertionError("headers do not compile: " + ", ".join(broken))
 
     if args.no_trace:
         print("\nskipping runtime tracing checks (--no-trace)", flush=True)

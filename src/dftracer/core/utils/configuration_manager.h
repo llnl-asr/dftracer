@@ -9,6 +9,21 @@
 
 #include <string>
 #include <vector>
+
+// Kept out of the public enumeration.h so installed headers do not
+// depend on cpp-logger, which is a private dependency.
+inline void convert(const std::string& s, cpplogger::LoggerType& type) {
+  if (s == "DEBUG") {
+    type = cpplogger::LoggerType::CPP_LOGGER_DEBUG;
+  } else if (s == "INFO") {
+    type = cpplogger::LoggerType::CPP_LOGGER_INFO;
+  } else if (s == "WARN") {
+    type = cpplogger::LoggerType::CPP_LOGGER_WARN;
+  } else {
+    type = cpplogger::LoggerType::CPP_LOGGER_ERROR;
+  }
+}
+
 namespace dftracer {
 class Metadata;
 struct ExecInfo {
