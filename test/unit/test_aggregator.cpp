@@ -392,6 +392,72 @@ void test_aggregator_multiple_threads() {
   unsetenv("DFTRACER_TRACE_INTERVAL_MS");
 }
 
+// MT_KEY fields are part of the aggregation key: events that differ in one are
+// aggregated apart, and each bucket keeps its MT_KEY fields (not its values)
+// for the aggregated record. MT_VALUE fields are folded into the bucket.
+void test_aggregator_mt_keys() {
+  std::cout << "=== Test: Aggregator MT_KEY Fields Split Buckets ===\n"
+            << std::endl;
+
+  auto aggregator = Singleton<Aggregator>::get_instance();
+  AggregatedDataType stale;
+  aggregator->get_previous_aggregations(stale, true);
+  Aggregator::release_aggregated_data(stale);
+
+  auto log = [&](const char* name, const char* fhash, int64_t size,
+                 TimeResolution ts) {
+    Metadata metadata;
+    if (fhash != nullptr) {
+      metadata.insert_or_assign("fhash", std::string(fhash),
+                                MetadataType::MT_KEY);
+    }
+    metadata.insert_or_assign("size", size, MetadataType::MT_VALUE);
+    AggregatedKey key("posix", name, TraceEventType::TRACE_TYPE_LIBC_IO, ts, 10,
+                      7, &metadata, nullptr, nullptr);
+    aggregator->aggregate(key);
+  };
+  const TimeResolution t = 7000000;
+  log("read", "111", 100, t);
+  log("read", "222", 200, t + 1);
+  log("read", "111", 300, t + 2);
+  log("write", nullptr, 5, t + 3);
+  log("write", nullptr, 6, t + 4);
+
+  AggregatedDataType data;
+  aggregator->get_previous_aggregations(data, true);
+  int read_buckets = 0, write_buckets = 0;
+  for (auto& interval : data) {
+    for (auto& [key, values] : interval.second) {
+      auto* size = dynamic_cast<NumberAggregationValue<int64_t>*>(
+          values->values.at("size"));
+      DFT_CHECK(size != nullptr);
+      if (key.event_name == "write") {
+        ++write_buckets;
+        DFT_CHECK(key.additional_keys == nullptr);
+        DFT_CHECK(size->count == 2 && size->sum == 11);
+        continue;
+      }
+      ++read_buckets;
+      DFT_CHECK(key.additional_keys != nullptr);
+      DFT_CHECK(key.additional_keys->size() == 1);  // fhash only, no size
+      const auto fhash = std::any_cast<std::string>(
+          std::get<1>(key.additional_keys->at("fhash")));
+      if (fhash == "111") {
+        DFT_CHECK(size->count == 2 && size->sum == 400 && size->min == 100 &&
+                  size->max == 300);
+      } else {
+        DFT_CHECK(fhash == "222");
+        DFT_CHECK(size->count == 1 && size->sum == 200);
+      }
+    }
+  }
+  DFT_CHECK(read_buckets == 2);
+  DFT_CHECK(write_buckets == 1);
+  Aggregator::release_aggregated_data(data);
+
+  std::cout << "✓ Aggregator MT_KEY test passed\n" << std::endl;
+}
+
 int main() {
   std::cout << "\n=== Running Aggregator Unit Tests ===\n" << std::endl;
 
@@ -411,6 +477,7 @@ int main() {
     test_aggregator_time_intervals();
     test_aggregator_finalize();
     test_aggregator_multiple_threads();
+    test_aggregator_mt_keys();
 
     std::cout << "\n=== All Aggregator Tests Passed ===\n" << std::endl;
     return 0;

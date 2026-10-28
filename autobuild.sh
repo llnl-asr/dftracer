@@ -2133,7 +2133,8 @@ run_service_smoke_test() {
 
     local smoke_dir="${BUILD_DIR}/smoke_service"
     local hn=$(hostname)
-    local pid_file="${smoke_dir}/dftracer_server_${hn}.pid"
+    # Next to the node trace: <log_file>_<host>.pfw.gz, .pid, .log
+    local pid_file="${smoke_dir}/trace_${hn}.pid"
     mkdir -p "${smoke_dir}"
 
     (
@@ -2147,7 +2148,7 @@ run_service_smoke_test() {
         fi
 
         echo -e "${BLUE}Running dftracer_service smoke test with ${service_bin}${NC}"
-        if ! "${service_bin}" start "${smoke_dir}"; then
+        if ! "${service_bin}" start; then
             echo -e "${RED}Smoke test failed: service start command failed${NC}"
             exit 1
         fi
@@ -2164,7 +2165,7 @@ run_service_smoke_test() {
             exit 1
         fi
 
-        if ! "${service_bin}" stop "${smoke_dir}"; then
+        if ! "${service_bin}" stop; then
             echo -e "${RED}Smoke test failed: service stop command failed${NC}"
             exit 1
         fi

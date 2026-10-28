@@ -11,7 +11,6 @@
 #include <mutex>
 #include <typeinfo>
 
-static constexpr size_t DFTRACER_SERIALIZATION_EVENT_MAX = 16 * 1024;
 namespace dftracer {
 template <>
 std::shared_ptr<JsonLines> Singleton<JsonLines>::instance = nullptr;
@@ -172,6 +171,8 @@ size_t JsonLines::series(char* buffer, int index, ConstEventNameType event_name,
         static_cast<unsigned>(phase), process_id, thread_id,
         this->hostname_hash, all_stream.str().c_str());
   } else {
+    // convert_metadata() frees a non-empty map; an empty one is freed here.
+    delete metadata;
     n = dftracer_logging_real_snprintf()(
         buffer, DFTRACER_SERIALIZATION_EVENT_MAX,
         R"({"name":"%s","cat":"%s","type":%u,"ts":%llu,"ph":%u,"pid":%d,"tid":%lu})",
@@ -274,8 +275,19 @@ size_t JsonLines::metadata(char* buffer, ConstEventNameType name,
 
 size_t JsonLines::aggregated(char* buffer, int index, ProcessID process_id,
                              dftracer::AggregatedDataType& data) {
-  size_t total_written = 0;
+  struct Contiguous : RowSink {
+    explicit Contiguous(char* b) : base(b) {}
+    char* row() override { return base + total; }
+    void wrote(size_t size) override { total += size; }
+    char* base;
+    size_t total = 0;
+  } rows(buffer);
+  aggregated(rows, index, process_id, data);
+  return rows.total;
+}
 
+void JsonLines::aggregated(RowSink& rows, int index, ProcessID process_id,
+                           dftracer::AggregatedDataType& data) {
   DFTRACER_LOG_INFO("Writing %d intervals", data.size());
   for (const auto& interval_entry : data) {
     const TimeResolution& interval = interval_entry.first;
@@ -284,11 +296,15 @@ size_t JsonLines::aggregated(char* buffer, int index, ProcessID process_id,
     for (const auto& event_entry : event_map) {
       AggregatedValues* event_values = event_entry.second;
       auto key = event_entry.first;
-      // The aggregator nulls additional_keys on the key it stores, so the
-      // aggregated values below have nowhere to be written unless we supply a
-      // map here. series() takes ownership and frees it.
-      auto metadata = key.additional_keys;
-      if (metadata == nullptr) metadata = new dftracer::Metadata();
+      // The record carries the bucket's MT_KEY fields (the key owns them;
+      // release_aggregated_data frees them) and its aggregated values.
+      // series() takes ownership of this map and frees it.
+      auto metadata = new dftracer::Metadata();
+      if (key.additional_keys != nullptr) {
+        for (const auto& field : *key.additional_keys) {
+          (*metadata)[field.first] = field.second;
+        }
+      }
       for (const auto& value_entry : event_values->values) {
         const std::string& base_key = value_entry.first;
         BaseAggregatedValue* base_value = value_entry.second;
@@ -300,14 +316,13 @@ size_t JsonLines::aggregated(char* buffer, int index, ProcessID process_id,
         DFTRACER_FOR_EACH_STRING_TYPE(DFTRACER_ANY_GENERAL_AGGREGATE_MACRO,
                                       base_value, { continue; });
       }
-      total_written += series(buffer + total_written, index,
-                              key.event_name.c_str(), key.category.c_str(),
-                              key.type, TracePhaseType::TRACE_PHASE_AGGREGATED,
-                              interval, process_id, key.thread_id, metadata);
+      rows.wrote(series(rows.row(), index, key.event_name.c_str(),
+                        key.category.c_str(), key.type,
+                        TracePhaseType::TRACE_PHASE_AGGREGATED, interval,
+                        process_id, key.thread_id, metadata));
     }
   }
   Aggregator::release_aggregated_data(data);
-  return total_written;
 }
 
 }  // namespace dftracer

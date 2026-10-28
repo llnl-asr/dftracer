@@ -272,11 +272,9 @@ If error "Cannot find file with permissions" occurs, touch that file and make su
     export DFTRACER_LOG_FILE=/path/to/traces/trace
     # export DFTRACER_DATA_DIR=all (optional)
     export DFTRACER_ENABLE=1
-    export DFTRACER_INC_METADATA=1
     # export DFTRACER_INIT=PRELOAD (optional)
     export DFTRACER_BIND_SIGNALS=0
     # export DFTRACER_LOG_LEVEL=ERROR (optional)
-    export DFTRACER_TRACE_COMPRESSION=1 
     # dftracer=$DFTRACER_INSTALLED/lib64/libdftracer_preload.so (optional)
 
 You would only need to use the preload version of DFTracer if you have not annotated the application code you are running.

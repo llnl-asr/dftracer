@@ -148,40 +148,61 @@ jobs:
         run: |
           echo "==> Run IOR with dftracer"
           source venv/bin/activate
-          for mode in trace none profile selective; do
+          PRELOAD=$PWD/${{ steps.dftracer_lib.outputs.lib_path }}
+          SERVICE=$(command -v dftracer_service)
+          RULES=$PWD/dftracer-src/test/yaml/benchmark-rules.yaml
+          mkdir -p traces service
+          export DFTRACER_SERVICE_SHM=/dftracer-bench-$$
+          # trace: every event; profile: aggregated; selective: aggregated by
+          # rules. pc_*: the same, through dftracer_service (one trace file
+          # for the node, written by the service).
+          agg_env() {
+            case $1 in
+              *trace) echo "DFTRACER_ENABLE_AGGREGATION=0" ;;
+              *profile) echo "DFTRACER_ENABLE_AGGREGATION=1 DFTRACER_AGGREGATION_TYPE=FULL" ;;
+              *selective) echo "DFTRACER_ENABLE_AGGREGATION=1 DFTRACER_AGGREGATION_TYPE=SELECTIVE DFTRACER_AGGREGATION_FILE=$RULES" ;;
+            esac
+          }
+          for mode in none trace profile selective pc_trace pc_profile pc_selective; do
             for ts in 4 1024; do
-              if [[ "$mode" == "trace" || "$mode" == "profile" ]]; then
-                export LD_PRELOAD=${{ steps.dftracer_lib.outputs.lib_path }}
-              else
-                unset LD_PRELOAD
+              rm -rf traces/* service/*
+              envs=()
+              if [[ "$mode" != "none" ]]; then
+                envs=(LD_PRELOAD=$PRELOAD DFTRACER_ENABLE=1 DFTRACER_INIT=PRELOAD
+                      DFTRACER_DATA_DIR=all DFTRACER_LOG_FILE=$PWD/traces/$mode
+                      $(agg_env $mode))
               fi
-              if [[ "$mode" == "profile" ]]; then
-                export DFTRACER_ENABLE_AGGREGATION=ON
-              else
-                unset DFTRACER_ENABLE_AGGREGATION
-              fi
-              if [[ "$mode" == "selective" ]]; then
-                export DFTRACER_ENABLE_AGGREGATION=SELECTIVE
-                export DFTRACER_AGGREGATION_FILE=dftracer-src/test/benchmark-rules.yaml
-              else
-                unset DFTRACER_ENABLE_AGGREGATION
-              fi
-              if [[ "$mode" == "selective" ]]; then
-                export DFTRACER_ENABLE_AGGREGATION=1
-                export DFTRACER_AGGREGATION_TYPE=SELECTIVE
-                export DFTRACER_AGGREGATION_FILE=dftracer-src/test/yaml/benchmark-rules.yaml
-              else
-                unset DFTRACER_ENABLE_AGGREGATION
-                unset DFTRACER_AGGREGATION_TYPE
-                unset DFTRACER_AGGREGATION_FILE
+              if [[ "$mode" == pc_* ]]; then
+                # Service and application share one log_file.
+                env DFTRACER_ENABLE=1 DFTRACER_ENABLE_PC_MODE=1 $(agg_env $mode) \
+                  DFTRACER_LOG_FILE=$PWD/traces/$mode "$SERVICE" start
+                for _ in $(seq 100); do
+                  [ -s "/dev/shm$DFTRACER_SERVICE_SHM" ] && break
+                  sleep 0.1
+                done
+                envs+=(DFTRACER_ENABLE_PC_MODE=1)
               fi
               cmd=(./ior/src/ior -w -r -i 5 -t ${ts}k -b $((ts * 16))k -o testfile.dftracer -O summaryFormat=CSV -O summaryFile=case-${mode}-${ts}.csv)
-              echo "${cmd[@]}"
-              "${cmd[@]}"
-              unset LD_PRELOAD
-              unset DFTRACER_ENABLE_AGGREGATION
-              unset DFTRACER_AGGREGATION_TYPE
-              unset DFTRACER_AGGREGATION_FILE
+              echo "${envs[*]} ${cmd[*]}"
+              env "${envs[@]}" "${cmd[@]}"
+              if [[ "$mode" == pc_* ]]; then
+                DFTRACER_ENABLE=1 DFTRACER_LOG_FILE=$PWD/traces/$mode "$SERVICE" stop
+                for _ in $(seq 600); do
+                  [ -e "/dev/shm$DFTRACER_SERVICE_SHM" ] || break
+                  sleep 0.1
+                done
+                grep -h "drained" traces/${mode}_*.log || true
+              fi
+              # A traced mode that wrote nothing measured nothing.
+              if [[ "$mode" != "none" ]]; then
+                events=$(cat traces/${mode}[-_]*.pfw.gz 2>/dev/null | zcat 2>/dev/null | grep -c '"cat":"POSIX"' || true)
+                echo "==> $mode ts=${ts}k: $events POSIX events traced"
+                if [ "${events:-0}" -eq 0 ]; then
+                  echo "mode $mode traced nothing"
+                  cat traces/${mode}_*.log 2>/dev/null || true
+                  exit 1
+                fi
+              fi
               awk 'BEGIN{FS=OFS=","} NR==1{$(NF+1)="mode"} NR>1{$(NF+1)="'$mode'"} 1' case-${mode}-${ts}.csv > tmp && mv tmp case-${mode}-${ts}.csv
             done
           done
@@ -190,9 +211,7 @@ jobs:
           for f in case-*.csv; do
             tail -n +2 "$f" >> cases.csv
           done
-          echo "==> Show contents of both CSVs"
           echo "==> cases.csv:"
-          # touch cases.csv
           cat cases.csv
       - name: Parse and compare results
         if: steps.pr_info.outputs.skip != 'true'
@@ -202,8 +221,42 @@ jobs:
           pip install pandas numpy          
           python dftracer-src/test/analysis_ior.py > overhead.csv
           echo "==> All values in overhead.csv:"
-          # touch overhead.csv
           cat overhead.csv
+          {
+            echo "### IOR bandwidth overhead: in-process vs producer/consumer mode"
+            echo
+            echo '```'
+            column -t -s, overhead.csv
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Per-call overhead, in-process vs producer/consumer mode
+        if: steps.pr_info.outputs.skip != 'true'
+        run: |
+          echo "==> C API overhead: none, in-process, producer/consumer (dftracer_service)"
+          source venv/bin/activate
+          # The pip install spreads the files out; point the runner at them.
+          export DFTRACER_INCLUDE_DIR=$(realpath "$(dirname "$(dirname "$(find venv -path '*include/dftracer/dftracer.h' | head -n 1)")")")
+          export DFTRACER_LIB_DIR=$(realpath "$(dirname "$(find venv -name 'libdftracer_core.so*' | head -n 1)")")
+          export DFTRACER_SERVICE=$(realpath "$(find venv -name dftracer_service -type f -perm -u+x | head -n 1)")
+          [ -n "$DFTRACER_SERVICE" ] || export DFTRACER_SERVICE=$(command -v dftracer_service)
+          echo "include=$DFTRACER_INCLUDE_DIR lib=$DFTRACER_LIB_DIR service=$DFTRACER_SERVICE"
+          THREADS="1 2 4" OPS=200000 REPS=5 META="0 1" \
+            dftracer-src/test/perf/c_overhead/run_c_overhead.sh \
+            "$PWD/venv" "$DFTRACER_LIB_DIR" "$PWD/c_overhead"
+          cp c_overhead/c_overhead.csv c_overhead.csv
+          cp c_overhead/summary.csv c_overhead_summary.csv
+          echo "==> c_overhead_summary.csv:"
+          column -t -s, c_overhead_summary.csv
+          {
+            echo "### Per-call overhead: in-process vs producer/consumer mode"
+            echo
+            echo "Median ns per call over 5 runs (runner: $(nproc) cores)."
+            echo "vs_orig_*: producer/consumer added time relative to in-process."
+            echo
+            echo '```'
+            column -t -s, c_overhead_summary.csv
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload benchmark results
         if: steps.pr_info.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
@@ -212,6 +265,8 @@ jobs:
           path: |
             cases.csv
             overhead.csv
+            c_overhead.csv
+            c_overhead_summary.csv
 
   store-results:
     needs: benchmark
@@ -241,13 +296,14 @@ jobs:
           mkdir -p repo/results
           cp cases.csv repo/results/
           cp overhead.csv repo/results/
+          cp c_overhead.csv c_overhead_summary.csv repo/results/
 
       - name: Commit and push results      
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd repo
-          git add results/cases.csv results/overhead.csv
+          git add results/cases.csv results/overhead.csv results/c_overhead.csv results/c_overhead_summary.csv
           git commit -m "Add benchmark results"
           git remote add ci-url https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}
           if git remote get-url ci-url; then

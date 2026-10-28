@@ -47,7 +47,6 @@ void test_default_configuration() {
             AggregationType::AGGREGATION_TYPE_SELECTIVE);
   DFT_CHECK(config->aggregation_inclusion_rules.size() == 1);
   DFT_CHECK(config->aggregation_inclusion_rules[0] == "dur < 100");
-  DFT_CHECK(config->compression == true);
   DFT_CHECK(config->metadata == true);
   DFT_CHECK(config->trace_interval_ms == 10);
   DFT_CHECK(config->log_file == "./trace");
@@ -106,12 +105,19 @@ void test_environment_variables() {
   unsetenv("DFTRACER_ENABLE_AGGREGATION");
   unsetenv("DFTRACER_ENABLE");
 
-  // Test compression (requires DFTRACER_ENABLE=1)
+  // Traces are always compressed and always carry metadata: turning either
+  // off is ignored (requires DFTRACER_ENABLE=1 to be read at all).
   setenv("DFTRACER_ENABLE", "1", 1);
   setenv("DFTRACER_TRACE_COMPRESSION", "0", 1);
+  setenv("DFTRACER_INC_METADATA", "0", 1);
   auto config4 = std::make_shared<ConfigurationManager>();
-  DFT_CHECK(config4->compression == false);
+  DFT_CHECK(config4->make_log_file("h", "app").size() > 7 &&
+            config4->make_log_file("h", "app")
+                    .substr(config4->make_log_file("h", "app").size() - 7) ==
+                ".pfw.gz");
+  DFT_CHECK(config4->metadata == true);
   unsetenv("DFTRACER_TRACE_COMPRESSION");
+  unsetenv("DFTRACER_INC_METADATA");
   unsetenv("DFTRACER_ENABLE");
 
   // Test metadata (requires DFTRACER_ENABLE=1)

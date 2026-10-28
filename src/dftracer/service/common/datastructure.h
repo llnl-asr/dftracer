@@ -1,6 +1,22 @@
 #ifndef DFTRACER_SERVER_COMMON_DATASTRUCTURE
 #define DFTRACER_SERVER_COMMON_DATASTRUCTURE
+
+#include <dftracer/core/common/constants.h>
+#include <dftracer/core/common/datastructure.h>
+#include <dftracer/core/common/enumeration.h>
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+
 namespace dftracer {
+class LocalBufferManager;
+class JsonLines;
+
 struct CpuMetrics {
   unsigned long long user = 0;
   unsigned long long nice = 0;
@@ -87,6 +103,122 @@ struct NetworkMetrics {
   unsigned long long tx_errors = 0;   // Transmit errors
   unsigned long long tx_dropped = 0;  // Packets dropped on TX
   unsigned long long collisions = 0;  // Collision count
+};
+
+/*
+ * Producer/consumer mode: the service's drain of the shared-memory ring
+ * (service/pipeline).
+ */
+
+/** What one drain thread has drained. Updated by that thread only. */
+struct alignas(DFT_SHM_CACHE_LINE) DrainStats {
+  uint64_t blocks = 0;
+  uint64_t bytes = 0;
+  uint64_t records[SHM_KIND_GOODBYE + 1] = {};
+  uint64_t malformed = 0;
+  uint64_t taken = 0;  // blocks taken over from their producers
+  uint64_t uncommitted =
+      0;                    // reservations their dead producers never committed
+  uint64_t chunks = 0;      // chunks written to the node file
+  uint64_t json_bytes = 0;  // before compression
+  uint64_t file_bytes = 0;  // as written
+  uint64_t cpu_ns = 0;      // thread CPU time, sampled when the thread exits
+
+  void add(const DrainStats& other) {
+    blocks += other.blocks;
+    bytes += other.bytes;
+    for (size_t i = 0; i < sizeof(records) / sizeof(records[0]); ++i)
+      records[i] += other.records[i];
+    malformed += other.malformed;
+    taken += other.taken;
+    uncommitted += other.uncommitted;
+    chunks += other.chunks;
+    json_bytes += other.json_bytes;
+    file_bytes += other.file_bytes;
+    cpu_ns += other.cpu_ns;
+  }
+};
+
+/** One drain thread's work so far, read by the controller while it runs. */
+struct alignas(DFT_SHM_CACHE_LINE) DrainLoad {
+  std::atomic<uint64_t> blocks{0};
+  std::atomic<uint64_t> busy_ns{0};
+};
+
+/** How the drain thread count moved, kept by the controller. */
+struct DrainScaling {
+  uint64_t ticks = 0;
+  uint64_t ups = 0;
+  uint64_t downs = 0;
+  uint32_t peak = 0;
+  double thread_ns = 0;  // integral of active threads over time
+  uint64_t span_ns = 0;  // time covered by thread_ns
+};
+
+/** One controller sample for ConsumerScaler. */
+struct ScalerSample {
+  uint64_t now_ns;   // monotonic time of the sample
+  uint64_t head;     // ring head: blocks ever claimed by producers
+  uint64_t ready;    // complete blocks not yet claimed by a drain thread
+  uint64_t drained;  // blocks ever drained, all threads
+  uint64_t busy_ns;  // time ever spent draining them, all threads
+};
+
+/** How RingSink drains the ring and where the trace goes. */
+struct DrainOptions {
+  uint32_t min_threads = DFT_SHM_DEFAULT_CONSUMER_MIN_THREADS;
+  uint32_t max_threads = DFT_SHM_DEFAULT_CONSUMER_THREADS;
+  uint32_t tick_ms = DFT_SHM_DEFAULT_CONSUMER_TICK_MS;
+  // A producer's unpublished block is taken over, and a drain thread's chunk
+  // written, once this old.
+  uint64_t flush_ns = DFT_SHM_DEFAULT_FLUSH_MS * 1000000ULL;
+  // The node's trace file. Empty: decode and count only (benchmarks).
+  std::string node_file;
+  std::string hostname_hash;
+  size_t chunk_size = DFT_SHM_DEFAULT_CHUNK_SIZE;
+  int compression_level = DFT_SHM_DEFAULT_COMPRESSION_LEVEL;
+  // Compressed bytes after which the node trace rolls over (0: never).
+  uint64_t rollover_bytes = DFT_SHM_DEFAULT_ROLLOVER_MB << 20;
+  // The service's own spill file, appended at stop with its clients'.
+  std::string own_spill_file;
+};
+
+/** A drain thread's reusable decode state. */
+struct DrainScratch {
+  ipc::DecodedEvent event;
+  ipc::DecodedMetadata metadata;
+  ipc::DecodedRecord record;
+  ipc::DecodedHello hello;
+  // NUL-terminated copies of the METADATA and RECORD strings the serializer
+  // takes as char*. DATA and COUNTER records need none (log_packed_event).
+  std::string name, value, record_name;
+};
+
+/**
+ * One producer thread of a client process. Its LocalBufferManager holds that
+ * thread's aggregation state; aggregation keys carry the thread id, so lanes
+ * aggregate exactly as the process would have. A drain thread holds `mtx`
+ * while it replays one of the thread's blocks.
+ */
+struct ClientLane {
+  std::mutex mtx;
+  std::shared_ptr<LocalBufferManager> buffer;
+  std::shared_ptr<JsonLines> serializer;  // the one inside `buffer`
+  uint64_t synced = 0;  // ClientProcess::version last applied to `buffer`
+};
+
+/** One client process. Fields below `mtx` are guarded by it. */
+struct ClientProcess {
+  uint32_t pid = 0;
+  std::atomic<uint64_t> last_seen_ns{0};
+  std::mutex mtx;
+  std::string app_name;
+  int rank = -1;
+  uint64_t version = 0;  // bumped by SET_APP_NAME and SET_RANK
+  bool said_goodbye = false;
+  int goodbye_index = 0;
+  uint64_t goodbye_ns = 0;
+  std::unordered_map<uint32_t, std::shared_ptr<ClientLane>> lanes;
 };
 }  // namespace dftracer
 #endif  // DFTRACER_SERVER_COMMON_DATASTRUCTURE

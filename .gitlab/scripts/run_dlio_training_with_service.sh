@@ -96,8 +96,6 @@ echo "[runner] service submit prefix: $SERVICE_SUBMIT_PREFIX"
 echo "[runner] service run prefix: $SERVICE_RUN_PREFIX"
 echo "[runner] train run prefix: $TRAIN_RUN_PREFIX"
 
-SERVICE_STATE_DIR="$TRACE_DIR/service_state"
-mkdir -p "$SERVICE_STATE_DIR"
 SERVICE_LOG_PREFIX="${DFTRACER_SERVICE_LOG_PREFIX:-${TRACE_DIR}/trace}"
 
 service_running=0
@@ -108,7 +106,9 @@ run_service_action() {
     local job_name="$3"
 
     local payload
-    payload=$(printf 'set -euo pipefail; node_tag=${FLUX_TASK_RANK:-0}; node_name=$(hostname -s); node_dir=%q/${node_name}_${node_tag}; mkdir -p "${node_dir}"; export DFTRACER_ENABLE=${DFTRACER_ENABLE:-1}; export DFTRACER_LOG_FILE=%q; export DFTRACER_TRACE_INTERVAL_MS=${DFTRACER_TRACE_INTERVAL_MS:-1000}; export DFTRACER_LIBUV_THREADS=${DFTRACER_LIBUV_THREADS:-1}; dftracer_service %s "${node_dir}"' "$SERVICE_STATE_DIR" "$SERVICE_LOG_PREFIX" "$action")
+    # The service keeps its .pid and .log next to <log_file>_<host>.pfw.gz,
+    # one set per node.
+    payload=$(printf 'set -euo pipefail; export DFTRACER_ENABLE=${DFTRACER_ENABLE:-1}; export DFTRACER_LOG_FILE=%q; export DFTRACER_TRACE_INTERVAL_MS=${DFTRACER_TRACE_INTERVAL_MS:-1000}; export DFTRACER_LIBUV_THREADS=${DFTRACER_LIBUV_THREADS:-1}; dftracer_service %s' "$SERVICE_LOG_PREFIX" "$action")
 
     local cmd="$submit_prefix"
     if [[ -n "$job_name" ]]; then

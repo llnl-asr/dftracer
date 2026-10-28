@@ -52,8 +52,7 @@ Design rules
      in every process and on every node.
    * Each entity and each entity type is recorded **once per process**; later
      declarations cost a set lookup. The first declaration's store and uri win.
-   * Relations are the event's content and are written even when
-     ``DFTRACER_INC_METADATA`` is off (other optional event args still need it).
+   * Relations are the event's content and are always written.
 
 ----------------------------------------
 Types and enums

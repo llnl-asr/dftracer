@@ -258,4 +258,84 @@ inline double time_metric_units_per_second(const TimeMetricType& type) {
 #define METADATA_NAME_ENTITY_TYPE "ET"
 #define METADATA_NAME_ENTITY_RELATION "ER"
 #define CUSTOM_METADATA "CM"
+// Shared-memory event ring between traced processes and dftracer_service
+// (core/ipc/shm_layout.h). These values live in the shared segment, so they
+// are ABI: append-only, never renumber or reuse a value, and bump
+// DFT_SHM_ABI_VERSION when the meaning of one changes.
+enum ShmSegmentState : uint32_t {
+  SHM_SEGMENT_INITIALIZING = 0,
+  SHM_SEGMENT_ACCEPTING = 1,
+  SHM_SEGMENT_DRAINING = 2,
+  SHM_SEGMENT_CLOSED = 3
+};
+// Low byte of a record header word. The values are deliberately not 0/1/2: the
+// consumer only ever inspects header words at record boundaries of the current
+// lap, but a boundary whose header has not been written yet still holds bytes
+// from an earlier lap -- or, in the first lap, zeros. Matching such leftovers
+// requires the exact epoch of the current lap (never 0, see RingView::epoch)
+// *and* one of these byte values *and* a plausible length, so a stale word is
+// never mistaken for a record.
+enum ShmRecordState : uint8_t {
+  SHM_RECORD_RESERVED = 0x5E,
+  SHM_RECORD_COMMITTED = 0xC5,
+  SHM_RECORD_PAD = 0xA7
+};
+enum ShmRecordKind : uint16_t {
+  SHM_KIND_PAD = 0,
+  SHM_KIND_HELLO = 1,
+  SHM_KIND_SET_APP_NAME = 2,
+  SHM_KIND_SET_RANK = 3,
+  SHM_KIND_DATA = 4,
+  SHM_KIND_COUNTER = 5,
+  SHM_KIND_METADATA = 6,
+  SHM_KIND_RECORD = 7,
+  SHM_KIND_GOODBYE = 8,
+  // Opaque payload, used by tests and benchmarks of the ring itself.
+  SHM_KIND_RAW = 0x7fff
+};
+// Type tag of one metadata value in an encoded event (core/ipc/event_codec.h).
+// Part of the ring ABI: append only, never renumber.
+enum ShmValueTag : uint8_t {
+  SHM_VALUE_INT = 1,      // int64_t
+  SHM_VALUE_UINT = 2,     // uint64_t
+  SHM_VALUE_DOUBLE = 3,   // IEEE-754 double
+  SHM_VALUE_STRING = 4,   // uint32_t length + bytes
+  SHM_VALUE_RAW_JSON = 5  // uint32_t length + bytes, embedded unquoted
+};
+// Who may write a claimed block (BlockControl::owner, low byte; the epoch of
+// the lap is above it). The producer holds a block IDLE between records and
+// WRITING while a record is reserved but not committed. The service may take a
+// block over (TAKEN) only from IDLE -- or from WRITING once the producer is
+// dead -- so it never reads a record that is still being written. A producer
+// that finds its block TAKEN drops it and claims another.
+enum ShmBlockOwner : uint8_t {
+  SHM_OWNER_NONE = 0,
+  SHM_OWNER_IDLE = 1,
+  SHM_OWNER_WRITING = 2,
+  SHM_OWNER_PUBLISHED = 3,
+  SHM_OWNER_TAKEN = 4
+};
+// EventHead::flags: how the producing process serializes its events, which
+// the service then does on its behalf.
+enum ShmEventFlags : uint8_t {
+  SHM_EVENT_INC_METADATA = 1,  // DFTRACER_INC_METADATA: keep optional args
+  // The event was logged with a Metadata, possibly empty; without one its
+  // args carry no hhash either.
+  SHM_EVENT_HAS_METADATA = 2
+};
+// Result of reserving room for a record in the ring (RingProducer).
+enum class ShmReserveResult {
+  OK = 0,
+  FULL = 1,      // no free block could be claimed in time
+  TOO_LARGE = 2  // the record can never fit in one block
+};
+// Who may touch a producer thread's slot (ServiceBufferManager): its thread
+// while logging (BUSY), a flush timer while it is not (IDLE), nobody once the
+// thread has exited or the slot was inherited across fork() (DEAD).
+enum ShmSlotState : uint32_t {
+  SHM_SLOT_IDLE = 0,
+  SHM_SLOT_BUSY = 1,
+  SHM_SLOT_DEAD = 2
+};
+
 #endif  // DFTRACER_ENUMERATION_H

@@ -183,9 +183,11 @@ matching interception:
 Dependencies
 *******************************
 
-The C/C++ dependencies (cpp-logger, GOTCHA, brahma, yaml-cpp, libuv) are cloned
-and built automatically as part of the build, so a source install needs access to
-their GitHub repositories.
+The C/C++ dependencies (cpp-logger, GOTCHA, brahma, yaml-cpp, libuv, libdeflate)
+are cloned and built automatically as part of the build, so a source install
+needs access to their GitHub repositories. An installed libdeflate (1.9 or newer,
+e.g. ``libdeflate-devel``) is used instead when found; traces are written as gzip
+members with it, so zlib is not needed.
 
 Verifying
 *******************************

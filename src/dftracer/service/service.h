@@ -9,6 +9,7 @@
 #include <dftracer/core/df_logger.h>
 #include <dftracer/core/utils/configuration_manager.h>
 #include <dftracer/service/common/datastructure.h>
+#include <dftracer/service/pipeline/ring_sink.h>
 #include <dftracer/service/telemetry/telemetry_factory.h>
 #include <unistd.h>
 
@@ -46,12 +47,9 @@ class DFTracerService {
       }
       hostname[sizeof(hostname) - 1] = '\0';
       conf->log_file += std::string("_") + hostname;
-      // Add file extension based on compression setting
-      if (conf->compression) {
-        conf->log_file += ".pfw.gz";
-      } else {
-        conf->log_file += ".pfw";
-      }
+      // Always gzip members (one per chunk), so readers can split the
+      // file and decompress it in parallel.
+      conf->log_file += ".pfw.gz";
       // Delete the file if it exists
       if (FILE* f = fopen(conf->log_file.c_str(), "r")) {
         fclose(f);
@@ -60,10 +58,43 @@ class DFTracerService {
                                    conf->log_file);
         }
       }
+      // Producer/consumer mode: the node's ring, drained into the node trace
+      // file (log_file), which then also carries the service's own telemetry:
+      // the service logs into its ring like any other client. Otherwise, or
+      // if the ring cannot be created, the service writes its telemetry
+      // itself as before.
+      if (conf->pc_mode && !ring_sink.create(conf->service_shm, conf->pc_blocks,
+                                             conf->pc_block_size)) {
+        std::fprintf(stderr,
+                     "[DFTRACER] producer/consumer mode disabled: the ring "
+                     "could not be created\n");
+        conf->pc_mode = false;
+      }
+      if (!conf->pc_mode) dftracer::BufferManagerFactory::force_local();
       logger = DFT_LOGGER_INIT();
-      buffer_manager =
-          dftracer::Singleton<dftracer::BufferManager>::get_instance();
       auto hostname_hash = logger->get_hash(hostname);
+      if (conf->pc_mode) {
+        DrainOptions options;
+        options.min_threads = conf->pc_consumer_min_threads;
+        options.max_threads = conf->pc_consumer_threads;
+        options.tick_ms = conf->pc_consumer_tick_ms;
+        options.flush_ns =
+            static_cast<uint64_t>(conf->pc_flush_ms) * 1000000ULL;
+        options.node_file = conf->log_file;
+        options.hostname_hash = hostname_hash;
+        options.compression_level = conf->pc_compression_level;
+        options.rollover_bytes =
+            static_cast<uint64_t>(conf->pc_rollover_mb * (1 << 20));
+        // The service logs its telemetry through its own ring, so it can
+        // spill too; that file is appended with its clients'.
+        options.own_spill_file =
+            ServiceBufferManager::spill_file_for(conf->log_file);
+        if (!ring_sink.start(options)) {
+          throw std::runtime_error("Cannot open the node trace file " +
+                                   conf->log_file);
+        }
+      }
+      buffer_manager = dftracer::BufferManagerFactory::get_instance();
       this->buffer_manager->initialize(conf->log_file.c_str(), hostname_hash);
 
       // Initialize telemetry collectors
@@ -156,6 +187,7 @@ class DFTracerService {
   std::vector<std::unique_ptr<TelemetryCollector>>
       telemetry_collectors;  // Telemetry collectors for system metrics
   std::vector<std::unique_ptr<CollectorTask>> collector_tasks;
+  RingSink ring_sink;  // producer/consumer mode only
 
   void queue_capture(CollectorTask& task) {
     if (!running.load(std::memory_order_relaxed)) {
@@ -202,17 +234,8 @@ class DFTracerService {
     }
 
     this->buffer_manager->finalize(index.load(std::memory_order_relaxed), true);
-    if (auto conf =
-            dftracer::Singleton<dftracer::ConfigurationManager>::get_instance();
-        conf && !conf->compression) {
-      std::string cmd = "gzip -f " + conf->log_file;
-      int ret = system(cmd.c_str());
-      if (ret != 0) {
-        fprintf(stderr, "Warning: gzip compression failed for %s\n",
-                conf->log_file.c_str());
-      }
-    }
-
+    // After the service's own GOODBYE: drains it with everything else.
+    ring_sink.stop();
     collector_tasks.clear();
     finalized = true;
   }

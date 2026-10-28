@@ -182,7 +182,8 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
   // DFTracerCore::finalize() has already destroyed the DFTLogger and its
   // BufferManager. The late callback then walked into freed memory and died:
   //
-  //   #0 dftracer::BufferManager::log_data_event()   buffer/buffer.cpp:100
+  //   #0 dftracer::BufferManager::log_data_event()
+  //   buffer/local_buffer_manager.cpp:100
   //        this->config->aggregation_enable    <-- config on a freed manager
   //   #1 DFTLogger::log()                      core/df_logger.h
   //   #2 dftracer::HIPFunction::tool_tracing_callback()

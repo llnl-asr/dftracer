@@ -172,6 +172,11 @@ def has_unsuppressed_valgrind_failure(error_summary: str, leak_line: str) -> boo
     return False
 
 
+def is_python_token(token: str) -> bool:
+    name = Path(token).name
+    return name in {"python", "python3"} or name.startswith("python3.") or name.startswith("python.")
+
+
 def should_skip_valgrind(test_obj: dict) -> tuple[bool, str, str]:
     name = test_obj.get("name", "")
     cmd = test_obj.get("command") or []
@@ -186,7 +191,10 @@ def should_skip_valgrind(test_obj: dict) -> tuple[bool, str, str]:
     if name == "unit_test_service":
         return True, "service startup test (known external libnl noise)", "other"
 
-    if exe_name.startswith("python"):
+    # Same rule as valgrind_ctest_python_runner.is_python_ctest: a test run
+    # through a wrapper (mpiexec, the pc_ twin script) that ends in Python is
+    # a Python test too, so the two runners split the tests between them.
+    if any(is_python_token(token) or token.endswith(".py") for token in cmd):
         return True, "python interpreter test (handled by valgrind-python-ctest runner)", "python"
 
     if exe_name in {"bash", "sh"}:

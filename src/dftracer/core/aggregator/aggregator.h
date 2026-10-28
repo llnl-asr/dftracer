@@ -28,6 +28,8 @@ class Aggregator {
         delete val_pair.second;
       }
       delete pair.second;
+      // A stored key owns its MT_KEY fields (see copy_mt_keys).
+      delete pair.first.additional_keys;
     }
   }
 
@@ -41,50 +43,55 @@ class Aggregator {
   Rules inclusion_rules;
   Rules exclusion_rules;
   bool always_aggregate;
+  // The MT_KEY fields of `metadata`, which a stored key owns: the event's own
+  // metadata is freed once it has been aggregated. nullptr when there are
+  // none. The serializer writes them with the bucket's aggregated values and
+  // frees them (JsonLines::aggregated).
+  static Metadata* copy_mt_keys(const Metadata* metadata) {
+    if (metadata == nullptr) return nullptr;
+    Metadata* keys = nullptr;
+    for (const auto& pair : *metadata) {
+      if (std::get<0>(pair.second) != MetadataType::MT_KEY) continue;
+      if (keys == nullptr) keys = new Metadata();
+      (*keys)[pair.first] = pair.second;
+    }
+    return keys;
+  }
+
+  // Folds one value into the bucket of `aggregated_key`: its category, name,
+  // type, interval and thread, and the values of its MT_KEY fields, so events
+  // that differ in an MT_KEY field are aggregated apart.
+  inline void insert_value(TimeResolution& time_interval,
+                           AggregatedKey& aggregated_key,
+                           const std::string& key, BaseAggregatedValue* value) {
+    auto& events = aggregated_data_[time_interval];
+    auto iter = events.find(aggregated_key);
+    if (iter != events.end()) {
+      iter->second->update(key, typeid(TimeResolution), value);
+      return;
+    }
+    AggregatedKey stored(aggregated_key);
+    stored.additional_keys = copy_mt_keys(aggregated_key.additional_keys);
+    auto values = new AggregatedValues();
+    values->update(key, typeid(TimeResolution), value);
+    events.emplace(stored, values);
+    DFTRACER_LOG_INFO("Events in %llu are %d", time_interval, events.size());
+  }
+
   template <typename T>
   inline void insert_number_value(TimeResolution& time_interval,
                                   AggregatedKey& aggregated_key,
                                   const std::string& key, T value) {
-    // Stored keys always have additional_keys nulled out (see below), so the
-    // lookup key must match that shape too. Looking up with the live
-    // aggregated_key (non-null additional_keys) would never match what was
-    // stored, causing every metric after the first for the same event to
-    // insert a colliding "equal" key and silently leak the prior entry via
-    // insert_or_assign.
-    AggregatedKey lookup_key(aggregated_key);
-    lookup_key.additional_keys = nullptr;
-    auto iter = aggregated_data_[time_interval].find(lookup_key);
-    auto num_value = new NumberAggregationValue<T>(value);
-    if (iter != aggregated_data_[time_interval].end()) {
-      iter->second->update(key, typeid(TimeResolution), num_value);
-    } else {
-      auto value = new AggregatedValues();
-      value->update(key, typeid(TimeResolution), num_value);
-      aggregated_data_[time_interval].insert_or_assign(lookup_key, value);
-      DFTRACER_LOG_INFO("Events in %llu are %d", time_interval,
-                        aggregated_data_[time_interval].size());
-    }
+    insert_value(time_interval, aggregated_key, key,
+                 new NumberAggregationValue<T>(value));
   }
 
   template <typename T>
   inline void insert_general_value(TimeResolution& time_interval,
                                    AggregatedKey& aggregated_key,
                                    const std::string& key, T value) {
-    // See insert_number_value: lookup must use the same nulled-out shape
-    // that gets stored, or repeated metrics for one event leak.
-    AggregatedKey lookup_key(aggregated_key);
-    lookup_key.additional_keys = nullptr;
-    auto iter = aggregated_data_[time_interval].find(lookup_key);
-    auto num_value = new AggregatedValue<T>(value);
-    if (iter != aggregated_data_[time_interval].end()) {
-      iter->second->update(key, typeid(TimeResolution), num_value);
-    } else {
-      auto value = new AggregatedValues();
-      value->update(key, typeid(TimeResolution), num_value);
-      aggregated_data_[time_interval].insert_or_assign(lookup_key, value);
-      DFTRACER_LOG_INFO("Events in %llu are %d", time_interval,
-                        aggregated_data_[time_interval].size());
-    }
+    insert_value(time_interval, aggregated_key, key,
+                 new AggregatedValue<T>(value));
   }
 
  public:

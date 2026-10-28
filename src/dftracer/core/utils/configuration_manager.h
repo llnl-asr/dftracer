@@ -42,6 +42,8 @@ class ConfigurationManager {
   ProfileInitType init_type;
   std::string log_file;
   std::string data_dirs;
+  // Internal: always on. DFTRACER_INC_METADATA and features.metadata are
+  // ignored (with a warning when they ask to turn it off).
   bool metadata;
   bool core_affinity;
   int gotcha_priority;
@@ -50,7 +52,6 @@ class ConfigurationManager {
   bool io;
   bool posix;
   bool stdio;
-  bool compression;
   bool trace_all_files;
   // Size of the traced-descriptor table, from the open-file soft limit at
   // startup. A descriptor above it is untraced.
@@ -73,6 +74,29 @@ class ConfigurationManager {
   bool variorum_power;
   bool aggregation_enable;
   AggregationType aggregation_type;
+  // Producer/consumer mode: events are encoded and pushed into the shared
+  // ring of the node's dftracer_service instead of being written by this
+  // process (docs/design_pc_service.rst).
+  bool pc_mode;
+  // Name of the ring segment; both the service and traced processes read it.
+  std::string service_shm;
+  // Ring geometry, used by the service when it creates the segment.
+  uint32_t pc_block_size;
+  uint32_t pc_blocks;
+  // How long a producer waits on a full ring before dropping an event.
+  uint64_t pc_full_wait_us;
+  // Service threads draining the ring: at most pc_consumer_threads, at least
+  // pc_consumer_min_threads, resized every pc_consumer_tick_ms.
+  uint32_t pc_consumer_threads;
+  uint32_t pc_consumer_min_threads;
+  uint32_t pc_consumer_tick_ms;
+  // Age at which the service takes over a producer's unpublished block and
+  // writes out a partial chunk; gzip level of the node trace.
+  uint32_t pc_flush_ms;
+  int pc_compression_level;
+  // Compressed MiB after which the node trace rolls over to a new file
+  // (fractions allowed; 0: never).
+  double pc_rollover_mb;
   std::vector<std::string> aggregation_inclusion_rules;
   std::vector<std::string> aggregation_exclusion_rules;
   ConfigurationManager();

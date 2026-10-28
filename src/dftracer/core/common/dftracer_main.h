@@ -114,6 +114,11 @@ class DFTracerCore {
 
   bool finalize();
 
+  /** Write out what is buffered and keep tracing (before exec). */
+  void flush() {
+    if (is_initialized && logger != nullptr) logger->flush();
+  }
+
   void initialize() {}
   ~DFTracerCore() { DFTRACER_LOG_DEBUG("Destructing DFTracerCore"); }
 };

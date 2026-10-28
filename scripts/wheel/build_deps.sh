@@ -69,16 +69,19 @@ if [ -f "$STAMP" ]; then
   find "$PREFIX" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 fi
 
-if [ ! -f /usr/include/zlib.h ]; then
-  log "installing zlib-devel"
+# Boost headers (Boost.Interprocess, for the service's shared-memory event
+# ring). Headers only, so the distribution package is enough; manylinux_2_28's
+# boost-devel is 1.66, the minimum dftracer accepts.
+if [ ! -f /usr/include/boost/interprocess/shared_memory_object.hpp ]; then
+  log "installing boost-devel"
   if command -v dnf >/dev/null 2>&1; then
-    dnf install -y zlib-devel
+    dnf install -y boost-devel
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y zlib-devel
+    yum install -y boost-devel
   elif command -v apt-get >/dev/null 2>&1; then
-    apt-get update && apt-get install -y zlib1g-dev
+    apt-get update && apt-get install -y libboost-dev
   else
-    echo "[deps] no package manager found and zlib.h is missing" >&2
+    echo "[deps] no package manager found and Boost headers are missing" >&2
     exit 1
   fi
 fi
@@ -129,6 +132,9 @@ dep_args() {
       ;;
     libuv)
       echo "-DLIBUV_BUILD_TESTS=OFF;-DLIBUV_BUILD_BENCH=OFF"
+      ;;
+    libdeflate)
+      echo "-DLIBDEFLATE_BUILD_STATIC_LIB=OFF;-DLIBDEFLATE_BUILD_GZIP=OFF;-DLIBDEFLATE_BUILD_TESTS=OFF"
       ;;
     brahma)
       # brahma's fetch_package() tries find_package() first, and gotcha and
@@ -192,7 +198,7 @@ done <"$MANIFEST"
 # script runs. Link configs installed elsewhere into that location.
 mkdir -p "$PREFIX/lib64/cmake"
 args="-DCMAKE_PREFIX_PATH=$PREFIX -DDFTRACER_INSTALL_DEPENDENCIES=OFF"
-for pkg in cpp-logger brahma gotcha yaml-cpp libuv; do
+for pkg in cpp-logger brahma gotcha yaml-cpp libuv libdeflate; do
   want="$PREFIX/lib64/cmake/$pkg"
   if [ ! -d "$want" ]; then
     dir="$(find "$PREFIX" -mindepth 2 -maxdepth 5 -type d -name "$pkg" -path '*cmake*' 2>/dev/null | head -1)"

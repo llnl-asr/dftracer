@@ -114,9 +114,9 @@ if [ "$DFTRACER_VARIORUM" = "1" ]; then
     DFTRACER_ENABLE=1 \
     DFTRACER_LOG_FILE="$VARIORUM_DIR/power" \
     DFTRACER_TRACE_INTERVAL_MS=200 \
-      "$VARIORUM_SERVICE" start "$VARIORUM_DIR"
+      "$VARIORUM_SERVICE" start
     sleep 2
-    "$VARIORUM_SERVICE" stop "$VARIORUM_DIR"
+    DFTRACER_ENABLE=1 DFTRACER_LOG_FILE="$VARIORUM_DIR/power" "$VARIORUM_SERVICE" stop
     sleep 1
     VARIORUM_TRACE=$(find "$VARIORUM_DIR" -name "power_*.pfw*" | head -n 1)
     if [ -n "${VARIORUM_TRACE:-}" ]; then

@@ -295,6 +295,9 @@ option(DFTRACER_INSTALL_DEPENDENCIES "Install DFTracer dependencies" OFF)
 option(DFTRACER_ENABLE_TESTS "Enable tests for DFTRACER." OFF)
 option(DFTRACER_ENABLE_DLIO_BENCHMARK_TESTS "Enable dlio_benchmark tests" OFF)
 option(DFTRACER_ENABLE_PAPER_TESTS "Enable paper tests" OFF)
+# Benchmarks (test/perf): need a whole compute node to mean anything, so off by
+# default and labelled "perf" (ctest -L perf).
+option(DFTRACER_ENABLE_PERF_TESTS "Enable performance benchmarks" OFF)
 set(DFTRACER_TEST_LD_LIBRARY_PATH "" CACHE STRING "Additional LD_LIBRARY_PATH to be included on testing")
 
 # Extra MPI launcher flags used by CTest MPI tests (e.g. "-p pdebug" on Flux).
@@ -391,7 +394,10 @@ else()
 
         if(${cpp-logger_FOUND})
                 include_directories(${CPP_LOGGER_INCLUDE_DIRS})
-                set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${CPP_LOGGER_LIBRARIES})
+                # Linked only into the _dbg targets: the release libraries and
+                # dftracer_service compile cpp-logger out (only its header's
+                # LoggerType is used), so they do not load it.
+                set(DFTRACER_CPP_LOGGER_LIB ${CPP_LOGGER_LIBRARIES})
                 set(CPP_LOGGER_LIBRARY_DIR ${cpp-logger_DIR}/../../)
 
                 # Get absolute path for CPP_LOGGER_LIBRARY_DIR
@@ -586,6 +592,25 @@ else()
         set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${DFTRACER_LIBUV_LINK_LIBS})
         if(DFTRACER_LIBUV_LIBRARY_DIRS)
                 list(APPEND DEPENDENCY_LIBRARY_DIRS ${DFTRACER_LIBUV_LIBRARY_DIRS})
+        endif()
+
+        # Boost.Interprocess (headers only) maps the shared-memory event ring
+        # between traced processes and dftracer_service (src/dftracer/core/ipc).
+        # dependency/CMakeLists.txt installs the headers into the prefix when the
+        # system has none.
+        find_package(Boost 1.66 QUIET)
+        if(Boost_FOUND)
+                message(STATUS "[DFTRACER] found Boost ${Boost_VERSION} at ${Boost_INCLUDE_DIRS}")
+                include_directories(${Boost_INCLUDE_DIRS})
+        elseif(EXISTS ${CMAKE_INSTALL_PREFIX}/include/boost/interprocess/shared_memory_object.hpp)
+                message(STATUS "[DFTRACER] found Boost headers at ${CMAKE_INSTALL_PREFIX}/include")
+                include_directories(${CMAKE_INSTALL_PREFIX}/include)
+        else()
+                message(FATAL_ERROR "-- [DFTRACER] Boost (>= 1.66, headers only) is needed for ${PROJECT_NAME} build")
+        endif()
+        # shm_open/shm_unlink live in librt on glibc older than 2.34.
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+                set(DEPENDENCY_LIB ${DEPENDENCY_LIB} rt)
         endif()
 
         # Optional Dependencies
@@ -927,28 +952,53 @@ else()
                 endif()
         endif()
 
-        find_package(ZLIB REQUIRED)
-
-        if(ZLIB_FOUND)
-                message(STATUS "[DFTRACER] found zlib at ${ZLIB_INCLUDE_DIRS}")
-                # Keep the toolchain zlib headers ahead of dependency include roots.
-                include_directories(BEFORE ${ZLIB_INCLUDE_DIRS})
-                set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${ZLIB_LIBRARIES})
-                get_filename_component(ZLIB_LIBRARY "${ZLIB_LIBRARIES}" DIRECTORY)
-                set(ZLIB_LIBRARY_DIR "${ZLIB_LIBRARY}")
-
-                # Get absolute path for ZLIB_LIBRARY_DIR
-                get_filename_component(ZLIB_LIBRARY_DIR "${ZLIB_LIBRARY_DIR}" ABSOLUTE)
-
-                if(DEFINED ZLIB_LIBRARY_DIR)
-                        list(APPEND DEPENDENCY_LIBRARY_DIRS ${ZLIB_LIBRARY_DIR})
+        # libdeflate writes the gzip members of every trace (one-shot, a whole
+        # buffer per member; about 2.5x faster than zlib at the same level).
+        # Its CMake package comes from dependency/CMakeLists.txt or the wheel's
+        # build_deps.sh; distribution packages (libdeflate-devel) ship only the
+        # header and library, so look for those too.
+        set(DFTRACER_LIBDEFLATE_LINK_LIBS "")
+        find_package(libdeflate 1.9 CONFIG QUIET)
+        if(TARGET libdeflate::libdeflate_shared)
+                # Link the file, not the imported target: dftracer's exported
+                # package would otherwise name libdeflate::libdeflate_shared,
+                # which a project using find_package(dftracer) does not define.
+                # An imported target keeps its path per configuration.
+                foreach(_ld_prop IMPORTED_LOCATION_RELEASE IMPORTED_LOCATION_RELWITHDEBINFO
+                                 IMPORTED_LOCATION_NOCONFIG IMPORTED_LOCATION)
+                        get_target_property(_ld_location libdeflate::libdeflate_shared ${_ld_prop})
+                        if(_ld_location)
+                                break()
+                        endif()
+                endforeach()
+                get_target_property(_ld_include libdeflate::libdeflate_shared INTERFACE_INCLUDE_DIRECTORIES)
+                if(_ld_location)
+                        list(APPEND DFTRACER_LIBDEFLATE_LINK_LIBS ${_ld_location})
                 endif()
-
-                if(DEFINED ZLIB_LIBRARY_DIRS)
-                        list(APPEND DEPENDENCY_LIBRARY_DIRS ${ZLIB_LIBRARY_DIRS})
+                if(_ld_include)
+                        include_directories(${_ld_include})
                 endif()
-        else()
-                message(FATAL_ERROR "-- [DFTRACER] zlib is needed for ${PROJECT_NAME} build")
+        endif()
+        if(NOT DFTRACER_LIBDEFLATE_LINK_LIBS)
+                find_path(DFTRACER_LIBDEFLATE_INCLUDE_DIR libdeflate.h
+                        HINTS ${CMAKE_INSTALL_PREFIX}/include)
+                find_library(DFTRACER_LIBDEFLATE_LIBRARY NAMES deflate libdeflate
+                        HINTS ${CMAKE_INSTALL_PREFIX}/lib64 ${CMAKE_INSTALL_PREFIX}/lib)
+                if(DFTRACER_LIBDEFLATE_INCLUDE_DIR AND DFTRACER_LIBDEFLATE_LIBRARY)
+                        include_directories(${DFTRACER_LIBDEFLATE_INCLUDE_DIR})
+                        list(APPEND DFTRACER_LIBDEFLATE_LINK_LIBS ${DFTRACER_LIBDEFLATE_LIBRARY})
+                        set(_ld_location ${DFTRACER_LIBDEFLATE_LIBRARY})
+                endif()
+        endif()
+        if(NOT DFTRACER_LIBDEFLATE_LINK_LIBS)
+                message(FATAL_ERROR "-- [DFTRACER] libdeflate is needed for ${PROJECT_NAME} build "
+                        "(install libdeflate-devel / libdeflate-dev, or build with -DDFTRACER_INSTALL_DEPENDENCIES=ON)")
+        endif()
+        message(STATUS "[DFTRACER] found libdeflate: ${DFTRACER_LIBDEFLATE_LINK_LIBS}")
+        set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${DFTRACER_LIBDEFLATE_LINK_LIBS})
+        if(_ld_location AND IS_ABSOLUTE "${_ld_location}")
+                get_filename_component(_ld_dir "${_ld_location}" DIRECTORY)
+                list(APPEND DEPENDENCY_LIBRARY_DIRS ${_ld_dir})
         endif()
 
         # print_all_variables()
@@ -1016,10 +1066,13 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/df_logger.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/utils.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/serialization/json_line.cpp
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/compression/zlib_compression.cpp
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/buffer/buffer.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/compression/gzip_compression.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/buffer/local_buffer_manager.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/buffer/buffer_manager_factory.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/buffer/service_buffer_manager.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/writer/stdio_writer.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/aggregator.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/packed_aggregator.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/datastructure.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/rules.cpp)
 
@@ -1061,6 +1114,8 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/singleton.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/configuration_manager.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/aggregator.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/packed_aggregator.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/serialization/packed_json.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/datastructure.h)
 
         # Add MPI/MPIIO/HDF5 private headers if enabled
@@ -1104,13 +1159,14 @@ else()
                         target_compile_definitions(${PROJECT_NAME}_core_dbg PUBLIC H5${_hdf5_mod}_MODULE)
                 endforeach()
         endif()
-        target_link_libraries(${PROJECT_NAME}_core_dbg ${DEPENDENCY_LIB})
+        target_link_libraries(${PROJECT_NAME}_core_dbg ${DEPENDENCY_LIB} ${DFTRACER_CPP_LOGGER_LIB})
         add_library(${PROJECT_NAME}_preload SHARED)
         add_library(dftracer::dftracer_preload ALIAS ${PROJECT_NAME}_preload)
         target_link_libraries(${PROJECT_NAME}_preload ${DEPENDENCY_LIB} ${PROJECT_NAME}_core)
         add_library(${PROJECT_NAME}_preload_dbg SHARED)
         add_library(dftracer::dftracer_preload_dbg ALIAS ${PROJECT_NAME}_preload_dbg)
-        target_link_libraries(${PROJECT_NAME}_preload_dbg ${DEPENDENCY_LIB} ${PROJECT_NAME}_core_dbg)
+        target_link_libraries(${PROJECT_NAME}_preload_dbg ${DEPENDENCY_LIB} ${PROJECT_NAME}_core_dbg
+                ${DFTRACER_CPP_LOGGER_LIB})
 
         if(DFTRACER_GENERATE_INTERFACES AND TARGET ${PROJECT_NAME}_generate_interfaces)
                 # Ensure brahma's interface headers are regenerated by its
@@ -1156,6 +1212,24 @@ else()
         target_compile_definitions(${PROJECT_NAME}_service PUBLIC DFTRACER_LOGGER_LEVEL_ERROR)
         target_link_libraries(${PROJECT_NAME}_service ${DEPENDENCY_LIB} ${PROJECT_NAME}_core ${PROJECT_NAME}_service_telemetry)
 
+        # dftracer_service_dbg: the same service on dftracer_core_dbg, with
+        # cpp-logger logging (DFTRACER_LOG_LEVEL) like the other _dbg targets.
+        add_library(${PROJECT_NAME}_service_telemetry_dbg STATIC ${DFTRACER_SERVICE_TELEMETRY_SRC})
+        if(TARGET variorum_external)
+                add_dependencies(${PROJECT_NAME}_service_telemetry_dbg variorum_external)
+        endif()
+        target_include_directories(${PROJECT_NAME}_service_telemetry_dbg
+                PUBLIC
+                ${CMAKE_CURRENT_SOURCE_DIR}/src
+                ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        target_link_libraries(${PROJECT_NAME}_service_telemetry_dbg ${DEPENDENCY_LIB} ${PROJECT_NAME}_core_dbg
+                ${DFTRACER_VARIORUM_LINK_LIBS} ${DFTRACER_CPP_LOGGER_LIB})
+        add_executable(${PROJECT_NAME}_service_dbg ${DFTRACER_SERVICE_SRC})
+        set_target_properties(${PROJECT_NAME}_service_dbg PROPERTIES LINKER_LANGUAGE CXX)
+        target_link_libraries(${PROJECT_NAME}_service_dbg ${DEPENDENCY_LIB} ${PROJECT_NAME}_core_dbg
+                ${PROJECT_NAME}_service_telemetry_dbg ${DFTRACER_CPP_LOGGER_LIB})
+        list(APPEND DFTRACER_DEBUG_TARGETS ${PROJECT_NAME}_service_telemetry_dbg ${PROJECT_NAME}_service_dbg)
+
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                 # Ensure explicit C++ runtime linkage from the active compiler
                 # toolchain in mixed MPI/library environments.
@@ -1168,11 +1242,13 @@ else()
                         target_link_libraries(${PROJECT_NAME}_core "${DFTRACER_CXX_STDLIB}")
                         target_link_libraries(${PROJECT_NAME}_core_dbg "${DFTRACER_CXX_STDLIB}")
                         target_link_libraries(${PROJECT_NAME}_service "${DFTRACER_CXX_STDLIB}")
+                        target_link_libraries(${PROJECT_NAME}_service_dbg "${DFTRACER_CXX_STDLIB}")
                         message(STATUS "[DFTRACER] using C++ stdlib from ${DFTRACER_CXX_STDLIB}")
                 else()
                         target_link_libraries(${PROJECT_NAME}_core stdc++)
                         target_link_libraries(${PROJECT_NAME}_core_dbg stdc++)
                         target_link_libraries(${PROJECT_NAME}_service stdc++)
+                        target_link_libraries(${PROJECT_NAME}_service_dbg stdc++)
                 endif()
         endif()
 
@@ -1183,7 +1259,8 @@ else()
 
                 pybind11_add_module(${PROJECT_NAME}_dbg NO_EXTRAS ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/python/dftracer_dbg.cpp)
                 target_compile_definitions(${PROJECT_NAME}_dbg PRIVATE VERSION_INFO=${EXAMPLE_VERSION_INFO})
-                target_link_libraries(${PROJECT_NAME}_dbg PRIVATE ${DEPENDENCY_LIB} ${PROJECT_NAME}_core_dbg)
+                target_link_libraries(${PROJECT_NAME}_dbg PRIVATE ${DEPENDENCY_LIB} ${PROJECT_NAME}_core_dbg
+                        ${DFTRACER_CPP_LOGGER_LIB})
                 list(APPEND DFTRACER_DEBUG_TARGETS ${PROJECT_NAME}_dbg)
         endif()
 
@@ -1256,7 +1333,7 @@ else()
                 RUNTIME DESTINATION ${DFTRACER_INSTALL_BIN_DIR}
         )
         install(
-                TARGETS ${PROJECT_NAME}_service
+                TARGETS ${PROJECT_NAME}_service ${PROJECT_NAME}_service_dbg
                 EXPORT ${DFTRACER_EXPORTED_TARGETS}
                 LIBRARY DESTINATION ${DFTRACER_INSTALL_LIB_DIR}
                 ARCHIVE DESTINATION ${DFTRACER_INSTALL_LIB_DIR}
@@ -1446,8 +1523,13 @@ else()
 
                 if(CMAKE_BUILD_TYPE STREQUAL "PROFILE")
                         message("-- " "[DFTracer] building with CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE}")
-                        set(CMAKE_C_FLAGS_PROFILE --coverage)
-                        set(CMAKE_CXX_FLAGS_PROFILE --coverage)
+                        # Atomic counters: gcov's plain increments race when
+                        # several threads run the same code (the service's
+                        # drain threads, multi-threaded tests), and a lost
+                        # update can leave a negative branch count that
+                        # gcovr rejects.
+                        set(CMAKE_C_FLAGS_PROFILE "--coverage -fprofile-update=atomic")
+                        set(CMAKE_CXX_FLAGS_PROFILE "--coverage -fprofile-update=atomic")
 
                         # Find gcovr for coverage reporting
                         find_program(GCOVR_EXECUTABLE gcovr)
@@ -1588,6 +1670,27 @@ else()
                 set(DFTRACER_LIBC_SO_PATH "libc.so.6")
         endif()
         message(STATUS "DFTRACER_LIBC_SO_PATH: ${DFTRACER_LIBC_SO_PATH}")
+
+        # Producer/consumer mode: default geometry of the ring dftracer_service
+        # creates in /dev/shm (DFTRACER_PC_BLOCKS / DFTRACER_PC_BLOCK_SIZE
+        # still override it at run time). Every producer thread holds one block
+        # while filling it, so keep the block count well above the number of
+        # producer threads on a node. Both must be powers of two.
+        set(DFTRACER_PC_RING_BLOCKS 1024 CACHE STRING
+            "Blocks in the producer/consumer ring (power of two, >= 2)")
+        set(DFTRACER_PC_RING_BLOCK_SIZE 1048576 CACHE STRING
+            "Bytes per ring block (power of two, 4096 to 16777216)")
+        foreach(_ring_var DFTRACER_PC_RING_BLOCKS DFTRACER_PC_RING_BLOCK_SIZE)
+                math(EXPR _ring_pow2 "${${_ring_var}} & (${${_ring_var}} - 1)")
+                if(NOT ${_ring_var} MATCHES "^[0-9]+$" OR NOT _ring_pow2 EQUAL 0)
+                        message(FATAL_ERROR "${_ring_var}=${${_ring_var}} must be a power of two")
+                endif()
+        endforeach()
+        if(DFTRACER_PC_RING_BLOCKS LESS 2 OR DFTRACER_PC_RING_BLOCK_SIZE LESS 4096
+           OR DFTRACER_PC_RING_BLOCK_SIZE GREATER 16777216)
+                message(FATAL_ERROR "ring of ${DFTRACER_PC_RING_BLOCKS} x ${DFTRACER_PC_RING_BLOCK_SIZE} bytes is out of range")
+        endif()
+        message(STATUS "[DFTRACER] producer/consumer ring: ${DFTRACER_PC_RING_BLOCKS} x ${DFTRACER_PC_RING_BLOCK_SIZE} bytes")
 
         # Write the configure file
         configure_file("${CMAKE_SOURCE_DIR}/cmake/configure_files/dftracer_config.hpp.in"

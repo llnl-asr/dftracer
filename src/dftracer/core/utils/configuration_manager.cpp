@@ -13,6 +13,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/resource.h>
+#include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
 #include <dftracer/core/dftracer_config.hpp>
@@ -139,7 +140,6 @@ dftracer::ConfigurationManager::ConfigurationManager()
       io(true),
       posix(true),
       stdio(true),
-      compression(true),
       trace_all_files(false),
       max_fd(DFT_DEFAULT_MAX_FD),
       tids(true),
@@ -161,6 +161,17 @@ dftracer::ConfigurationManager::ConfigurationManager()
       variorum_power(true),
       aggregation_enable(true),
       aggregation_type(AggregationType::AGGREGATION_TYPE_SELECTIVE),
+      pc_mode(false),
+      service_shm(),
+      pc_block_size(DFTRACER_PC_RING_BLOCK_SIZE),
+      pc_blocks(DFTRACER_PC_RING_BLOCKS),
+      pc_full_wait_us(DFT_SHM_DEFAULT_FULL_WAIT_US),
+      pc_consumer_threads(DFT_SHM_DEFAULT_CONSUMER_THREADS),
+      pc_consumer_min_threads(DFT_SHM_DEFAULT_CONSUMER_MIN_THREADS),
+      pc_consumer_tick_ms(DFT_SHM_DEFAULT_CONSUMER_TICK_MS),
+      pc_flush_ms(DFT_SHM_DEFAULT_FLUSH_MS),
+      pc_compression_level(DFT_SHM_DEFAULT_COMPRESSION_LEVEL),
+      pc_rollover_mb(DFT_SHM_DEFAULT_ROLLOVER_MB),
       aggregation_inclusion_rules(),
       aggregation_exclusion_rules() {
   const char* env_conf = getenv(DFTRACER_CONFIGURATION);
@@ -225,12 +236,14 @@ dftracer::ConfigurationManager::ConfigurationManager()
       DFTRACER_LOG_DEBUG("YAML ConfigurationManager.trace_all_files %d",
                          this->trace_all_files);
 
-      if (config[DFT_YAML_TRACER][DFT_YAML_TRACER_COMPRESSION]) {
-        this->compression =
-            config[DFT_YAML_TRACER][DFT_YAML_TRACER_COMPRESSION].as<bool>();
+      // Traces are always compressed; the key is accepted and ignored.
+      if (config[DFT_YAML_TRACER][DFT_YAML_TRACER_COMPRESSION] &&
+          !config[DFT_YAML_TRACER][DFT_YAML_TRACER_COMPRESSION].as<bool>()) {
+        DFTRACER_LOG_WARN(
+            "YAML tracer.compression: False is ignored: traces are always "
+            "compressed",
+            "");
       }
-      DFTRACER_LOG_DEBUG("YAML ConfigurationManager.compression %d",
-                         this->compression);
       if (config[DFT_YAML_TRACER][DFT_YAML_TRACER_LIBUV_THREADS]) {
         this->libuv_thread_count =
             config[DFT_YAML_TRACER][DFT_YAML_TRACER_LIBUV_THREADS].as<size_t>();
@@ -255,12 +268,14 @@ dftracer::ConfigurationManager::ConfigurationManager()
                          this->gotcha_priority);
     }
     if (config[DFT_YAML_FEATURES]) {
-      if (config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_METADATA]) {
-        this->metadata =
-            config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_METADATA].as<bool>();
+      // Metadata is always included; the key is accepted and ignored.
+      if (config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_METADATA] &&
+          !config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_METADATA].as<bool>()) {
+        DFTRACER_LOG_WARN(
+            "YAML features.metadata: False is ignored: metadata is always "
+            "included",
+            "");
       }
-      DFTRACER_LOG_DEBUG("YAML ConfigurationManager.metadata %d",
-                         this->metadata);
       if (config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_CORE_AFFINITY]) {
         this->core_affinity =
             config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_CORE_AFFINITY]
@@ -426,6 +441,59 @@ dftracer::ConfigurationManager::ConfigurationManager()
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.libuv_thread_count %zu",
                        this->libuv_thread_count);
+    const char* env_pc_mode = getenv(DFTRACER_ENABLE_PC_MODE);
+    if (env_pc_mode != nullptr) this->pc_mode = env_flag(env_pc_mode);
+    // The rest only means something in producer/consumer mode.
+    if (this->pc_mode) {
+      const char* env_service_shm = getenv(DFTRACER_SERVICE_SHM);
+      if (env_service_shm != nullptr && env_service_shm[0] != '\0')
+        this->service_shm = env_service_shm;
+      else
+        this->service_shm = "/dftracer-" + std::to_string(getuid());
+      const char* env_pc_block_size = getenv(DFTRACER_PC_BLOCK_SIZE);
+      if (env_pc_block_size != nullptr)
+        this->pc_block_size = strtoul(env_pc_block_size, nullptr, 10);
+      const char* env_pc_blocks = getenv(DFTRACER_PC_BLOCKS);
+      if (env_pc_blocks != nullptr)
+        this->pc_blocks = strtoul(env_pc_blocks, nullptr, 10);
+      const char* env_pc_full_wait = getenv(DFTRACER_PC_FULL_WAIT_US);
+      if (env_pc_full_wait != nullptr)
+        this->pc_full_wait_us = strtoull(env_pc_full_wait, nullptr, 10);
+      const char* env_pc_consumers = getenv(DFTRACER_PC_CONSUMER_THREADS);
+      if (env_pc_consumers != nullptr)
+        this->pc_consumer_threads = strtoul(env_pc_consumers, nullptr, 10);
+      if (this->pc_consumer_threads == 0) this->pc_consumer_threads = 1;
+      const char* env_pc_min_consumers =
+          getenv(DFTRACER_PC_CONSUMER_MIN_THREADS);
+      if (env_pc_min_consumers != nullptr)
+        this->pc_consumer_min_threads =
+            strtoul(env_pc_min_consumers, nullptr, 10);
+      if (this->pc_consumer_min_threads == 0) this->pc_consumer_min_threads = 1;
+      if (this->pc_consumer_min_threads > this->pc_consumer_threads)
+        this->pc_consumer_min_threads = this->pc_consumer_threads;
+      const char* env_pc_tick = getenv(DFTRACER_PC_CONSUMER_TICK_MS);
+      if (env_pc_tick != nullptr)
+        this->pc_consumer_tick_ms = strtoul(env_pc_tick, nullptr, 10);
+      if (this->pc_consumer_tick_ms == 0) this->pc_consumer_tick_ms = 1;
+      const char* env_pc_flush = getenv(DFTRACER_PC_FLUSH_MS);
+      if (env_pc_flush != nullptr)
+        this->pc_flush_ms = strtoul(env_pc_flush, nullptr, 10);
+      if (this->pc_flush_ms == 0) this->pc_flush_ms = 1;
+      const char* env_pc_level = getenv(DFTRACER_PC_COMPRESSION_LEVEL);
+      if (env_pc_level != nullptr)
+        this->pc_compression_level = atoi(env_pc_level);
+      if (this->pc_compression_level < 0 || this->pc_compression_level > 9)
+        this->pc_compression_level = DFT_SHM_DEFAULT_COMPRESSION_LEVEL;
+      const char* env_pc_rollover = getenv(DFTRACER_PC_ROLLOVER_MB);
+      if (env_pc_rollover != nullptr)
+        this->pc_rollover_mb = strtod(env_pc_rollover, nullptr);
+      if (!(this->pc_rollover_mb >= 0)) this->pc_rollover_mb = 0;
+      DFTRACER_LOG_DEBUG(
+          "ENV ConfigurationManager.pc_mode service_shm %s blocks %u x %u "
+          "consumers %u..%u",
+          this->service_shm.c_str(), this->pc_blocks, this->pc_block_size,
+          this->pc_consumer_min_threads, this->pc_consumer_threads);
+    }
     const char* env_init_type = getenv(DFTRACER_INIT);
     if (env_init_type != nullptr) {
       convert(env_init_type, this->init_type);
@@ -438,11 +506,13 @@ dftracer::ConfigurationManager::ConfigurationManager()
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.bind_signals %d",
                        this->bind_signals);
+    // Metadata is always included; the variable is accepted and ignored.
     const char* env_meta = getenv(DFTRACER_INC_METADATA);
-    if (env_meta != nullptr) {
-      metadata = env_flag(env_meta);
+    if (env_meta != nullptr && !env_flag(env_meta)) {
+      DFTRACER_LOG_WARN(
+          "DFTRACER_INC_METADATA=%s is ignored: metadata is always included",
+          env_meta);
     }
-    DFTRACER_LOG_DEBUG("ENV ConfigurationManager.metadata %d", this->metadata);
 
     const char* env_core = getenv(DFTRACER_SET_CORE_AFFINITY);
     if (env_flag(env_core)) {
@@ -555,15 +625,14 @@ dftracer::ConfigurationManager::ConfigurationManager()
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.throw_error %d",
                        this->throw_error);
+    // Traces are always compressed; the variable is accepted and ignored.
     const char* env_compression = getenv(DFTRACER_TRACE_COMPRESSION);
-    if (env_compression != nullptr) {
-      if (env_flag(env_compression))
-        this->compression = true;
-      else
-        this->compression = false;
+    if (env_compression != nullptr && !env_flag(env_compression)) {
+      DFTRACER_LOG_WARN(
+          "DFTRACER_TRACE_COMPRESSION=%s is ignored: traces are always "
+          "compressed",
+          env_compression);
     }
-    DFTRACER_LOG_DEBUG("ENV ConfigurationManager.compression %d",
-                       this->compression);
     const char* env_write_buf_size = getenv(DFTRACER_WRITE_BUFFER_SIZE);
     if (env_write_buf_size != nullptr) {
       this->write_buffer_size = atoi(env_write_buf_size);
@@ -675,8 +744,7 @@ const dftracer::ExecInfo& dftracer::ConfigurationManager::exec_info() {
 
 std::string dftracer::ConfigurationManager::make_log_file(
     const char* hash, const std::string& suffix) const {
-  return this->log_file + "-" + hash + "-" + suffix +
-         (this->compression ? ".pfw.gz" : ".pfw");
+  return this->log_file + "-" + hash + "-" + suffix + ".pfw.gz";
 }
 
 void dftracer::ConfigurationManager::derive_configurations() {
@@ -784,7 +852,6 @@ void dftracer::ConfigurationManager::populate_metadata(
       << "\"io\":" << (int)this->io << ","
       << "\"posix\":" << (int)this->posix << ","
       << "\"stdio\":" << (int)this->stdio << ","
-      << "\"compression\":" << (int)this->compression << ","
       << "\"trace_all_files\":" << (int)this->trace_all_files << ","
       << "\"tids\":" << (int)this->tids << ","
       << "\"bind_signals\":" << (int)this->bind_signals << ","
@@ -793,6 +860,7 @@ void dftracer::ConfigurationManager::populate_metadata(
       << "\"libuv_thread_count\":" << this->libuv_thread_count << ","
       << "\"variorum_power\":" << (int)this->variorum_power << ","
       << "\"aggregation_enable\":" << (int)this->aggregation_enable << ","
+      << "\"pc_mode\":" << (int)this->pc_mode << ","
       << "\"aggregation_type\":\"" << to_string(this->aggregation_type)
       << "\","
       // Whether GOTCHA interception was actually bound this run (i.e.

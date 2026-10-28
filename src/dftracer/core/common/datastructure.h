@@ -2,6 +2,7 @@
 #define DFTRACER_CORE_DATASTRUCTURE_H
 
 // Internal
+#include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/cpp_typedefs.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/common/logging.h>
@@ -13,10 +14,13 @@
 #include <stddef.h>
 
 #include <any>
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <typeindex>
 #include <typeinfo>
 #include <unordered_map>
@@ -131,6 +135,13 @@ inline bool compare_any(const std::any& a, const std::any& b) {
   return false;
 }
 
+/** Where rules read tags.<key> of an event that has no Metadata: the
+ * service's packed events (PackedAggregator). Same strings as getTagValue. */
+struct TagSource {
+  virtual ~TagSource() = default;
+  virtual std::string tag(const std::string& key) const = 0;
+};
+
 struct AggregatedKey {
   std::string category;
   std::string event_name;
@@ -142,7 +153,8 @@ struct AggregatedKey {
   TimeResolution duration;
   const char* app_name;
   const int* rank;
-  mutable size_t _cached_hash;  // Cached hash value
+  const TagSource* tag_source = nullptr;  // rules only, when no Metadata
+  mutable size_t _cached_hash;            // Cached hash value
 
   AggregatedKey()
       : category(nullptr),
@@ -180,6 +192,7 @@ struct AggregatedKey {
         duration(other.duration),
         app_name(other.app_name),
         rank(other.rank),
+        tag_source(other.tag_source),
         _cached_hash(other._cached_hash) {}
   bool operator==(const AggregatedKey& other) const {
     if (category != other.category || event_name != other.event_name ||
@@ -188,31 +201,27 @@ struct AggregatedKey {
       return false;
     }
 
-    // Compare additional_keys for MetadataType::MT_KEY
-    if (additional_keys && other.additional_keys) {
-      for (const auto& pair : *additional_keys) {
-        if (std::get<0>(pair.second) == MetadataType::MT_KEY) {
-          auto it = other.additional_keys->find(pair.first);
-          if (it == other.additional_keys->end() ||
-              std::get<0>(it->second) != MetadataType::MT_KEY ||
-              std::get<2>(it->second) != std::get<2>(pair.second)) {
-            return false;
-          }
-        }
+    // The MT_KEY fields are part of the key; every other field is not. A
+    // stored key holds only its MT_KEY fields (or nullptr for none) while a
+    // live event's key holds all of its metadata, so compare the MT_KEY sets
+    // alone, with nullptr as the empty set.
+    return same_mt_keys(additional_keys, other.additional_keys) &&
+           same_mt_keys(other.additional_keys, additional_keys);
+  }
+
+ private:
+  // Every MT_KEY field of `a` is an MT_KEY field of `b` with an equal value.
+  static bool same_mt_keys(const Metadata* a, const Metadata* b) {
+    if (a == nullptr) return true;
+    for (const auto& pair : *a) {
+      if (std::get<0>(pair.second) != MetadataType::MT_KEY) continue;
+      if (b == nullptr) return false;
+      auto it = b->find(pair.first);
+      if (it == b->end() || std::get<0>(it->second) != MetadataType::MT_KEY ||
+          std::get<2>(it->second) != std::get<2>(pair.second) ||
+          !compare_any(std::get<1>(it->second), std::get<1>(pair.second))) {
+        return false;
       }
-      for (const auto& pair : *other.additional_keys) {
-        if (std::get<0>(pair.second) == MetadataType::MT_KEY) {
-          auto it = additional_keys->find(pair.first);
-          if (it == additional_keys->end() ||
-              std::get<0>(it->second) != MetadataType::MT_KEY ||
-              std::get<2>(it->second) != std::get<2>(pair.second)) {
-            return false;
-          }
-        }
-      }
-    } else if (additional_keys || other.additional_keys) {
-      // One is nullptr, the other is not
-      return false;
     }
     return true;
   }
@@ -417,10 +426,13 @@ inline std::optional<Value> getFieldValue(const AggregatedKey* key,
     return Value{key->app_name};
   } else if (fieldName == "rank" && *key->rank != -1) {
     return Value{(TimeResolution)*key->rank};
-  } else if (fieldName.rfind("tags.", 0) == 0 && key->additional_keys) {
+  } else if (fieldName.rfind("tags.", 0) == 0 &&
+             (key->additional_keys || key->tag_source)) {
     // tags.<tagname>
     std::string tagKey = fieldName.substr(5);
-    std::string tagValue = key->additional_keys->getTagValue(tagKey);
+    std::string tagValue = key->additional_keys
+                               ? key->additional_keys->getTagValue(tagKey)
+                               : key->tag_source->tag(tagKey);
     return Value{tagValue};
   }
   return std::nullopt;
@@ -520,6 +532,203 @@ inline bool likeMatch(const std::string& value, const std::string& pattern) {
   // Fallback: only support single '*' at start or end or both
   return false;
 }
+}  // namespace dftracer
+
+/*
+ * Producer/consumer mode (docs/design_pc_service.rst): the shared-memory
+ * segment's layout, the binary record payloads, and the producer's per-thread
+ * state. The code that uses them is in core/ipc and core/buffer.
+ */
+namespace dftracer {
+namespace ipc {
+
+static_assert(std::atomic<uint64_t>::is_always_lock_free,
+              "shared-memory ring needs lock-free 64-bit atomics");
+static_assert(std::atomic<uint32_t>::is_always_lock_free,
+              "shared-memory ring needs lock-free 32-bit atomics");
+
+/**
+ * 16-byte header in front of every record. `word` packs
+ *
+ *   [63:32] epoch of the block when the space was allocated (RingView::epoch)
+ *   [31:8]  length of the whole record (header + payload), multiple of 16
+ *   [7:0]   RecordState
+ *
+ * A record is written as PAD when it is reserved and turned into COMMITTED by
+ * commit(), so a reservation that is never committed reads as padding once its
+ * block is published. Visibility to the consumer comes from the block's
+ * `committed` store, not from this word.
+ */
+struct RecordHeader {
+  std::atomic<uint64_t> word;
+  uint32_t pid;
+  uint16_t kind;
+  uint16_t flags;
+};
+static_assert(sizeof(RecordHeader) == 16, "RecordHeader must be 16 bytes");
+
+struct alignas(DFT_SHM_CACHE_LINE) SegmentHeader {
+  uint64_t magic;
+  uint32_t abi_version;
+  uint32_t block_count;  // power of two
+  uint32_t block_size;   // bytes, power of two, <= 16 MiB
+  uint32_t block_shift;  // log2(block_count)
+  std::atomic<uint32_t> state;
+  int32_t service_pid;
+  uint64_t service_start_time;
+  std::atomic<uint64_t> heartbeat_ns;
+  std::atomic<uint32_t> announced;
+  // Producers only. Sequence number of the next block to be claimed; the block
+  // index is head & (block_count - 1), its epoch RingView::epoch(head). Every
+  // block before it has been claimed by some producer.
+  alignas(DFT_SHM_CACHE_LINE) std::atomic<uint64_t> head;
+  // Consumer only. Oldest block not yet released; published for diagnostics
+  // and backlog accounting, never read on the producer fast path.
+  alignas(DFT_SHM_CACHE_LINE) std::atomic<uint64_t> tail;
+  // Events producers dropped because the ring stayed full: the service had
+  // fallen behind. Only touched on that slow path; the service reports it.
+  alignas(DFT_SHM_CACHE_LINE) std::atomic<uint64_t> dropped;
+  // Events producers wrote to their own spill file instead (ring full), so
+  // not lost: the service reports where they are.
+  std::atomic<uint64_t> spilled;
+};
+
+/**
+ * Per-block control, cache-line aligned so the consumer releasing block k does
+ * not slow down producers claiming block k+1.
+ *
+ * `armed` is the epoch the block is free for: block sequence number s may be
+ * claimed exactly when armed == epoch(s). The consumer re-arms a block for its
+ * next lap by storing epoch + 1 once it has taken the contents.
+ *
+ * `committed` is written once per lap, by the producer that claimed the block,
+ * when it publishes the block: every byte is by then either a record or
+ * padding. The consumer's completeness check is one acquire load of it, which
+ * also makes every record in the block visible. It sits on its own cache line
+ * so the publishing producer does not contend with the next claim.
+ *
+ * `owner` lets the service take over a block that its producer holds but does
+ * not publish -- a quiet thread, or a dead process -- see ShmBlockOwner.
+ */
+struct alignas(DFT_SHM_CACHE_LINE) BlockControl {
+  std::atomic<uint64_t> armed;
+  // When the block was claimed this lap; 0 while free. The service takes over
+  // a block held idle for longer than DFTRACER_PC_FLUSH_MS after it.
+  std::atomic<uint64_t> claim_ns;
+  // Who claimed it this lap, for the service's dead-producer check and for
+  // routing its records (one aggregation lane per producer thread).
+  std::atomic<uint32_t> owner_pid;
+  std::atomic<uint32_t> owner_tid;
+  // epoch << 32 | block_size once published, plus DFT_SHM_BLOCK_CLAIMED once
+  // a drain thread has taken it. Carrying the epoch means a value can never be
+  // mistaken for the same slot's state in another lap.
+  alignas(DFT_SHM_CACHE_LINE) std::atomic<uint64_t> committed;
+  // epoch << 8 | ShmBlockOwner. On its own line: the owning producer writes it
+  // around every record, and nothing else touches it until the block is old.
+  alignas(DFT_SHM_CACHE_LINE) std::atomic<uint64_t> owner;
+};
+
+/** Space handed out by RingProducer::try_reserve, to be filled and committed.
+ */
+struct Reservation {
+  RecordHeader* header = nullptr;
+  uint8_t* payload = nullptr;
+  uint32_t epoch = 0;
+  uint32_t length = 0;  // whole record, header included
+};
+
+#pragma pack(push, 1)
+struct EventHead {
+  uint64_t start_time;
+  uint64_t duration;
+  uint64_t thread_id;
+  int32_t index;
+  int32_t process_id;
+  uint8_t type;   // TraceEventType
+  uint8_t flags;  // ShmEventFlags
+  uint16_t name_len;
+  uint16_t category_len;
+  uint16_t meta_count;
+};
+struct MetadataHead {
+  uint64_t thread_id;
+  int32_t process_id;
+  uint8_t type;  // TraceEventType
+  uint8_t is_string;
+  uint16_t name_len;
+  uint32_t value_len;
+  uint16_t record_name_len;
+};
+struct RecordHead {
+  uint64_t thread_id;
+  int32_t process_id;
+  uint8_t type;  // TraceEventType
+  uint8_t reserved;
+  uint16_t record_name_len;
+  uint32_t fields_len;
+};
+struct HelloHead {
+  int32_t process_id;
+  uint16_t hostname_hash_len;
+  uint16_t log_file_len;
+};
+#pragma pack(pop)
+
+/** One decoded metadata entry; views point into the record. */
+struct DecodedValue {
+  ShmValueTag tag;
+  MetadataType mtype;
+  std::string_view key;
+  int64_t i = 0;
+  uint64_t u = 0;
+  double d = 0;
+  std::string_view s;
+};
+
+/** A decoded DATA or COUNTER record; views point into the record. */
+struct DecodedEvent {
+  EventHead head;
+  std::string_view name;
+  std::string_view category;
+  std::vector<DecodedValue> values;
+};
+
+/** A decoded METADATA record; views point into the record. */
+struct DecodedMetadata {
+  MetadataHead head;
+  std::string_view name;
+  std::string_view value;
+  std::string_view record_name;
+};
+
+/** A decoded RECORD record; views point into the record. */
+struct DecodedRecord {
+  RecordHead head;
+  std::string_view record_name;
+  std::string_view fields;
+};
+
+/** A decoded HELLO record; views point into the record. */
+struct DecodedHello {
+  HelloHead head;
+  std::string_view hostname_hash;
+  std::string_view log_file;
+};
+
+class RingProducer;
+}  // namespace ipc
+
+/** One producer thread's state in ServiceBufferManager. */
+struct alignas(DFT_SHM_CACHE_LINE) ServiceSlot {
+  std::atomic<uint32_t> state{SHM_SLOT_IDLE};  // ShmSlotState
+  uint64_t generation = 0;
+  std::unique_ptr<ipc::RingProducer> producer;
+  std::vector<uint8_t> scratch;
+  // Written only by the slot's thread (load + store, no read-modify-write),
+  // so counting costs nothing shared; read by pushed(). Drops are rare and
+  // counted per process (ServiceBufferManager::count_drop).
+  std::atomic<uint64_t> pushed{0};
+};
 }  // namespace dftracer
 
 #endif  // DFTRACER_CORE_DATASTRUCTURE_H

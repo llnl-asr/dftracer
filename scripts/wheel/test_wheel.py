@@ -269,8 +269,9 @@ def main() -> int:
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            log_dir, svc_dir, data_dir = tmp / "logs", tmp / "svc", tmp / "data"
-            for d in (log_dir, svc_dir, data_dir):
+            # The service writes next to the application's traces.
+            log_dir, data_dir = tmp / "logs", tmp / "data"
+            for d in (log_dir, data_dir):
                 d.mkdir()
 
             env = clean_env()
@@ -283,11 +284,11 @@ def main() -> int:
                 DFTRACER_INC_METADATA="1",
             )
 
-            start = run([str(service), "start", str(svc_dir)], env=env)
+            start = run([str(service), "start"], env=env)
             print(f"service start (exit {start.returncode}): {start.stdout.strip()}")
             if start.returncode != 0:
                 raise AssertionError(f"dftracer_service start failed: {start.stdout}")
-            wait_for(lambda: any(svc_dir.glob("*.pid")), "service pid file")
+            wait_for(lambda: any(log_dir.glob("*.pid")), "service pid file")
 
             workload = (
                 "import os\n"
@@ -306,15 +307,12 @@ def main() -> int:
             if proc.returncode != 0:
                 raise AssertionError(f"LD_PRELOAD'd workload failed: {proc.stdout}")
 
-            stop = run([str(service), "stop", str(svc_dir)], env=env)
+            stop = run([str(service), "stop"], env=env)
             print(f"service stop (exit {stop.returncode}): {stop.stdout.strip()}")
             # The service flushes and compresses on shutdown.
-            wait_for(
-                lambda: bool(find_traces(log_dir) or find_traces(svc_dir)),
-                "trace file",
-            )
+            wait_for(lambda: bool(find_traces(log_dir)), "trace file")
 
-            traces = find_traces(log_dir) + find_traces(svc_dir)
+            traces = find_traces(log_dir)
             if not traces:
                 listing = sorted(str(p.relative_to(tmp)) for p in tmp.rglob("*"))
                 raise AssertionError(f"no trace file produced; tree: {listing}")
