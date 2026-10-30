@@ -1,6 +1,5 @@
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/datastructure.h>
-#include <dftracer/core/common/entity.h>
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/singleton.h>
 #include <dftracer/core/serialization/json_line.h>
@@ -44,7 +43,7 @@ size_t JsonLines::data(char* buffer, int index, ConstEventNameType event_name,
                        ThreadID thread_id) {
   size_t written_size = 0;
   int n = 0;
-  // Entity relations (the "relations" arg) are an event's semantic content,
+  // The relations arg (DFT_RELATIONS_ARG) is an event's semantic content,
   // not optional metadata: keep them even when DFTRACER_INC_METADATA is off,
   // and drop only the optional keys.
   if (!include_metadata && metadata != nullptr) {

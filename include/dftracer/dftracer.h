@@ -9,7 +9,6 @@
  * Common to both C and CPP
  */
 #include <dftracer/core/common/constants.h>
-#include <dftracer/core/common/entity.h>
 #include <dftracer/core/common/typedef.h>
 #define DF_DATA_EVENT 0
 #define DF_METADATA_EVENT 1
@@ -63,24 +62,6 @@ void set_app_metadata_string(const char* key, const char* value);
 // Idempotent; safe to call on every invocation.
 void mark_used(const char* name);
 
-// ---------------------------------------------------------------------------
-// Entities and relations (types, enums and limits: core/common/entity.h).
-//
-// Declare an entity instance: (type, key) -> 64-bit id, recorded once per
-// process as an EH record. `type` is application-defined (truncated to
-// DFT_ENTITY_TYPE_LEN), `key` is any application identifier (hashed, never
-// stored), `uri` is an optional locator unique within the app (truncated to
-// DFT_ENTITY_URI_LEN). Returns DFT_ENTITY_NONE when tracing is off.
-EntityID dftracer_declare_entity(ConstEntityTypeName type, ConstEntityKey key,
-                                 EntityStore store, ConstEntityURI uri);
-// Describe an entity type once per process: its role and what it represents
-// (description truncated to DFT_ENTITY_DESC_LEN). One ET record.
-void dftracer_declare_entity_type(ConstEntityTypeName type, EntityRole role,
-                                  ConstEntityDescription description);
-// Relate two entities (entity -> entity relations, e.g. DFT_REL_CONTAINS,
-// DFT_REL_DERIVED_FROM). One ER record.
-void dftracer_relate_entities(EntityRelation relation, EntityID subject,
-                              EntityID object);
 #ifdef __cplusplus
 }
 #endif
@@ -189,25 +170,6 @@ class DFTracer {
   // A 64-bit id, written as a string of 16 hex digits (e.g. an entity id).
   void append_id(const char* key, const char* sub, uint64_t id);
 
-  // Relate this event to an entity under an event relation (DFT_REL_USED,
-  // DFT_REL_GENERATED, DFT_REL_INVALIDATED, DFT_REL_UPDATED). Ids are kept
-  // as integers and rendered to hex only when the event is written.
-  void relate(EntityRelation relation, EntityID entity);
-  // Declare (type, key) and relate it in one step; returns the entity id.
-  EntityID relate(EntityRelation relation, ConstEntityTypeName type,
-                  ConstEntityKey key, EntityStore store = DFT_STORE_MEMORY,
-                  ConstEntityURI uri = nullptr);
-  EntityID uses(ConstEntityTypeName type, ConstEntityKey key,
-                EntityStore store = DFT_STORE_MEMORY,
-                ConstEntityURI uri = nullptr) {
-    return relate(DFT_REL_USED, type, key, store, uri);
-  }
-  EntityID generates(ConstEntityTypeName type, ConstEntityKey key,
-                     EntityStore store = DFT_STORE_MEMORY,
-                     ConstEntityURI uri = nullptr) {
-    return relate(DFT_REL_GENERATED, type, key, store, uri);
-  }
-
   void finalize();
 
   ~DFTracer();
@@ -280,23 +242,6 @@ class DFTracer {
   DFTracer profiler_##name =      \
       DFTracer(#name, CPP_LOG_CATEGORY, DF_METADATA_EVENT);
 
-// Entities and relations (see dftracer_declare_entity, core/common/entity.h).
-#define DFTRACER_CPP_ENTITY(type, key, store, uri) \
-  dftracer_declare_entity(type, key, store, uri)
-#define DFTRACER_CPP_ENTITY_TYPE(type, role, description) \
-  dftracer_declare_entity_type(type, role, description);
-#define DFTRACER_CPP_ENTITY_RELATE(relation, subject, object) \
-  dftracer_relate_entities(relation, subject, object);
-#define DFTRACER_CPP_FUNCTION_RELATE(relation, entity) \
-  profiler_dft_fn.relate(relation, entity);
-#define DFTRACER_CPP_FUNCTION_USES(type, key) profiler_dft_fn.uses(type, key);
-#define DFTRACER_CPP_FUNCTION_GENERATES(type, key) \
-  profiler_dft_fn.generates(type, key);
-#define DFTRACER_CPP_REGION_RELATE(name, relation, entity) \
-  profiler_##name.relate(relation, entity);
-#define DFTRACER_CPP_REGION_DYN_RELATE(name, relation, entity) \
-  profiler_##name->relate(relation, entity);
-
 extern "C" {
 #endif
 // C APIs
@@ -337,15 +282,6 @@ void update_metadata_append_int(struct DFTracerData* data, const char* key,
                                 const char* sub, int64_t value);
 void update_metadata_append_id(struct DFTracerData* data, const char* key,
                                const char* sub, uint64_t id);
-
-// Relate a region to an entity under an event relation, or declare
-// (type, key) and relate it in one call (returns the entity id).
-void update_relation(struct DFTracerData* data, EntityRelation relation,
-                     EntityID entity);
-EntityID update_relation_entity(struct DFTracerData* data,
-                                EntityRelation relation,
-                                ConstEntityTypeName type, ConstEntityKey key,
-                                EntityStore store, ConstEntityURI uri);
 
 #define DFTRACER_C_INIT(log_file, data_dirs, process_id) \
   initialize_main(log_file, data_dirs, process_id);      \
@@ -450,24 +386,6 @@ EntityID update_relation_entity(struct DFTracerData* data,
   struct DFTracerData* data_##name DFTRACER_C_REGION_CLEANUP = \
       initialize_region(#name, C_LOG_CATEGORY, DF_METADATA_EVENT);
 #define DFTRACER_C_RECORD_END(name) DFTRACER_C_REGION_END(name)
-
-// Entities and relations (see dftracer_declare_entity, core/common/entity.h).
-#define DFTRACER_C_ENTITY(type, key, store, uri) \
-  dftracer_declare_entity(type, key, store, uri)
-#define DFTRACER_C_ENTITY_TYPE(type, role, description) \
-  dftracer_declare_entity_type(type, role, description);
-#define DFTRACER_C_ENTITY_RELATE(relation, subject, object) \
-  dftracer_relate_entities(relation, subject, object);
-#define DFTRACER_C_FUNCTION_RELATE(relation, entity) \
-  update_relation(data_fn, relation, entity);
-#define DFTRACER_C_FUNCTION_USES(type, key)                                  \
-  update_relation_entity(data_fn, DFT_REL_USED, type, key, DFT_STORE_MEMORY, \
-                         NULL);
-#define DFTRACER_C_FUNCTION_GENERATES(type, key)                \
-  update_relation_entity(data_fn, DFT_REL_GENERATED, type, key, \
-                         DFT_STORE_MEMORY, NULL);
-#define DFTRACER_C_REGION_RELATE(name, relation, entity) \
-  update_relation(data_##name, relation, entity);
 
 #ifdef __cplusplus
 }

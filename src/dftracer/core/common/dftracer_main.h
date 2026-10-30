@@ -101,13 +101,6 @@ class DFTracerCore {
     logger->log_record(record, fields, type);
   }
 
-  // True the first time (record, key) is seen in this process (see
-  // DFTLogger::first_time); false when tracing isn't active.
-  inline bool first_time(ConstEventNameType record, uint64_t key) {
-    if (!is_initialized || !is_active() || logger == nullptr) return false;
-    return logger->first_time(record, key);
-  }
-
   inline int enter_event() { return logger->enter_event(); }
 
   inline void exit_event() { logger->exit_event(); }

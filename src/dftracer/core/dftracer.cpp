@@ -208,21 +208,6 @@ void DFTracer::append_id(const char* key, const char* sub, uint64_t id) {
   if (initialized) append_value(metadata, key, sub, v);
 }
 
-void DFTracer::relate(EntityRelation relation, EntityID entity) {
-  if (event_type != DF_DATA_EVENT || entity == DFT_ENTITY_NONE ||
-      !dft_relation_is_event(relation))
-    return;
-  append_id(DFT_RELATIONS_ARG, dft_relation_name(relation), entity);
-}
-
-EntityID DFTracer::relate(EntityRelation relation, ConstEntityTypeName type,
-                          ConstEntityKey key, EntityStore store,
-                          ConstEntityURI uri) {
-  EntityID id = dftracer_declare_entity(type, key, store, uri);
-  relate(relation, id);
-  return id;
-}
-
 void DFTracer::finalize() {
   DFTRACER_LOG_DEBUG("DFTracer::finalize event %s cat %s", name, cat);
   auto dftracer_core = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
@@ -362,21 +347,6 @@ void finalize_region_cleanup(struct DFTracerData** data) {
   *data = nullptr;
 }
 
-void update_relation(struct DFTracerData* data, EntityRelation relation,
-                     EntityID entity) {
-  if (data && data->profiler)
-    static_cast<DFTracer*>(data->profiler)->relate(relation, entity);
-}
-
-EntityID update_relation_entity(struct DFTracerData* data,
-                                EntityRelation relation,
-                                ConstEntityTypeName type, ConstEntityKey key,
-                                EntityStore store, ConstEntityURI uri) {
-  EntityID id = dftracer_declare_entity(type, key, store, uri);
-  update_relation(data, relation, id);
-  return id;
-}
-
 void update_metadata_int(struct DFTracerData* data, const char* key,
                          int value) {
   DFTRACER_LOG_DEBUG("dftracer.update_metadata_int");
@@ -496,75 +466,6 @@ extern "C" void set_app_metadata_string(const char* key, const char* value) {
   else
     DFTRACER_LOG_ERROR(
         "dftracer.cpp.set_app_metadata_string dftracer not initialized");
-}
-
-// Entities and relations are metadata records (DF_METADATA_EVENT regions with
-// fields), written once per process per entity and per type.
-static std::shared_ptr<dftracer::DFTracerCore> active_core() {
-  auto core = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
-                                      ProfileType::PROFILER_CPP_APP);
-  return core != nullptr && core->is_active() ? core : nullptr;
-}
-
-extern "C" EntityID dftracer_declare_entity(ConstEntityTypeName type,
-                                            ConstEntityKey key,
-                                            EntityStore store,
-                                            ConstEntityURI uri) {
-  DFTRACER_LOG_DEBUG("dftracer.declare_entity");
-  if (type == nullptr || key == nullptr) return DFT_ENTITY_NONE;
-  auto core = active_core();
-  if (core == nullptr) return DFT_ENTITY_NONE;
-  char t[DFT_ENTITY_TYPE_LEN];
-  dft_entity_sanitize(t, sizeof(t), type);
-  EntityID id = dft_entity_hash(t, key);
-  if (!core->first_time(METADATA_NAME_ENTITY_HASH, id)) return id;
-  char u[DFT_ENTITY_URI_LEN];
-  dft_entity_sanitize(u, sizeof(u), uri);
-  char hex[DFT_ENTITY_HEX_LEN];
-  dft_entity_hex(id, hex);
-  DFTracer record(METADATA_NAME_ENTITY_HASH, "", DF_METADATA_EVENT,
-                  TraceEventType::TRACE_TYPE_DFTRACER);
-  record.update("id", hex);
-  record.update("type", t);
-  record.update("store", static_cast<int>(store));
-  record.update("uri", u);
-  return id;
-}
-
-extern "C" void dftracer_declare_entity_type(
-    ConstEntityTypeName type, EntityRole role,
-    ConstEntityDescription description) {
-  DFTRACER_LOG_DEBUG("dftracer.declare_entity_type");
-  if (type == nullptr) return;
-  auto core = active_core();
-  if (core == nullptr) return;
-  char t[DFT_ENTITY_TYPE_LEN];
-  dft_entity_sanitize(t, sizeof(t), type);
-  if (!core->first_time(METADATA_NAME_ENTITY_TYPE, dft_entity_hash(t, "")))
-    return;
-  char d[DFT_ENTITY_DESC_LEN];
-  dft_entity_sanitize(d, sizeof(d), description);
-  DFTracer record(METADATA_NAME_ENTITY_TYPE, "", DF_METADATA_EVENT,
-                  TraceEventType::TRACE_TYPE_DFTRACER);
-  record.update("type", t);
-  record.update("role", static_cast<int>(role));
-  record.update("description", d);
-}
-
-extern "C" void dftracer_relate_entities(EntityRelation relation,
-                                         EntityID subject, EntityID object) {
-  DFTRACER_LOG_DEBUG("dftracer.relate_entities");
-  if (dft_relation_is_event(relation)) return;  // event relations go on events
-  if (subject == DFT_ENTITY_NONE || object == DFT_ENTITY_NONE) return;
-  if (active_core() == nullptr) return;
-  char s_hex[DFT_ENTITY_HEX_LEN], o_hex[DFT_ENTITY_HEX_LEN];
-  dft_entity_hex(subject, s_hex);
-  dft_entity_hex(object, o_hex);
-  DFTracer record(METADATA_NAME_ENTITY_RELATION, "", DF_METADATA_EVENT,
-                  TraceEventType::TRACE_TYPE_DFTRACER);
-  record.update("relation", static_cast<int>(relation));
-  record.update("subject", s_hex);
-  record.update("object", o_hex);
 }
 
 extern "C" void mark_used(const char* name) {
