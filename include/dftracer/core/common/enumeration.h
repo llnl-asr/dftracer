@@ -321,7 +321,10 @@ enum ShmEventFlags : uint8_t {
   SHM_EVENT_INC_METADATA = 1,  // DFTRACER_INC_METADATA: keep optional args
   // The event was logged with a Metadata, possibly empty; without one its
   // args carry no hhash either.
-  SHM_EVENT_HAS_METADATA = 2
+  SHM_EVENT_HAS_METADATA = 2,
+  // The event's type is not aggregatable (dftracer::event_type_aggregatable):
+  // it is always traced in full.
+  SHM_EVENT_NO_AGGREGATE = 4
 };
 // Result of reserving room for a record in the ring (RingProducer).
 enum class ShmReserveResult {

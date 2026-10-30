@@ -1,4 +1,5 @@
 #include <dftracer/core/buffer/local_buffer_manager.h>
+#include <dftracer/core/common/event_types.h>
 #include <dftracer/core/serialization/packed_json.h>
 #include <unistd.h>
 template <>
@@ -161,7 +162,9 @@ void LocalBufferManager::log_data_event(
   DFTRACER_LOG_DEBUG("BufferManager.log_data_event %d", index);
   size_t size = 0;
   bool enable_tracing = true;
-  if (this->config->aggregation_enable && strcmp(category, "dftracer") != 0) {
+  // An event type that is not aggregatable is always traced in full.
+  if (this->config->aggregation_enable && strcmp(category, "dftracer") != 0 &&
+      dftracer::event_type_aggregatable(type)) {
     enable_tracing = false;
     auto aggregated_key =
         AggregatedKey{category, event_name,     type, start_time, duration, tid,
@@ -211,6 +214,17 @@ void LocalBufferManager::log_counter_event(
 }
 
 void LocalBufferManager::log_record(ConstEventNameType record_name,
+                                    const dftracer::Metadata* fields,
+                                    TraceEventType type, ProcessID process_id,
+                                    ThreadID tid) {
+  if (!is_ready()) return;
+  std::unique_lock<std::shared_mutex> lock(mtx);
+  size_t size = this->serializer->record(buffer + buffer_pos, record_name,
+                                         fields, type, process_id, tid);
+  compress_and_write_if_needed(size);
+}
+
+void LocalBufferManager::log_record(ConstEventNameType record_name,
                                     const char* fields, TraceEventType type,
                                     ProcessID process_id, ThreadID tid) {
   if (!is_ready()) return;
@@ -246,9 +260,10 @@ void LocalBufferManager::log_packed_event(const ipc::DecodedEvent& event,
         packed_json::counter(buffer + buffer_pos, event, hostname_hash));
     return;
   }
-  // As log_data_event: everything but dftracer's own events is aggregated,
-  // or under SELECTIVE what the rules pick.
+  // As log_data_event: everything but dftracer's own events and kinds that
+  // are never aggregated is, or under SELECTIVE what the rules pick.
   if (packed_aggregator != nullptr && event.category != "dftracer" &&
+      (event.head.flags & SHM_EVENT_NO_AGGREGATE) == 0 &&
       (this->config->aggregation_type !=
            AggregationType::AGGREGATION_TYPE_SELECTIVE ||
        packed_aggregator->should_aggregate(event, get_app_name(), &rank))) {

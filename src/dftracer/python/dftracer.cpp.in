@@ -53,13 +53,53 @@ std::string get_config(std::string key) {
   return "";
 }
 
+// A Python number or string as a JSON value (bool and int as integers).
+static std::string py_json(py::handle v) {
+  if (py::isinstance<py::bool_>(v))
+    return std::to_string(static_cast<int>(v.cast<bool>()));
+  if (py::isinstance<py::int_>(v)) {
+    int overflow = 0;
+    long long i = PyLong_AsLongLongAndOverflow(v.ptr(), &overflow);
+    if (overflow == 0) return std::to_string(i);
+    return std::to_string(PyLong_AsUnsignedLongLongMask(v.ptr()));
+  }
+  if (py::isinstance<py::float_>(v)) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.15g", v.cast<double>());
+    return buf;
+  }
+  return json_quote(py::str(v).cast<std::string>().c_str());
+}
+
+// A list arg as JSON: [v, ...] or {sub: [v, ...], ...}.
+static std::string py_list_json(py::handle values) {
+  std::string json;
+  if (py::isinstance<py::dict>(values)) {
+    json = "{";
+    for (auto sub : values.cast<py::dict>()) {
+      if (json.size() > 1) json += ',';
+      json += json_quote(py::str(sub.first).cast<std::string>().c_str());
+      json += ':';
+      json += py_list_json(sub.second);
+    }
+    return json + "}";
+  }
+  json = "[";
+  for (auto v : values) {
+    if (json.size() > 1) json += ',';
+    json += py_json(v);
+  }
+  return json + "]";
+}
+
 void log_event(
     std::string name, std::string cat, TimeResolution start_time,
     TimeResolution duration,
-    std::unordered_map<std::string, std::tuple<int, int>> &int_args,
+    std::unordered_map<std::string, std::tuple<int, int64_t>> &int_args,
     std::unordered_map<std::string, std::tuple<int, std::string>> &string_args,
-    std::unordered_map<std::string, std::tuple<int, float>> &float_args,
-    std::unordered_map<EntityRelation, std::vector<EntityID>> &relations) {
+    std::unordered_map<std::string, std::tuple<int, double>> &float_args,
+    std::unordered_map<EntityRelation, std::vector<EntityID>> &relations,
+    py::dict list_args) {
   DFTRACER_LOG_DEBUG("py.log_event", "");
   auto args = new Metadata();
   for (auto item : int_args)
@@ -71,71 +111,55 @@ void log_event(
   for (auto item : float_args)
     args->insert_or_assign(item.first, std::get<1>(item.second),
                            convert(std::get<0>(item.second)));
-  // EntityRelation -> entity ids, written as one "relations" object of
-  // 16-hex id arrays (DFT_RELATIONS_ARG); kept regardless of
-  // DFTRACER_INC_METADATA.
+  // {key: [v, ...]} -> args.key, {key: {sub: [v, ...]}} -> args.key.sub.
+  for (auto item : list_args)
+    args->insert_or_assign(py::str(item.first).cast<std::string>(),
+                           RawJson(py_list_json(item.second)));
+  // EntityRelation -> entity ids: args.relations.<relation> = [16-hex, ...].
   {
     char hex[DFT_ENTITY_HEX_LEN];
-    std::string obj = "{";
-    bool first_rel = true;
+    std::string obj;
     for (auto &item : relations) {
       if (item.second.empty() || !dft_relation_is_event(item.first)) continue;
-      if (!first_rel) obj += ",";
-      first_rel = false;
-      obj += "\"";
-      obj += dft_relation_name(item.first);
-      obj += "\":[";
+      obj += obj.empty() ? "{" : ",";
+      obj += json_quote(dft_relation_name(item.first));
+      obj += ":[";
       for (std::size_t i = 0; i < item.second.size(); ++i) {
         if (i) obj += ",";
         dft_entity_hex(item.second[i], hex);
-        obj += "\"";
-        obj += hex;
-        obj += "\"";
+        obj += json_quote(hex);
       }
       obj += "]";
     }
-    obj += "}";
-    if (!first_rel)
-      args->insert_or_assign(DFT_RELATIONS_ARG, dftracer::RawJson(obj));
+    if (!obj.empty())
+      args->insert_or_assign(DFT_RELATIONS_ARG, RawJson(obj + "}"));
   }
   auto dftracer_inst =
       dftracer::Singleton<dftracer::DFTracerCore>::get_instance(
           ProfilerStage::PROFILER_OTHER, ProfileType::PROFILER_PY_APP);
-  if (dftracer_inst != nullptr) {
-    dftracer_inst->log(name.c_str(), cat.c_str(),
-                       TraceEventType::TRACE_TYPE_PYTHON, start_time, duration,
-                       args);
-  } else {
-    DFTRACER_LOG_DEBUG("py.log_event dftracer not initialized", "");
-  }
+  // log() takes the args only when it writes the event.
+  if (dftracer_inst == nullptr ||
+      !dftracer_inst->log(name.c_str(), cat.c_str(),
+                          TraceEventType::TRACE_TYPE_PYTHON, start_time,
+                          duration, args))
+    delete args;
 }
 
 // Entities: see dftracer_declare_entity in dftracer.h and
 // core/common/entity.h. Ids are Python ints (EntityID).
-static std::shared_ptr<dftracer::DFTracerCore> py_core() {
-  return dftracer::Singleton<dftracer::DFTracerCore>::get_instance(
-      ProfilerStage::PROFILER_OTHER, ProfileType::PROFILER_PY_APP);
-}
-
 EntityID declare_entity(std::string type, std::string key, EntityStore store,
                         std::string uri) {
-  auto core = py_core();
-  if (core == nullptr) return DFT_ENTITY_NONE;
-  return core->declare_entity(type.c_str(), key.c_str(), store, uri.c_str());
+  return dftracer_declare_entity(type.c_str(), key.c_str(), store, uri.c_str());
 }
 
 void declare_entity_type(std::string type, EntityRole role,
                          std::string description) {
-  auto core = py_core();
-  if (core != nullptr)
-    core->declare_entity_type(type.c_str(), role, description.c_str());
+  dftracer_declare_entity_type(type.c_str(), role, description.c_str());
 }
 
 void relate_entities(EntityRelation relation, EntityID subject,
                      EntityID object) {
-  if (dft_relation_is_event(relation)) return;
-  auto core = py_core();
-  if (core != nullptr) core->relate_entities(relation, subject, object);
+  dftracer_relate_entities(relation, subject, object);
 }
 
 EntityID entity_hash(std::string type, std::string key) {
@@ -150,16 +174,37 @@ std::string entity_hex(EntityID id) {
   return std::string(hex);
 }
 
-void log_metadata_event(std::string key, std::string value) {
+// Without fields, a key/value metadata event. With fields ({name: value},
+// values int, float, str, or lists as in log_event's list_args), a metadata
+// record named `key` whose args are the fields.
+void log_metadata_event(std::string key, std::string value, py::dict fields) {
   DFTRACER_LOG_DEBUG("py.log_metadata_event", "");
   auto dftracer_inst =
       dftracer::Singleton<dftracer::DFTracerCore>::get_instance(
           ProfilerStage::PROFILER_OTHER, ProfileType::PROFILER_PY_APP);
-  if (dftracer_inst != nullptr)
+  if (dftracer_inst == nullptr) {
+    DFTRACER_LOG_DEBUG("py.log_metadata_event dftracer not initialized", "");
+    return;
+  }
+  if (fields.empty()) {
     dftracer_inst->log_metadata(key.c_str(), value.c_str(),
                                 TraceEventType::TRACE_TYPE_PYTHON);
-  else
-    DFTRACER_LOG_DEBUG("py.log_metadata_event dftracer not initialized", "");
+    return;
+  }
+  auto record = new Metadata();
+  for (auto item : fields) {
+    std::string name = py::str(item.first);
+    py::handle v = item.second;
+    if (py::isinstance<py::list>(v) || py::isinstance<py::tuple>(v) ||
+        py::isinstance<py::dict>(v))
+      record->insert_or_assign(name, RawJson(py_list_json(v)));
+    else if (py::isinstance<py::str>(v))
+      record->insert_or_assign(name, v.cast<std::string>());
+    else
+      record->insert_or_assign(name, RawJson(py_json(v)));
+  }
+  dftracer_inst->log_record(key.c_str(), record,
+                            TraceEventType::TRACE_TYPE_PYTHON);
 }
 
 void set_app_metadata_int(std::string key, int value) {

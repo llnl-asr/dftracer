@@ -23,7 +23,6 @@ namespace dftracer {
 class JsonLines {
   bool include_metadata;
   HashType hostname_hash;
-  bool convert_metadata(Metadata* metadata, std::stringstream& meta_stream);
   // Shared layout for the timestamped, duration-less records: counters and
   // aggregated events differ only in their phase. Takes ownership of metadata
   // (convert_metadata() frees a non-empty map, series() an empty one).
@@ -35,6 +34,10 @@ class JsonLines {
 
  public:
   JsonLines();
+  // Writes the metadata as "key":value,... into meta_stream and frees it.
+  // Returns whether there was any.
+  static bool convert_metadata(Metadata* metadata,
+                               std::stringstream& meta_stream);
   // The service serializes for many processes, each with its own setting.
   void set_include_metadata(bool include) { include_metadata = include; }
   bool includes_metadata() const { return include_metadata; }
@@ -56,6 +59,10 @@ class JsonLines {
   size_t record(char* buffer, ConstEventNameType record_name,
                 const char* fields, TraceEventType type, ProcessID process_id,
                 ThreadID thread_id);
+  // The same from a record's Metadata, written straight into the line.
+  size_t record(char* buffer, ConstEventNameType record_name,
+                const Metadata* fields, TraceEventType type,
+                ProcessID process_id, ThreadID thread_id);
   size_t counter(char* buffer, int index, ConstEventNameType name,
                  ConstEventNameType category, TraceEventType type,
                  TimeResolution start_time, ProcessID process_id,

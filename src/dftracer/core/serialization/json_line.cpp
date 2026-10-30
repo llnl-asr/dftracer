@@ -4,6 +4,8 @@
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/singleton.h>
 #include <dftracer/core/serialization/json_line.h>
+#include <dftracer/core/serialization/metadata_json.h>
+#include <dftracer/core/serialization/packed_json.h>
 #include <dftracer/core/utils/utils.h>
 
 #include <cstring>
@@ -29,42 +31,8 @@ size_t JsonLines::initialize(char* buffer, HashType hostname_hash) {
 bool JsonLines::convert_metadata(Metadata* metadata,
                                  std::stringstream& meta_stream) {
   if (metadata == nullptr) return false;
-  auto meta_size = metadata->size();
-  long unsigned int i = 0;
-  bool has_meta = false;
-  for (const auto& item : *metadata) {
-    has_meta = true;
-    if (std::get<1>(item.second).type() == typeid(dftracer::RawJson)) {
-      const auto& raw =
-          std::any_cast<const dftracer::RawJson&>(std::get<1>(item.second));
-      meta_stream << "\"" << item.first << "\":" << raw.value;
-      if (i < meta_size - 1) meta_stream << ",";
-      i++;
-      continue;
-    }
-    DFTRACER_FOR_EACH_NUMERIC_TYPE(
-        DFTRACER_ANY_CAST_MACRO, std::get<1>(item.second), {
-          meta_stream << "\"" << item.first << "\":" << res.value();
-          if (i < meta_size - 1) meta_stream << ",";
-          i++;
-          continue;
-        });
-    DFTRACER_FOR_EACH_STRING_TYPE(
-        DFTRACER_ANY_CAST_MACRO, std::get<1>(item.second), {
-          meta_stream << "\"" << item.first << "\":\"" << res.value() << "\"";
-          if (i < meta_size - 1) meta_stream << ",";
-          i++;
-          continue;
-        });
-    i++;
-  }
-  if (meta_stream.str().size() > 0 && meta_stream.str().back() == ',') {
-    std::string temp = meta_stream.str();
-    temp.pop_back();
-    meta_stream.str("");
-    meta_stream.clear();
-    meta_stream << temp;
-  }
+  metadata_json::Stream out(meta_stream);
+  bool has_meta = metadata_json::fields(out, *metadata, false) > 0;
   delete metadata;
   return has_meta;
 }
@@ -80,21 +48,19 @@ size_t JsonLines::data(char* buffer, int index, ConstEventNameType event_name,
   // not optional metadata: keep them even when DFTRACER_INC_METADATA is off,
   // and drop only the optional keys.
   if (!include_metadata && metadata != nullptr) {
-    auto* rel_only = new dftracer::Metadata();
-    for (const auto& item : *metadata) {
-      if (item.first == DFT_RELATIONS_ARG &&
-          std::get<1>(item.second).type() == typeid(dftracer::RawJson)) {
-        rel_only->insert_or_assign(
-            item.first,
-            std::any_cast<const dftracer::RawJson&>(std::get<1>(item.second)));
-      }
+    for (auto it = metadata->begin(); it != metadata->end();) {
+      const auto& v = std::get<1>(it->second);
+      if (it->first == DFT_RELATIONS_ARG &&
+          (v.type() == typeid(dftracer::RawJson) ||
+           v.type() == typeid(dftracer::ArgList)))
+        ++it;
+      else
+        it = metadata->erase(it);
     }
-    delete metadata;
-    metadata = nullptr;
-    if (rel_only->size() > 0)
-      metadata = rel_only;
-    else
-      delete rel_only;
+    if (metadata->empty()) {
+      delete metadata;
+      metadata = nullptr;
+    }
   }
   if (metadata != nullptr) {
     std::stringstream all_stream;
@@ -223,6 +189,28 @@ size_t JsonLines::record(char* buffer, ConstEventNameType record_name,
     buffer[DFTRACER_SERIALIZATION_EVENT_MAX - 1] = '\0';
   }
   return written_size;
+}
+
+size_t JsonLines::record(char* buffer, ConstEventNameType record_name,
+                         const Metadata* fields, TraceEventType type,
+                         ProcessID process_id, ThreadID thread_id) {
+  packed_json::Line line(buffer);
+  line.raw("{\"name\":\"");
+  line.raw(record_name == nullptr ? "" : record_name);
+  line.raw("\",\"cat\":\"dftracer\",\"type\":");
+  line.u64(static_cast<unsigned>(type));
+  line.raw(",\"pid\":");
+  line.i64(process_id);
+  line.raw(",\"tid\":");
+  line.u64(thread_id);
+  line.raw(",\"ph\":");
+  line.u64(static_cast<unsigned>(TracePhaseType::TRACE_PHASE_METADATA));
+  line.raw(",\"args\":{\"hhash\":\"");
+  line.raw(this->hostname_hash == nullptr ? "" : this->hostname_hash);
+  line.raw("\"");
+  if (fields != nullptr) metadata_json::fields(line, *fields, true);
+  line.raw("}}");
+  return line.finish("record", 0);
 }
 
 size_t JsonLines::metadata(char* buffer, ConstEventNameType name,
