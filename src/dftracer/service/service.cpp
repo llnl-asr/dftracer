@@ -1,5 +1,6 @@
 #include <dftracer/service/service.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -32,15 +33,36 @@ std::string hostname() {
   return name;
 }
 
+// The content of a /proc file, or "" when unreadable. A process can exit at any
+// moment of a scan, and a read of its file then fails with ESRCH, which
+// std::filebuf turns into an exception out of istreambuf_iterator: a process
+// exiting anywhere on the node must not take the service down with it.
+std::string read_proc_file(const std::string& path) {
+  std::string content;
+  int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return content;
+  char block[4096];
+  ssize_t n;
+  while ((n = read(fd, block, sizeof(block))) > 0)
+    content.append(block, static_cast<size_t>(n));
+  close(fd);
+  return content;
+}
+
 // The value of `var` in /proc/<pid>/environ, or "" when absent or unreadable.
 std::string environ_of(const char* pid, const std::string& var) {
-  std::ifstream file("/proc/" + std::string(pid) + "/environ",
-                     std::ios::binary);
-  std::string entry;
-  while (std::getline(file, entry, '\0')) {
-    if (entry.size() > var.size() && entry.compare(0, var.size(), var) == 0 &&
-        entry[var.size()] == '=')
-      return entry.substr(var.size() + 1);
+  const std::string environ_text =
+      read_proc_file("/proc/" + std::string(pid) + "/environ");
+  size_t start = 0;
+  while (start < environ_text.size()) {
+    size_t end = environ_text.find('\0', start);
+    if (end == std::string::npos) end = environ_text.size();
+    if (end - start > var.size() &&
+        environ_text.compare(start, var.size(), var) == 0 &&
+        environ_text[start + var.size()] == '=')
+      return environ_text.substr(start + var.size() + 1,
+                                 end - start - var.size() - 1);
+    start = end + 1;
   }
   return "";
 }
@@ -77,11 +99,8 @@ std::vector<pid_t> find_other_start_pids(const std::string& binary_name,
     pid_t pid = static_cast<pid_t>(std::strtol(name, nullptr, 10));
     if (pid <= 0 || pid == self_pid) continue;
 
-    std::ifstream cmdline_file("/proc/" + std::string(name) + "/cmdline",
-                               std::ios::binary);
-    if (!cmdline_file) continue;
-    std::string cmdline((std::istreambuf_iterator<char>(cmdline_file)),
-                        std::istreambuf_iterator<char>());
+    const std::string cmdline =
+        read_proc_file("/proc/" + std::string(name) + "/cmdline");
     if (cmdline.empty()) continue;
 
     // cmdline is NUL-separated argv; split it out instead of doing a raw
