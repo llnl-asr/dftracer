@@ -13,11 +13,34 @@
 #include <dftracer/core/common/typedef.h>
 #define DF_DATA_EVENT 0
 #define DF_METADATA_EVENT 1
+
+// Layers (the "type" column) from here up to 255 are for other projects'
+// event types; below it are dftracer's own TraceEventType values.
+#define DFTRACER_TRACE_TYPE_EXTERNAL 128
+
+// An event type, defined at compile time by the project whose events it
+// describes: the category and layer its events carry, whether they are data
+// events or metadata records, and whether aggregation may fold them.
+// Aggregatability belongs to the layer: once a data-event type on a layer is
+// registered as not aggregatable, every event on that layer is traced in full,
+// also when DFTRACER_AGGREGATION_ENABLE is on. Metadata events are never
+// aggregated, so `aggregatable` means nothing for them. A type is registered
+// when its first region is set up, or with dftracer_register_event_type.
+// In C++ derive from dftracer::EventType.
+struct DFTracerEventType {
+  const char* category;
+  int layer;         // a TraceEventType, or DFTRACER_TRACE_TYPE_EXTERNAL + n
+  int kind;          // DF_DATA_EVENT or DF_METADATA_EVENT
+  int aggregatable;  // 0: the layer's events are never aggregated
+};
 #ifdef __cplusplus
 extern "C" {
 #endif
 void initialize_main(const char* log_file, const char* data_dirs,
                      int* process_id);
+// Register an event type up front, e.g. before events of its layer are logged
+// by other means (see DFTracerEventType).
+void dftracer_register_event_type(const struct DFTracerEventType* type);
 void initialize_no_bind(const char* log_file, const char* data_dirs,
                         int* process_id);
 void finalize();
@@ -70,10 +93,43 @@ void dftracer_relate_entities(EntityRelation relation, EntityID subject,
 #include <dftracer/core/common/enumeration.h>
 
 // External Headers
+#include <type_traits>
 
 // constants defined
 __attribute__((unused)) static ConstEventNameType CPP_LOG_CATEGORY = "CPP_APP";
 
+namespace dftracer {
+// The compile-time form of DFTracerEventType. A project derives its types
+// from it and overrides what differs; the defaults are dftracer's own C++
+// region (an aggregatable CPP_APP data event):
+//
+//   struct Provenance : dftracer::EventType {
+//     static constexpr const char* category = "provenance";
+//     static constexpr bool aggregatable = false;
+//   };
+//   DFTracer ev("load", Provenance{});   // or DFTRACER_CPP_TYPED_REGION
+struct EventType {
+  static constexpr const char* category = "CPP_APP";
+  static constexpr TraceEventType layer = TraceEventType::TRACE_TYPE_CPP_APP;
+  static constexpr int kind = DF_DATA_EVENT;
+  static constexpr bool aggregatable = true;
+};
+
+template <typename T>
+constexpr DFTracerEventType event_type_of() {
+  static_assert(std::is_base_of<EventType, T>::value,
+                "an event type derives from dftracer::EventType");
+  static_assert(T::kind == DF_DATA_EVENT || T::kind == DF_METADATA_EVENT,
+                "kind is DF_DATA_EVENT or DF_METADATA_EVENT");
+  return DFTracerEventType{T::category, static_cast<int>(T::layer), T::kind,
+                           T::kind == DF_METADATA_EVENT || T::aggregatable};
+}
+}  // namespace dftracer
+
+// A traced region. A DF_DATA_EVENT region is written as one event with its
+// duration and args. A DF_METADATA_EVENT region is written as one metadata
+// record: with update()/append() fields, a record named `_name` holding them
+// as args; without, the plain key/value pair (_name, _cat) as before.
 class DFTracer {
   int event_type;  // 0->event  1->metadata
   bool initialized;
@@ -82,18 +138,56 @@ class DFTracer {
   TraceEventType type;
   TimeResolution start_time;
   dftracer::Metadata* metadata;
-  void* relations;  // relation name -> entity hashes; see relate()
+
+  void update_number(const char* key, int64_t value, MetadataType type);
+  void update_number(const char* key, uint64_t value, MetadataType type);
+  void update_number(const char* key, double value, MetadataType type);
 
  public:
   DFTracer(ConstEventNameType _name, ConstEventNameType _cat,
            int event_type = DF_DATA_EVENT,
            TraceEventType _type = TraceEventType::TRACE_TYPE_CPP_APP);
+  // A region of the given event type.
+  DFTracer(ConstEventNameType _name, const DFTracerEventType& event_type);
+  template <typename T,
+            typename std::enable_if<
+                std::is_base_of<dftracer::EventType, T>::value, int>::type = 0>
+  DFTracer(ConstEventNameType _name, T)
+      : DFTracer(_name, dftracer::event_type_of<T>()) {}
 
   void update(const char* key, int value,
               MetadataType type = MetadataType::MT_KEY);
 
+  // The string is kept by pointer and must outlive the region.
   void update(const char* key, const char* value,
               MetadataType type = MetadataType::MT_KEY);
+
+  // Any other number: 64-bit integers, unsigned values, doubles; bool is
+  // written as 0 or 1.
+  template <typename T,
+            typename std::enable_if<std::is_arithmetic<T>::value &&
+                                        !std::is_same<T, int>::value,
+                                    int>::type = 0>
+  void update(const char* key, T value,
+              MetadataType type = MetadataType::MT_KEY) {
+    if (std::is_floating_point<T>::value)
+      update_number(key, static_cast<double>(value), type);
+    else if (std::is_signed<T>::value)
+      update_number(key, static_cast<int64_t>(value), type);
+    else
+      update_number(key, static_cast<uint64_t>(value), type);
+  }
+
+  // Add a value to the list args.<key>, or with `sub` to args.<key>.<sub>
+  // (an object of lists, e.g. "relations":{"used":[...]}). Values are kept in
+  // the order added and written with the event. Nothing is copied: strings,
+  // like sub, must outlive the region, as with update().
+  void append(const char* key, const char* value);
+  void append(const char* key, int64_t value);
+  void append(const char* key, const char* sub, const char* value);
+  void append(const char* key, const char* sub, int64_t value);
+  // A 64-bit id, written as a string of 16 hex digits (e.g. an entity id).
+  void append_id(const char* key, const char* sub, uint64_t id);
 
   // Relate this event to an entity under an event relation (DFT_REL_USED,
   // DFT_REL_GENERATED, DFT_REL_INVALIDATED, DFT_REL_UPDATED). Ids are kept
@@ -148,6 +242,14 @@ class DFTracer {
 
 #define DFTRACER_CPP_REGION_END(name) delete profiler_##name
 
+// Regions of an event type (a struct derived from dftracer::EventType).
+#define DFTRACER_CPP_TYPED_FUNCTION(event_type) \
+  DFTracer profiler_dft_fn = DFTracer((char*)__FUNCTION__, event_type{});
+#define DFTRACER_CPP_TYPED_REGION(event_type, name) \
+  DFTracer profiler_##name = DFTracer(#name, event_type{});
+#define DFTRACER_CPP_TYPED_REGION_START(event_type, name) \
+  DFTracer* profiler_##name = new DFTracer(#name, event_type{});
+
 #define DFTRACER_CPP_FUNCTION_UPDATE(key, val) profiler_dft_fn.update(key, val);
 
 #define DFTRACER_CPP_FUNCTION_UPDATE_TYPE(key, val, type) \
@@ -164,6 +266,19 @@ class DFTracer {
 
 #define DFTRACER_CPP_REGION_DYN_UPDATE_TYPE(name, key, val, type) \
   profiler_##name->update(key, val, type);
+
+// append(key, value) or append(key, sub, value); see DFTracer::append.
+#define DFTRACER_CPP_FUNCTION_APPEND(...) profiler_dft_fn.append(__VA_ARGS__);
+#define DFTRACER_CPP_REGION_APPEND(name, ...) \
+  profiler_##name.append(__VA_ARGS__);
+#define DFTRACER_CPP_REGION_DYN_APPEND(name, ...) \
+  profiler_##name->append(__VA_ARGS__);
+
+// A metadata record named `name` whose args are the fields set on it with
+// DFTRACER_CPP_REGION_UPDATE / _APPEND before the region ends.
+#define DFTRACER_CPP_RECORD(name) \
+  DFTracer profiler_##name =      \
+      DFTracer(#name, CPP_LOG_CATEGORY, DF_METADATA_EVENT);
 
 // Entities and relations (see dftracer_declare_entity, core/common/entity.h).
 #define DFTRACER_CPP_ENTITY(type, key, store, uri) \
@@ -193,6 +308,9 @@ struct DFTracerData {
 __attribute__((unused)) static ConstEventNameType C_LOG_CATEGORY = "C_APP";
 struct DFTracerData* initialize_region(ConstEventNameType name,
                                        ConstEventNameType cat, int event_type);
+// A region of the given event type (see DFTracerEventType).
+struct DFTracerData* initialize_typed_region(
+    ConstEventNameType name, const struct DFTracerEventType* type);
 void finalize_region(struct DFTracerData* data);
 void finalize_region_cleanup(struct DFTracerData** data);
 void update_metadata_int(struct DFTracerData* data, const char* key, int value);
@@ -203,6 +321,22 @@ void update_metadata_int_type(struct DFTracerData* data, const char* key,
                               int value, int type);
 void update_metadata_string_type(struct DFTracerData* data, const char* key,
                                  const char* value, int type);
+
+void update_metadata_int64(struct DFTracerData* data, const char* key,
+                           int64_t value);
+void update_metadata_uint64(struct DFTracerData* data, const char* key,
+                            uint64_t value);
+void update_metadata_double(struct DFTracerData* data, const char* key,
+                            double value);
+
+// Add a value to the list args.<key>, or to args.<key>.<sub> when `sub` is
+// not NULL (see DFTracer::append).
+void update_metadata_append_string(struct DFTracerData* data, const char* key,
+                                   const char* sub, const char* value);
+void update_metadata_append_int(struct DFTracerData* data, const char* key,
+                                const char* sub, int64_t value);
+void update_metadata_append_id(struct DFTracerData* data, const char* key,
+                               const char* sub, uint64_t id);
 
 // Relate a region to an entity under an event relation, or declare
 // (type, key) and relate it in one call (returns the entity id).
@@ -247,6 +381,15 @@ EntityID update_relation_entity(struct DFTracerData* data,
   finalize_region(data_##name);     \
   data_##name = NULL;
 
+// Regions of an event type, a struct DFTracerEventType; end them with
+// DFTRACER_C_FUNCTION_END / DFTRACER_C_REGION_END.
+#define DFTRACER_C_TYPED_FUNCTION_START(event_type)        \
+  struct DFTracerData* data_fn DFTRACER_C_REGION_CLEANUP = \
+      initialize_typed_region(__func__, &(event_type));
+#define DFTRACER_C_TYPED_REGION_START(event_type, name)        \
+  struct DFTracerData* data_##name DFTRACER_C_REGION_CLEANUP = \
+      initialize_typed_region(#name, &(event_type));
+
 #define DFTRACER_C_METADATA(name, key, val)             \
   {                                                     \
     struct DFTracerData* data_##name =                  \
@@ -277,6 +420,36 @@ EntityID update_relation_entity(struct DFTracerData* data,
 
 #define DFTRACER_C_REGION_UPDATE_STR_TYPE(name, key, val, type) \
   update_metadata_string_type(data_##name, key, val, type);
+
+#define DFTRACER_C_FUNCTION_UPDATE_INT64(key, val) \
+  update_metadata_int64(data_fn, key, val);
+#define DFTRACER_C_FUNCTION_UPDATE_UINT64(key, val) \
+  update_metadata_uint64(data_fn, key, val);
+#define DFTRACER_C_FUNCTION_UPDATE_DOUBLE(key, val) \
+  update_metadata_double(data_fn, key, val);
+#define DFTRACER_C_REGION_UPDATE_INT64(name, key, val) \
+  update_metadata_int64(data_##name, key, val);
+#define DFTRACER_C_REGION_UPDATE_UINT64(name, key, val) \
+  update_metadata_uint64(data_##name, key, val);
+#define DFTRACER_C_REGION_UPDATE_DOUBLE(name, key, val) \
+  update_metadata_double(data_##name, key, val);
+
+// sub is NULL for a plain list args.<key>, or a name for args.<key>.<sub>.
+#define DFTRACER_C_FUNCTION_APPEND_STR(key, sub, val) \
+  update_metadata_append_string(data_fn, key, sub, val);
+#define DFTRACER_C_FUNCTION_APPEND_INT(key, sub, val) \
+  update_metadata_append_int(data_fn, key, sub, val);
+#define DFTRACER_C_REGION_APPEND_STR(name, key, sub, val) \
+  update_metadata_append_string(data_##name, key, sub, val);
+#define DFTRACER_C_REGION_APPEND_INT(name, key, sub, val) \
+  update_metadata_append_int(data_##name, key, sub, val);
+
+// A metadata record named `name`: start it, set its fields with
+// DFTRACER_C_REGION_UPDATE_* / _APPEND_*, and end it to write it.
+#define DFTRACER_C_RECORD_START(name)                          \
+  struct DFTracerData* data_##name DFTRACER_C_REGION_CLEANUP = \
+      initialize_region(#name, C_LOG_CATEGORY, DF_METADATA_EVENT);
+#define DFTRACER_C_RECORD_END(name) DFTRACER_C_REGION_END(name)
 
 // Entities and relations (see dftracer_declare_entity, core/common/entity.h).
 #define DFTRACER_C_ENTITY(type, key, store, uri) \

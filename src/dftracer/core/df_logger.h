@@ -107,10 +107,9 @@ class DFTLogger {
   std::shared_mutex used_extra_mtx_;
   std::unordered_set<std::string> used_extra_;
 
-  // Entities / entity types already recorded in this process.
-  std::shared_mutex entity_mtx_;
-  std::unordered_set<EntityID> entities_;
-  std::unordered_set<std::string> entity_types_;
+  // (record, key) pairs already written once (see first_time).
+  std::shared_mutex once_mtx_;
+  std::unordered_map<std::string, std::unordered_set<uint64_t>> once_;
 
   // Runtime facts resolved by DFTracerCore at init (see set_runtime_info),
   // folded into the "cfg" object at finalize() alongside the static
@@ -486,7 +485,10 @@ class DFTLogger {
                                          type, start_time, duration, metadata,
                                          this->process_id, tid);
     has_entry = true;
-    if (type != TraceEventType::TRACE_TYPE_DFTRACER) {
+    // Other projects' layers (DFTRACER_TRACE_TYPE_EXTERNAL up) are not
+    // tracked here.
+    if (type != TraceEventType::TRACE_TYPE_DFTRACER &&
+        type < TraceEventType::TRACE_TYPE_MAX) {
       used_layers_.fetch_or(1u << static_cast<uint32_t>(type),
                             std::memory_order_relaxed);
     }
@@ -556,76 +558,23 @@ class DFTLogger {
     return hash;
   }
 
-  // ---- Entities (see dftracer/core/common/entity.h) ---------------------
-  // Declare an entity instance once per process. The id is the 64-bit FNV-1a
-  // of (sanitized type, key); the first declaration writes one EH record
-  // (name = 16-hex id, value = "<type>|<store>|<uri>"), later ones are a set
-  // lookup. Returns the id (DFT_ENTITY_NONE if type/key are missing).
-  inline EntityID declare_entity(ConstEntityTypeName type, ConstEntityKey key,
-                                 EntityStore store, ConstEntityURI uri) {
-    if (type == nullptr || key == nullptr) return DFT_ENTITY_NONE;
-    char t[DFT_ENTITY_TYPE_LEN];
-    dft_entity_sanitize(t, sizeof(t), type);
-    EntityID id = dft_entity_hash(t, key);
-    {
-      std::unique_lock<std::shared_mutex> lock(entity_mtx_);
-      if (!entities_.insert(id).second) return id;
-    }
-    char u[DFT_ENTITY_URI_LEN];
-    dft_entity_sanitize(u, sizeof(u), uri);
-    char hex[DFT_ENTITY_HEX_LEN];
-    dft_entity_hex(id, hex);
-    char fields[DFT_ENTITY_TYPE_LEN + DFT_ENTITY_URI_LEN + 64];
-    snprintf(fields, sizeof(fields),
-             "\"id\":\"%s\",\"type\":\"%s\",\"store\":%d,\"uri\":\"%s\"", hex,
-             t, static_cast<int>(store), u);
-    emit_entity_record(METADATA_NAME_ENTITY_HASH, fields);
-    return id;
+  // True the first time (record, key) is seen in this process, false after:
+  // for records written once per process (e.g. one EH per entity).
+  inline bool first_time(ConstEventNameType record, uint64_t key) {
+    std::unique_lock<std::shared_mutex> lock(once_mtx_);
+    return once_[record].insert(key).second;
   }
 
-  // Describe an entity type once per process: one ET record
-  // (name = type, value = "<role>|<description>").
-  inline void declare_entity_type(ConstEntityTypeName type, EntityRole role,
-                                  ConstEntityDescription description) {
-    if (type == nullptr) return;
-    char t[DFT_ENTITY_TYPE_LEN];
-    dft_entity_sanitize(t, sizeof(t), type);
-    {
-      std::unique_lock<std::shared_mutex> lock(entity_mtx_);
-      if (!entity_types_.insert(t).second) return;
-    }
-    char d[DFT_ENTITY_DESC_LEN];
-    dft_entity_sanitize(d, sizeof(d), description);
-    char fields[DFT_ENTITY_TYPE_LEN + DFT_ENTITY_DESC_LEN + 64];
-    snprintf(fields, sizeof(fields),
-             "\"type\":\"%s\",\"role\":%d,\"description\":\"%s\"", t,
-             static_cast<int>(role), d);
-    emit_entity_record(METADATA_NAME_ENTITY_TYPE, fields);
-  }
-
-  // Relate two entities (entity -> entity relations, e.g. CONTAINS,
-  // DERIVED_FROM): one ER record (name = relation, value =
-  // "<subject>|<object>").
-  inline void relate_entities(EntityRelation relation, EntityID subject,
-                              EntityID object) {
-    if (subject == DFT_ENTITY_NONE || object == DFT_ENTITY_NONE) return;
-    char s_hex[DFT_ENTITY_HEX_LEN], o_hex[DFT_ENTITY_HEX_LEN];
-    dft_entity_hex(subject, s_hex);
-    dft_entity_hex(object, o_hex);
-    char fields[2 * DFT_ENTITY_HEX_LEN + 64];
-    snprintf(fields, sizeof(fields),
-             "\"relation\":%d,\"subject\":\"%s\",\"object\":\"%s\"",
-             static_cast<int>(relation), s_hex, o_hex);
-    emit_entity_record(METADATA_NAME_ENTITY_RELATION, fields);
-  }
-
-  inline void emit_entity_record(const char* record, const char* fields) {
+  // A metadata record whose args are the given fields, written from them
+  // straight into the trace (or the ring). Takes ownership of fields.
+  inline void log_record(ConstEventNameType record, dftracer::Metadata* fields,
+                         TraceEventType type) {
     ThreadID tid = 0;
     if (dftracer_tid) tid = df_gettid();
     if (this->buffer_manager != nullptr)
-      this->buffer_manager->log_record(record, fields,
-                                       TraceEventType::TRACE_TYPE_DFTRACER,
-                                       this->process_id, tid);
+      this->buffer_manager->log_record(record, fields, type, this->process_id,
+                                       tid);
+    delete fields;
   }
 
   inline HashType hash_and_store(const char* filename,

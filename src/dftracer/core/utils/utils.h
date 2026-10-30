@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include <any>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <iostream>
@@ -261,6 +262,26 @@ class Trie {
 
 const int MAX_PREFIX = 128;
 const int MAX_EXT = 4;
+
+// A JSON string literal: quotes, backslashes and control characters escaped.
+inline std::string json_quote(const char* s) {
+  std::string out = "\"";
+  for (const char* p = s == nullptr ? "" : s; *p; ++p) {
+    const unsigned char c = static_cast<unsigned char>(*p);
+    if (c == '"' || c == '\\') {
+      out += '\\';
+      out += static_cast<char>(c);
+    } else if (c < 0x20) {
+      char esc[8];
+      snprintf(esc, sizeof(esc), "\\u%04x", c);
+      out += esc;
+    } else {
+      out += static_cast<char>(c);
+    }
+  }
+  out += '"';
+  return out;
+}
 
 inline std::vector<std::string> split(std::string str, char delimiter) {
   DFTRACER_LOG_DEBUG("split");

@@ -5,6 +5,7 @@
 #include <dftracer/core/df_logger.h>
 #include <dftracer/core/utils/configuration_manager.h>
 #include <dftracer/core/utils/utils.h>
+#include <dftracer/dftracer.h>
 #include <execinfo.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -35,13 +36,14 @@ PYBIND11_MODULE(dftracer, m) {
         py::arg("name"), py::arg("cat"), py::arg("start_time"),
         py::arg("duration"),
         py::arg("int_args") =
-            std::unordered_map<std::string, std::tuple<int, int>>(),
+            std::unordered_map<std::string, std::tuple<int, int64_t>>(),
         py::arg("string_args") =
             std::unordered_map<std::string, std::tuple<int, std::string>>(),
         py::arg("float_args") =
-            std::unordered_map<std::string, std::tuple<int, float>>(),
+            std::unordered_map<std::string, std::tuple<int, double>>(),
         py::arg("relations") =
-            std::unordered_map<EntityRelation, std::vector<EntityID>>());
+            std::unordered_map<EntityRelation, std::vector<EntityID>>(),
+        py::arg("list_args") = py::dict());
   py::enum_<EntityStore>(m, "EntityStore", "Where an entity instance lives",
                          py::module_local())
       .value("MEMORY", DFT_STORE_MEMORY)
@@ -93,7 +95,9 @@ PYBIND11_MODULE(dftracer, m) {
   m.def("entity_hex", &dftracer::entity_hex, "16-hex rendering of an EntityID",
         py::arg("id"));
   m.def("log_metadata_event", &dftracer::log_metadata_event,
-        "log metadata event", py::arg("key"), py::arg("value"));
+        "log a key/value metadata event, or with fields a metadata record "
+        "named key",
+        py::arg("key"), py::arg("value") = "", py::arg("fields") = py::dict());
   m.def("set_app_metadata_int", &dftracer::set_app_metadata_int,
         "set process-global app metadata (int), folded into the trace's "
         "end event at finalize",

@@ -1,4 +1,5 @@
 #include <dftracer/core/buffer/service_buffer_manager.h>
+#include <dftracer/core/common/event_types.h>
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/singleton.h>
 #include <dftracer/core/utils/configuration_manager.h>
@@ -428,9 +429,13 @@ void ServiceBufferManager::log_data_event(
     TraceEventType type, TimeResolution start_time, TimeResolution duration,
     dftracer::Metadata* metadata, ProcessID process_id, ThreadID tid) {
   if (!is_ready()) return;
+  // The service has no event-type registry: tell it per event.
+  const uint8_t flags = static_cast<uint8_t>(
+      event_flags_ |
+      (dftracer::event_type_aggregatable(type) ? 0 : SHM_EVENT_NO_AGGREGATE));
   if (emit(SHM_KIND_DATA, [&](ipc::ByteWriter& w) {
         ipc::encode_event(w, index, event_name, category, type, start_time,
-                          duration, metadata, process_id, tid, event_flags_);
+                          duration, metadata, process_id, tid, flags);
       })) {
     delete metadata;
     return;
@@ -463,8 +468,9 @@ void ServiceBufferManager::log_counter_event(
 }
 
 void ServiceBufferManager::log_record(ConstEventNameType record_name,
-                                      const char* fields, TraceEventType type,
-                                      ProcessID process_id, ThreadID tid) {
+                                      const dftracer::Metadata* fields,
+                                      TraceEventType type, ProcessID process_id,
+                                      ThreadID tid) {
   if (!is_ready()) return;
   if (emit(SHM_KIND_RECORD, [&](ipc::ByteWriter& w) {
         ipc::encode_record(w, record_name, fields, type, process_id, tid);

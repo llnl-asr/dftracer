@@ -44,6 +44,43 @@ add_dependencies(test_entity_c ${PROJECT_NAME}_core_dbg)
 add_executable(test_entity_cpp cpp/test_entity.cpp)
 target_link_libraries(test_entity_cpp ${PROJECT_NAME}_core_dbg)
 add_dependencies(test_entity_cpp ${PROJECT_NAME}_core_dbg)
+# Typed values, lists and metadata records (C and C++); see check_args_trace.py
+add_executable(test_args_c c/test_args.c)
+target_link_libraries(test_args_c ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_args_c ${PROJECT_NAME}_core_dbg)
+add_executable(test_args_cpp cpp/test_args.cpp)
+target_link_libraries(test_args_cpp ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_args_cpp ${PROJECT_NAME}_core_dbg)
+# Event types (C and C++); see check_event_types_trace.py
+add_executable(test_event_types_c c/test_event_types.c)
+target_link_libraries(test_event_types_c ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_event_types_c ${PROJECT_NAME}_core_dbg)
+add_executable(test_event_types_cpp cpp/test_event_types.cpp)
+target_link_libraries(test_event_types_cpp ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_event_types_cpp ${PROJECT_NAME}_core_dbg)
+# A provenance-style API on dftracer's public API (C and C++); see
+# check_prov_style_trace.py
+add_executable(test_prov_style_c c/test_prov_style.c)
+target_link_libraries(test_prov_style_c ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_prov_style_c ${PROJECT_NAME}_core_dbg)
+add_executable(test_prov_style_cpp cpp/test_prov_style.cpp)
+target_link_libraries(test_prov_style_cpp ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_prov_style_cpp ${PROJECT_NAME}_core_dbg)
+# An external project (test/external_types) that defines its own event types
+# and a provenance-style library on them, built against this build tree's
+# dftracer package as another project would build against an install.
+include(ExternalProject)
+ExternalProject_Add(external_types
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external_types
+    BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/external_types
+    CMAKE_ARGS
+        -Ddftracer_DIR=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/cmake/dftracer
+        -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+    INSTALL_COMMAND ""
+    BUILD_ALWAYS ON
+    DEPENDS ${PROJECT_NAME}_core)
 
 # C API Coverage Test
 add_executable(test_c_api_coverage c/test_c_api_coverage.c)
@@ -134,6 +171,70 @@ foreach(_lang IN LISTS _entity_langs)
         df_add_test(check_${test_name} ${DFTRACER_ENTITY_CHECK_PYTHON}
             ${CMAKE_CURRENT_SOURCE_DIR}/check_entity_trace.py
             "${CMAKE_CURRENT_BINARY_DIR}/${test_name}*.pfw*")
+        set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
+    endif()
+endforeach()
+
+# Typed values, lists and metadata records through the region APIs (C, C++,
+# Python); traces checked by check_args_trace.py.
+set(_args_cmd_c "${CMAKE_BINARY_DIR}/bin/test_args_c")
+set(_args_cmd_cpp "${CMAKE_BINARY_DIR}/bin/test_args_cpp")
+set(_args_langs c cpp)
+if(DEFINED DFTRACER_PYTHON_EXE AND NOT "${DFTRACER_PYTHON_EXE}" STREQUAL "")
+    set(_args_cmd_py "${DFTRACER_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/py/test_args.py")
+    list(APPEND _args_langs py)
+endif()
+foreach(_lang IN LISTS _args_langs)
+    set(_cmd "${_args_cmd_${_lang}}")
+    separate_arguments(_cmd)
+    set(test_name test_args_${_lang})
+    df_add_test(${test_name} ${_cmd})
+    set_common_properties(${test_name})
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
+    if(_lang STREQUAL "py")
+        set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT PYTHONPATH=$ENV{PYTHONPATH}:${CMAKE_SOURCE_DIR}/venv/${DFTRACER_LIBDIR})
+    endif()
+    if(DFTRACER_ENTITY_CHECK_PYTHON)
+        df_add_test(check_${test_name} ${DFTRACER_ENTITY_CHECK_PYTHON}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_args_trace.py ${_lang}
+            "${CMAKE_CURRENT_BINARY_DIR}/${test_name}*.pfw*")
+        set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
+    endif()
+endforeach()
+
+# Provenance-style APIs on event types, with aggregation on: defined in the
+# test itself (test_prov_style_*) and by an external project
+# (test_external_types_*); see check_prov_style_trace.py.
+set(_prov_cmd_test_prov_style_c ${CMAKE_BINARY_DIR}/bin/test_prov_style_c)
+set(_prov_cmd_test_prov_style_cpp ${CMAKE_BINARY_DIR}/bin/test_prov_style_cpp)
+set(_prov_cmd_test_external_types_c ${CMAKE_CURRENT_BINARY_DIR}/external_types/lineage_app_c)
+set(_prov_cmd_test_external_types_cpp ${CMAKE_CURRENT_BINARY_DIR}/external_types/lineage_app_cpp)
+foreach(test_name test_prov_style_c test_prov_style_cpp
+                  test_external_types_c test_external_types_cpp)
+    df_add_test(${test_name} ${_prov_cmd_${test_name}})
+    set_common_properties(${test_name})
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_ENABLE_AGGREGATION=1)
+    if(DFTRACER_ENTITY_CHECK_PYTHON)
+        df_add_test(check_${test_name} ${DFTRACER_ENTITY_CHECK_PYTHON}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_prov_style_trace.py 10
+            "${CMAKE_CURRENT_BINARY_DIR}/${test_name}-*.pfw*")
+        set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
+    endif()
+endforeach()
+
+# Event types with aggregation on: a type that is not aggregatable is traced in
+# full, the rest of the app is aggregated; see check_event_types_trace.py.
+foreach(_lang c cpp)
+    set(test_name test_event_types_${_lang})
+    df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/${test_name})
+    set_common_properties(${test_name})
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_ENABLE_AGGREGATION=1)
+    if(DFTRACER_ENTITY_CHECK_PYTHON)
+        df_add_test(check_${test_name} ${DFTRACER_ENTITY_CHECK_PYTHON}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_event_types_trace.py
+            "${CMAKE_CURRENT_BINARY_DIR}/${test_name}-*.pfw*")
         set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
     endif()
 endforeach()

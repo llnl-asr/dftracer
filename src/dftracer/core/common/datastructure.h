@@ -39,6 +39,27 @@ struct RawJson {
   explicit RawJson(std::string v) : value(std::move(v)) {}
 };
 
+// A list arg built by DFTracer::append(): "key":[...], or "key":{"sub":[...],
+// ...} when nested. Values are kept as given -- strings and sub names by
+// pointer, so they must outlive the event, like the strings of update() --
+// and written as JSON with the event (serialization/metadata_json.h).
+struct ArgList {
+  struct Value {
+    enum Kind : uint8_t { STRING, INT, ID } kind;  // ID: 16 hex digits
+    union {
+      const char* s;
+      int64_t i;
+      uint64_t u;
+    };
+  };
+  struct Sub {
+    const char* name;  // nullptr in a plain list
+    std::vector<Value> values;
+  };
+  bool nested;
+  std::vector<Sub> subs;
+};
+
 class Metadata {
  private:
   typedef std::unordered_map<std::string,
@@ -80,6 +101,8 @@ class Metadata {
   }
 
   size_t erase(const std::string& key) { return data.erase(key); }
+
+  DataMap::iterator erase(DataMap::const_iterator it) { return data.erase(it); }
 
   size_t size() const { return data.size(); }
 

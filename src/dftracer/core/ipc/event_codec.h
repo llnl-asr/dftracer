@@ -4,10 +4,13 @@
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/common/typedef.h>
+#include <dftracer/core/serialization/metadata_json.h>
 
 #include <any>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -100,11 +103,45 @@ inline void put_long_string(ByteWriter& w, const char* s, size_t n) {
 }
 }  // namespace detail
 
+/** metadata_json writer appending to the ring record. */
+class JsonWriter {
+ public:
+  explicit JsonWriter(ByteWriter& w) : w_(w) {}
+  void raw(std::string_view s) { w_.put_bytes(s.data(), s.size()); }
+  void i64(int64_t v) { number(v); }
+  void u64(uint64_t v) { number(v); }
+  void f64(double v) {
+    char tmp[32];  // ostream's default for double: %g with precision 6.
+    const int n = std::snprintf(tmp, sizeof(tmp), "%g", v);
+    raw(std::string_view(tmp, n > 0 ? static_cast<size_t>(n) : 0));
+  }
+
+ private:
+  template <typename T>
+  void number(T v) {
+    char tmp[24];
+    auto r = std::to_chars(tmp, tmp + sizeof(tmp), v);
+    raw(std::string_view(tmp, static_cast<size_t>(r.ptr - tmp)));
+  }
+  ByteWriter& w_;
+};
+
+/** u32 length + the JSON `write` produces, written in place. */
+template <typename Write>
+inline void put_json(ByteWriter& w, Write&& write) {
+  const size_t at = w.size();
+  w.put(static_cast<uint32_t>(0));
+  JsonWriter json(w);
+  write(json);
+  const uint32_t n = static_cast<uint32_t>(w.size() - at - sizeof(uint32_t));
+  std::memcpy(w.data() + at, &n, sizeof(n));
+}
+
 /**
  * Append the metadata entries; returns how many were written. Mirrors
- * JsonLines::convert_metadata: RawJson, then the numeric types, then the
- * string types. A value of any other type is written as an empty string so the
- * key is not lost silently.
+ * JsonLines::convert_metadata: RawJson and lists (ArgList, as RAW_JSON), then
+ * the numeric types, then the string types. A value of any other type is
+ * written as an empty string so the key is not lost silently.
  */
 inline uint16_t encode_metadata(ByteWriter& w, const Metadata* metadata) {
   if (metadata == nullptr) return 0;
@@ -119,6 +156,12 @@ inline uint16_t encode_metadata(ByteWriter& w, const Metadata* metadata) {
       const auto& raw = std::any_cast<const RawJson&>(value);
       detail::put_key(w, SHM_VALUE_RAW_JSON, mtype, key);
       detail::put_long_string(w, raw.value.data(), raw.value.size());
+      continue;
+    }
+    if (value.type() == typeid(ArgList)) {
+      const auto& list = std::any_cast<const ArgList&>(value);
+      detail::put_key(w, SHM_VALUE_RAW_JSON, mtype, key);
+      put_json(w, [&](JsonWriter& json) { metadata_json::list(json, list); });
       continue;
     }
     DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_ANY_CAST_MACRO, value, {
@@ -194,6 +237,26 @@ inline void encode_metadata_event(ByteWriter& w, ConstEventNameType name,
   w.put_bytes(name, name_n);
   w.put_bytes(value, value_n);
   w.put_bytes(record_name, record_n);
+}
+
+/** RECORD from a Metadata: its fields written as JSON straight into the
+ * record, as JsonLines::convert_metadata writes them. */
+inline void encode_record(ByteWriter& w, ConstEventNameType record_name,
+                          const Metadata* fields, TraceEventType type,
+                          ProcessID process_id, ThreadID thread_id) {
+  RecordHead head{};
+  size_t record_n;
+  head.thread_id = thread_id;
+  head.process_id = process_id;
+  head.type = static_cast<uint8_t>(type);
+  head.record_name_len = short_len(record_name, &record_n);
+  w.put(head);
+  w.put_bytes(record_name, record_n);
+  const size_t at = w.size();
+  JsonWriter json(w);
+  if (fields != nullptr) metadata_json::fields(json, *fields, false);
+  const uint32_t n = static_cast<uint32_t>(w.size() - at);
+  std::memcpy(w.data() + offsetof(RecordHead, fields_len), &n, sizeof(n));
 }
 
 inline void encode_record(ByteWriter& w, ConstEventNameType record_name,
