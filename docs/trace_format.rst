@@ -226,21 +226,22 @@ An example of such event is below.
 
 Here, the "name" "PR" represents a metadata event for process and the args contain the metadata name and its value.
 
-.. _`Entity Records`:
+.. _`Metadata Records`:
 
-Entity records (``EH``, ``ET``, ``ER``) describe the entities an application
-works with, their types, and relations between entities; events relate to
-entities through a ``relations`` object in their ``args`` (``used`` /
-``generated`` / ``invalidated`` / ``updated`` arrays of entity ids). Unlike hash and custom metadata, these
-records use named fields rather than ``name``/``value``:
+A metadata region with fields (``DFTRACER_CPP_RECORD``,
+``DFTRACER_C_RECORD_START``, or ``log_metadata_event(key, fields=...)`` in
+Python) writes one record named after the region. Unlike hash and custom
+metadata, its ``args`` hold the fields rather than ``name``/``value``:
 
 .. code-block:: bash
 
-    {"name":"EH","cat":"dftracer","type":1,"pid":1,"tid":1,"ph":4,"args":{"hhash":"...","id":"8f0de68c04eea0bf","type":"protein_structure","store":3,"uri":"/p/out/a.pdb"}}
-    {"name":"ET","cat":"dftracer","type":1,"pid":1,"tid":1,"ph":4,"args":{"hhash":"...","type":"protein_structure","role":2,"description":"Predicted 3D structure"}}
-    {"name":"ER","cat":"dftracer","type":1,"pid":1,"tid":1,"ph":4,"args":{"hhash":"...","relation":18,"subject":"6e6d650dd131e83b","object":"8f0de68c04eea0bf"}}
+    {"name":"dataset","cat":"CPP_APP","type":9,"pid":1,"tid":1,"ph":4,"args":{"hhash":"...","id":"8f0de68c04eea0bf","uri":"/p/out/a.h5"}}
 
-See :doc:`provenance` for the API, the enum values and what each record means.
+Events can carry a ``relations`` object in their ``args`` (built with
+``append_id("relations", <name>, <id>)``), e.g.
+``"relations":{"used":["8f0de68c04eea0bf"]}``. It is kept even without
+``DFTRACER_INC_METADATA``. Provenance (entities and their lineage) is written
+this way by `moirai <https://github.com/llnl-asr/moirai>`_.
 
 ----------------------------------------
 Lifecycle Events: "start" and "end"

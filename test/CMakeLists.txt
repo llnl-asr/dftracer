@@ -37,13 +37,6 @@ target_link_libraries(test_c ${PROJECT_NAME}_core_dbg testlib)
 add_dependencies(test_c ${PROJECT_NAME}_core_dbg)
 add_dependencies(test_c ${PROJECT_NAME}_preload_dbg)
 
-# Entity/relation API tests (C and C++); traces checked by check_entity_trace.py
-add_executable(test_entity_c c/test_entity.c)
-target_link_libraries(test_entity_c ${PROJECT_NAME}_core_dbg)
-add_dependencies(test_entity_c ${PROJECT_NAME}_core_dbg)
-add_executable(test_entity_cpp cpp/test_entity.cpp)
-target_link_libraries(test_entity_cpp ${PROJECT_NAME}_core_dbg)
-add_dependencies(test_entity_cpp ${PROJECT_NAME}_core_dbg)
 # Typed values, lists and metadata records (C and C++); see check_args_trace.py
 add_executable(test_args_c c/test_args.c)
 target_link_libraries(test_args_c ${PROJECT_NAME}_core_dbg)
@@ -151,29 +144,8 @@ if(DEFINED DFTRACER_PYTHON_EXE AND NOT "${DFTRACER_PYTHON_EXE}" STREQUAL "")
     endif()
 endif()
 
-# ---- Entity/relation API: C and C++. Each run writes its own trace and
-# check_entity_trace.py validates the EH/ET/ER records and relation arrays.
-# The Python entity API lives in pydftracer and is tested there, not here.
-find_program(DFTRACER_ENTITY_CHECK_PYTHON NAMES python3 python)
-# One _entity_cmd_<lang> variable per language: a list of "lang;command" pairs
-# would be flattened by set()/list(APPEND), leaving list(GET ... 1) out of range.
-set(_entity_langs c cpp)
-set(_entity_cmd_c "${CMAKE_BINARY_DIR}/bin/test_entity_c")
-set(_entity_cmd_cpp "${CMAKE_BINARY_DIR}/bin/test_entity_cpp")
-foreach(_lang IN LISTS _entity_langs)
-    set(_cmd "${_entity_cmd_${_lang}}")
-    separate_arguments(_cmd)
-    set(test_name test_entity_${_lang})
-    df_add_test(${test_name} ${_cmd})
-    set_common_properties(${test_name})
-    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
-    if(DFTRACER_ENTITY_CHECK_PYTHON)
-        df_add_test(check_${test_name} ${DFTRACER_ENTITY_CHECK_PYTHON}
-            ${CMAKE_CURRENT_SOURCE_DIR}/check_entity_trace.py
-            "${CMAKE_CURRENT_BINARY_DIR}/${test_name}*.pfw*")
-        set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
-    endif()
-endforeach()
+# Python for the check_*_trace.py validators below.
+find_program(DFTRACER_TRACE_CHECK_PYTHON NAMES python3 python)
 
 # Typed values, lists and metadata records through the region APIs (C, C++,
 # Python); traces checked by check_args_trace.py.
@@ -194,8 +166,8 @@ foreach(_lang IN LISTS _args_langs)
     if(_lang STREQUAL "py")
         set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT PYTHONPATH=$ENV{PYTHONPATH}:${CMAKE_SOURCE_DIR}/venv/${DFTRACER_LIBDIR})
     endif()
-    if(DFTRACER_ENTITY_CHECK_PYTHON)
-        df_add_test(check_${test_name} ${DFTRACER_ENTITY_CHECK_PYTHON}
+    if(DFTRACER_TRACE_CHECK_PYTHON)
+        df_add_test(check_${test_name} ${DFTRACER_TRACE_CHECK_PYTHON}
             ${CMAKE_CURRENT_SOURCE_DIR}/check_args_trace.py ${_lang}
             "${CMAKE_CURRENT_BINARY_DIR}/${test_name}*.pfw*")
         set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
@@ -215,8 +187,8 @@ foreach(test_name test_prov_style_c test_prov_style_cpp
     set_common_properties(${test_name})
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_ENABLE_AGGREGATION=1)
-    if(DFTRACER_ENTITY_CHECK_PYTHON)
-        df_add_test(check_${test_name} ${DFTRACER_ENTITY_CHECK_PYTHON}
+    if(DFTRACER_TRACE_CHECK_PYTHON)
+        df_add_test(check_${test_name} ${DFTRACER_TRACE_CHECK_PYTHON}
             ${CMAKE_CURRENT_SOURCE_DIR}/check_prov_style_trace.py 10
             "${CMAKE_CURRENT_BINARY_DIR}/${test_name}-*.pfw*")
         set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
@@ -231,8 +203,8 @@ foreach(_lang c cpp)
     set_common_properties(${test_name})
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_ENABLE_AGGREGATION=1)
-    if(DFTRACER_ENTITY_CHECK_PYTHON)
-        df_add_test(check_${test_name} ${DFTRACER_ENTITY_CHECK_PYTHON}
+    if(DFTRACER_TRACE_CHECK_PYTHON)
+        df_add_test(check_${test_name} ${DFTRACER_TRACE_CHECK_PYTHON}
             ${CMAKE_CURRENT_SOURCE_DIR}/check_event_types_trace.py
             "${CMAKE_CURRENT_BINARY_DIR}/${test_name}-*.pfw*")
         set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
@@ -1002,10 +974,9 @@ set_common_properties(${test_name})
 # - Metadata: 2 lines (c_app, language)
 # - test_c_function_tracing: 1 function
 # - test_c_region_tracing: 2 regions
-# - test_c_entities: 9 lines (2 ET, 4 EH, 1 ER, C_ENTITY_REGION, test_c_entities)
 # - test_c_io_operations: ~8 I/O calls (open, write, read, lseek, close, fopen, fread, fclose, unlink)
-# Total: 41 lines (32 before the entity test)
-df_add_test(check_file_exists_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_file.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}* 41)
+# Total: 32 lines
+df_add_test(check_file_exists_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_file.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}* 32)
 set_tests_properties(check_file_exists_${test_name} PROPERTIES DEPENDS ${test_name})
 
 # ########################################################################
@@ -1023,7 +994,7 @@ add_test(NAME ${test_name}
     -DSTAGE_DIR=${CMAKE_CURRENT_BINARY_DIR}/public_headers
     -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
     -DC_COMPILER=${CMAKE_C_COMPILER}
-    "-DC_HEADERS=dftracer/dftracer.h;dftracer/core/common/constants.h;dftracer/core/common/typedef.h;dftracer/core/common/entity.h"
+    "-DC_HEADERS=dftracer/dftracer.h;dftracer/core/common/constants.h;dftracer/core/common/typedef.h"
     -P ${CMAKE_CURRENT_SOURCE_DIR}/check_public_headers.cmake
 )
 

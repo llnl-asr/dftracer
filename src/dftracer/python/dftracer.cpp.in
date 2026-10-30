@@ -98,7 +98,6 @@ void log_event(
     std::unordered_map<std::string, std::tuple<int, int64_t>> &int_args,
     std::unordered_map<std::string, std::tuple<int, std::string>> &string_args,
     std::unordered_map<std::string, std::tuple<int, double>> &float_args,
-    std::unordered_map<EntityRelation, std::vector<EntityID>> &relations,
     py::dict list_args) {
   DFTRACER_LOG_DEBUG("py.log_event", "");
   auto args = new Metadata();
@@ -115,25 +114,6 @@ void log_event(
   for (auto item : list_args)
     args->insert_or_assign(py::str(item.first).cast<std::string>(),
                            RawJson(py_list_json(item.second)));
-  // EntityRelation -> entity ids: args.relations.<relation> = [16-hex, ...].
-  {
-    char hex[DFT_ENTITY_HEX_LEN];
-    std::string obj;
-    for (auto &item : relations) {
-      if (item.second.empty() || !dft_relation_is_event(item.first)) continue;
-      obj += obj.empty() ? "{" : ",";
-      obj += json_quote(dft_relation_name(item.first));
-      obj += ":[";
-      for (std::size_t i = 0; i < item.second.size(); ++i) {
-        if (i) obj += ",";
-        dft_entity_hex(item.second[i], hex);
-        obj += json_quote(hex);
-      }
-      obj += "]";
-    }
-    if (!obj.empty())
-      args->insert_or_assign(DFT_RELATIONS_ARG, RawJson(obj + "}"));
-  }
   auto dftracer_inst =
       dftracer::Singleton<dftracer::DFTracerCore>::get_instance(
           ProfilerStage::PROFILER_OTHER, ProfileType::PROFILER_PY_APP);
@@ -143,35 +123,6 @@ void log_event(
                           TraceEventType::TRACE_TYPE_PYTHON, start_time,
                           duration, args))
     delete args;
-}
-
-// Entities: see dftracer_declare_entity in dftracer.h and
-// core/common/entity.h. Ids are Python ints (EntityID).
-EntityID declare_entity(std::string type, std::string key, EntityStore store,
-                        std::string uri) {
-  return dftracer_declare_entity(type.c_str(), key.c_str(), store, uri.c_str());
-}
-
-void declare_entity_type(std::string type, EntityRole role,
-                         std::string description) {
-  dftracer_declare_entity_type(type.c_str(), role, description.c_str());
-}
-
-void relate_entities(EntityRelation relation, EntityID subject,
-                     EntityID object) {
-  dftracer_relate_entities(relation, subject, object);
-}
-
-EntityID entity_hash(std::string type, std::string key) {
-  char t[DFT_ENTITY_TYPE_LEN];
-  dft_entity_sanitize(t, sizeof(t), type.c_str());
-  return dft_entity_hash(t, key.c_str());
-}
-
-std::string entity_hex(EntityID id) {
-  char hex[DFT_ENTITY_HEX_LEN];
-  dft_entity_hex(id, hex);
-  return std::string(hex);
 }
 
 // Without fields, a key/value metadata event. With fields ({name: value},

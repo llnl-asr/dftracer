@@ -10,9 +10,9 @@ relations and event relations) built into the core, beside the general region
 and metadata APIs, which could not express it.
 
 This change widens the existing region and metadata APIs in C, C++ and Python
-until provenance can be written with them, and maps the provenance API onto
-them. No new API family is added. Next, the provenance API moves to moirai,
-which then uses only these APIs.
+until provenance can be written with them, and removes the provenance API from
+dftracer. No new API family is added. Provenance now lives in moirai, which
+uses only these APIs.
 
 Records go wherever dftracer events go: into the process's trace, or in
 producer/consumer mode into the ring and ``dftracer_service`` (or the spill
@@ -110,30 +110,33 @@ producer/consumer mode the service has no registry: the producer marks such
 events with ``SHM_EVENT_NO_AGGREGATE`` in ``EventHead::flags`` (the record
 layout is unchanged).
 
-Provenance on top
------------------
+Provenance moved to moirai
+--------------------------
 
-The provenance API is unchanged for its callers and now uses only the above:
+dftracer no longer has a provenance API. ``core/common/entity.h``, the
+``Entity*`` typedefs, ``dftracer_declare_entity`` /
+``dftracer_declare_entity_type`` / ``dftracer_relate_entities``,
+``DFTracer::relate`` / ``uses`` / ``generates``, ``update_relation*``, the
+``DFTRACER_{C,CPP}_*ENTITY*`` / ``*_RELATE`` / ``*_USES`` / ``*_GENERATES``
+macros, the ``EH``/``ET``/``ER`` record names and the Python ``EntityStore`` /
+``EntityRole`` / ``EntityRelation`` enums, ``declare_entity*``,
+``relate_entities``, ``entity_hash``, ``entity_hex`` and the ``relations``
+argument of ``log_event`` are gone.
 
-* ``EH``, ``ET`` and ``ER`` are metadata records with fields
-  (``TRACE_TYPE_DFTRACER``).
-* Event relations are ``append("relations", <relation name>, <16-hex id>)``
-  in C and C++, and ``list_args["relations"]`` in Python (pydftracer).
-* Once-per-process is ``DFTracerCore::first_time(record, key)``, a general
-  internal check; the entity sets, ``emit_entity_record`` and the relation map
-  are gone.
-
-Records are equal as JSON to those of the provenance API before the change
-(``test_entity_c`` / ``test_entity_cpp`` compared against traces from the
-previous build); field order differs.
+moirai defines its entities, entity types and relations as metadata records
+with fields, and its activities as an event type that is not aggregatable on
+``DFTRACER_TRACE_TYPE_EXTERNAL``; once-per-process is a set kept by moirai.
+What stays in dftracer is the ``relations`` arg convention
+(``DFT_RELATIONS_ARG`` in ``enumeration.h``): an event's ``relations`` are
+kept even without ``DFTRACER_INC_METADATA``.
 
 pydftracer
 ----------
 
 ``dftracer.log_event(list_args=...)``, ``log_metadata_event(key, value,
-fields=...)`` and ``dft_fn.append(key, value, sub=None)``. Relations are sent
-as ``list_args["relations"]``; a native module older than ``list_args`` gets
-the ``relations`` argument as before.
+fields=...)`` and ``dft_fn.append(key, value, sub=None)``. The native module
+no longer has the entity API or a ``relations`` argument; relations go in
+``list_args["relations"]``.
 
 Tests
 =====
@@ -155,17 +158,7 @@ Tests
   apps using it, one from two threads. Both checked by
   ``check_prov_style_trace.py``: records written once, no dangling ids,
   activities traced in full on an external layer, the rest aggregated.
-* The provenance tests (``test_entity_*``, ``check_entity_trace.py``) and
-  their twins pass unchanged.
-* pydftracer: ``tests/test_args.py``; ``tests/test_entities.py`` checks that
-  relations reach the native module as ``list_args``, and the fallback.
-
-Next: provenance to moirai
-==========================
-
-moirai takes the provenance-specific parts (enums, entity id and hex form,
-``EH``/``ET``/``ER`` defined in C++, the C, C++ and Python APIs) and writes
-them with the APIs above, its activities as an event type that is not
-aggregatable; dftracer then drops them. ``test/external_types`` is the shape
-of it: once-per-process is a set kept by the project itself. Event types are
-C and C++ only; a project's Python API binds to its C/C++ one.
+* The provenance tests (``test_entity_*``, ``check_entity_trace.py``,
+  ``unit_test_entity``) and the entity parts of the API coverage tests are
+  removed with the API; moirai tests provenance.
+* pydftracer: ``tests/test_args.py``.

@@ -2,7 +2,6 @@
 #define DFTRACER_SERIALIZATION_PACKED_JSON_H
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/datastructure.h>
-#include <dftracer/core/common/entity.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/typedef.h>

@@ -9,7 +9,6 @@
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/cpp_typedefs.h>
 #include <dftracer/core/common/datastructure.h>
-#include <dftracer/core/common/entity.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/singleton.h>
@@ -106,10 +105,6 @@ class DFTLogger {
   // different TraceEventTypes.
   std::shared_mutex used_extra_mtx_;
   std::unordered_set<std::string> used_extra_;
-
-  // (record, key) pairs already written once (see first_time).
-  std::shared_mutex once_mtx_;
-  std::unordered_map<std::string, std::unordered_set<uint64_t>> once_;
 
   // Runtime facts resolved by DFTracerCore at init (see set_runtime_info),
   // folded into the "cfg" object at finalize() alongside the static
@@ -556,13 +551,6 @@ class DFTLogger {
           this->process_id, tid, true);
     }
     return hash;
-  }
-
-  // True the first time (record, key) is seen in this process, false after:
-  // for records written once per process (e.g. one EH per entity).
-  inline bool first_time(ConstEventNameType record, uint64_t key) {
-    std::unique_lock<std::shared_mutex> lock(once_mtx_);
-    return once_[record].insert(key).second;
   }
 
   // A metadata record whose args are the given fields, written from them
