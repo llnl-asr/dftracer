@@ -205,7 +205,11 @@ if (NOT DFTRACER_LIBDIR)
   endif ()
 endif ()
 
-set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib:${CMAKE_INSTALL_PREFIX}/lib64:${PYTHON_SITE_PACKAGES}/lib:${PYTHON_SITE_PACKAGES}/lib64:../lib:../lib64:dftracer/lib:dftracer/lib64")
+# $ORIGIN, not ../lib: a relative entry resolves against the working directory of whoever
+# starts the binary, so bin/dftracer_service found its libraries only by luck once the
+# build prefix was gone (a wheel built by pip, which installs elsewhere). bin/ is covered by
+# $ORIGIN/../lib*, the libraries by $ORIGIN, and the Python extension by $ORIGIN/lib*.
+set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib:${CMAKE_INSTALL_PREFIX}/lib64:${PYTHON_SITE_PACKAGES}/lib:${PYTHON_SITE_PACKAGES}/lib64:$ORIGIN:$ORIGIN/../lib64:$ORIGIN/../lib:$ORIGIN/lib64:$ORIGIN/lib")
 
 list(FIND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES
     "${CMAKE_INSTALL_PREFIX}/${DFTRACER_LIBDIR}" _IS_SYSTEM_DIR)

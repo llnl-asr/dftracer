@@ -1325,3 +1325,8 @@ if(DFTRACER_TEST_PC_MODE AND TARGET ${PROJECT_NAME}_service)
         endif()
     endforeach()
 endif()
+
+# Relative RPATH entries resolve against the caller's working directory; see check_rpath.sh.
+if(TARGET ${PROJECT_NAME}_service)
+    df_add_test(check_service_rpath bash ${CMAKE_CURRENT_SOURCE_DIR}/check_rpath.sh ${CMAKE_BINARY_DIR}/bin/${PROJECT_NAME}_service)
+endif()
