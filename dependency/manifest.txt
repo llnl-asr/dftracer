@@ -7,6 +7,4 @@ cpp-logger   v0.0.8           https://github.com/llnl-asr/cpp-logger.git
 yaml-cpp     yaml-cpp-0.6.3   https://github.com/jbeder/yaml-cpp.git
 libuv        v1.52.1          https://github.com/libuv/libuv.git
 libdeflate   v1.24            https://github.com/ebiggers/libdeflate.git
-# TODO(rayandrew): replace the brahma commit with its release tag before the
-# dftracer release, and update dependency/CMakeLists.txt to match.
-brahma       b33368847b76c5dc7b15cc68f987a330cfb0601a  https://github.com/llnl-asr/brahma.git
+brahma       v1.1.1           https://github.com/llnl-asr/brahma.git

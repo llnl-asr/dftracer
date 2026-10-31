@@ -213,8 +213,6 @@ to retry it after a brahma fix.
   cpp-logger are already installed its `fetch_package()` resolves them through
   `find_package()`; `FETCHCONTENT_SOURCE_DIR_*` point at the cloned local
   sources as a second line of defence, so nothing is cloned twice.
-  The same `cmake/patches/brahma_version_override.cmake` patch dftracer applies
-  in its network path is applied here too.
 * the dependency libraries are copied into `dftracer/lib64` under their real
   sonames before `auditwheel repair` runs, and auditwheel additionally grafts the
   copies the extension modules link against into `dftracer.libs` with mangled
