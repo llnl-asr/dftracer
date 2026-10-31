@@ -173,7 +173,7 @@ if(_dftracer_dep_hdf5_version_str)
     "-DBRAHMA_HDF5_VERSION_STRING:STRING=${_dftracer_dep_hdf5_version_str}")
 endif()
 
-find_package(brahma 5.1.0 QUIET)
+find_package(brahma 5.1.1 QUIET)
 if(brahma_FOUND)
   message(STATUS "[${PROJECT_NAME}] found brahma already installed")
 else()
@@ -181,13 +181,8 @@ else()
     brahma
     PREFIX ${CMAKE_BINARY_DIR}
     GIT_REPOSITORY https://github.com/llnl-asr/brahma.git
-    # TODO(rayandrew): replace this commit with the brahma release tag before the
-    # dftracer release, and update dependency/manifest.txt to match.
-    GIT_TAG b33368847b76c5dc7b15cc68f987a330cfb0601a
+    GIT_TAG v1.1.1
     TIMEOUT 10
-    PATCH_COMMAND ${CMAKE_COMMAND}
-      -DSOURCE_DIR=<SOURCE_DIR>
-      -P "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/patches/brahma_version_override.cmake"
     CMAKE_ARGS
       "-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}"
       "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}"

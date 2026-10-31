@@ -174,15 +174,6 @@ while read -r name tag url; do
       sed -i 's/^#define gotcha_getpagesize getpagesize$/extern int getpagesize(void);\n&/' "$wrappers"
   fi
 
-  if [ "$name" = "brahma" ]; then
-    # The same patch dftracer applies in its ExternalProject path.
-    patch_file="$PROJECT_DIR/cmake/patches/brahma_version_override.cmake"
-    if [ -f "$patch_file" ]; then
-      log "patching brahma"
-      "$CMAKE" -DSOURCE_DIR="$src" -P "$patch_file" || log "brahma patch failed (continuing)"
-    fi
-  fi
-
   IFS=';' read -r -a extra <<<"$(dep_args "$name")"
 
   log "configuring $name"
