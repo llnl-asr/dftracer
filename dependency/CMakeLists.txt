@@ -69,6 +69,11 @@ if(_dftracer_enable_brahma_mpi)
     string(APPEND BRAHMA_CONFIGURE_ARGS ";-DBRAHMA_MPI_IMPL=${_dftracer_dep_mpi_impl}")
     message(STATUS "[${PROJECT_NAME}] Forwarding BRAHMA_MPI_IMPL=${_dftracer_dep_mpi_impl} to brahma")
   endif()
+  # A version given by the user wins over the probe, and is the only source of
+  # one when DFTRACER_MPI_IMPL skips the probe.
+  if(BRAHMA_MPI_VERSION)
+    set(_dftracer_dep_brahma_mpi_version "${BRAHMA_MPI_VERSION}")
+  endif()
   if(_dftracer_dep_brahma_mpi_version)
     string(APPEND BRAHMA_CONFIGURE_ARGS ";-DBRAHMA_MPI_VERSION=${_dftracer_dep_brahma_mpi_version}")
     message(STATUS "[${PROJECT_NAME}] Forwarding BRAHMA_MPI_VERSION=${_dftracer_dep_brahma_mpi_version} to brahma")
@@ -102,10 +107,6 @@ if(DFTRACER_ENABLE_HDF5)
     string(APPEND BRAHMA_CONFIGURE_ARGS ";-DHDF5_ROOT=${HDF5_ROOT}")
   endif()
 
-  # Forward CMAKE_PREFIX_PATH in case HDF5 was found via a prefix path
-  if(DEFINED CMAKE_PREFIX_PATH AND NOT "${CMAKE_PREFIX_PATH}" STREQUAL "")
-    string(APPEND BRAHMA_CONFIGURE_ARGS ";-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}")
-  endif()
 
   # Detect HDF5 version here and forward BRAHMA_HDF5_VERSION = major*100000 + minor*100 + patch.
   # Without this, brahma runs its own find_package(HDF5) which may pick a different install
@@ -171,6 +172,14 @@ endif()
 if(_dftracer_dep_hdf5_version_str)
   list(APPEND _brahma_cmake_cache_args
     "-DBRAHMA_HDF5_VERSION_STRING:STRING=${_dftracer_dep_hdf5_version_str}")
+endif()
+
+# Forward CMAKE_PREFIX_PATH in case HDF5 was found via a prefix path. It is a
+# list that holds this project's own binary dir, so it must stay out of
+# CMAKE_ARGS: split there, brahma would configure against this project's cache.
+if(DFTRACER_ENABLE_HDF5 AND NOT "${CMAKE_PREFIX_PATH}" STREQUAL "")
+  list(APPEND _brahma_cmake_cache_args
+    "-DCMAKE_PREFIX_PATH:STRING=${CMAKE_PREFIX_PATH}")
 endif()
 
 find_package(brahma 5.1.1 QUIET)
