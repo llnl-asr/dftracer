@@ -168,7 +168,6 @@ class CMakeBuild(build_ext):
             cmake_args += [f"-D{package_name}={package_dir}"]
         cmake_args += ["-DPYBIND11_FINDPYTHON=ON"]
         cmake_args += ["-DDFTRACER_BUILD_PYTHON_BINDINGS=ON"]
-        cmake_args += ["-DDFTRACER_PYTHON_PACKAGE_BUILD=ON"]
         # Test related flags
 
         enable_tests = os.environ.get("DFTRACER_ENABLE_TESTS", "OFF")
