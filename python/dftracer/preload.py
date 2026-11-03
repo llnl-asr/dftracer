@@ -1,20 +1,21 @@
 """Locate this installation's preload library without loading the tracer."""
 
 import argparse
+import runpy
 import sys
 from pathlib import Path
 
 
 def library_path(debug=False):
     package_dir = Path(__file__).resolve().parent
-    try:
-        from ._preload_config import LIBRARY_DIR
-    except ModuleNotFoundError as error:
-        if error.name != "dftracer._preload_config":
-            raise
-        directories = [package_dir / "lib64", package_dir / "lib"]
+    config_file = package_dir / "_preload_config.py"
+    if config_file.is_file():
+        # Read only this package's metadata. An editable import finder can
+        # otherwise supply a config module from a different installation.
+        config = runpy.run_path(str(config_file))
+        directories = [package_dir / config["LIBRARY_DIR"]]
     else:
-        directories = [package_dir / LIBRARY_DIR]
+        directories = [package_dir / "lib64", package_dir / "lib"]
 
     name = "libdftracer_preload_dbg.so" if debug else "libdftracer_preload.so"
     for directory in directories:
@@ -40,7 +41,7 @@ def main():
     try:
         path = library_path(args.debug)
     except FileNotFoundError as error:
-        print("{}: {}".format(parser.prog, error), file=sys.stderr)
+        print(f"{parser.prog}: {error}", file=sys.stderr)
         return 1
     print(path)
     return 0

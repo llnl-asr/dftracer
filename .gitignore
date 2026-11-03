@@ -57,6 +57,7 @@ build
 /temp/dftracer/
 /Testing/Temporary/
 python/dftracer/_version.py
+python/dftracer/_preload_config.py
 dftracer-build-local
 
 # Additional aux files
