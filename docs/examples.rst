@@ -115,6 +115,8 @@ Example of running this configurations are:
     # Enable profiler
     export DFTRACER_ENABLE=1
 
+    LD_PRELOAD="$(dftracer-preload-library-path)" ./your_application
+
 Minimal PAPI example:
 **************************
 
@@ -182,7 +184,7 @@ Hybrid Example:
       return 0;
     }
 
-For this example, link with libdftracer.so at compile time and LD_PRELOAD the executable with libdftracer_preload.soat runtime.
+For this example, link with libdftracer.so at compile time and LD_PRELOAD the executable with libdftracer_preload.so at runtime.
 As the DFTRACER_CPP_INIT do not pass log file or data dir, we need to set ``DFTRACER_LOG_FILE`` and ``DFTRACER_DATA_DIR``.
 By default the DFTracer mode is set to FUNCTION.
 Example of running this configurations are:
@@ -308,6 +310,8 @@ Example of running this configurations are:
     export DFTRACER_INIT=PRELOAD
     # Enable profiler
     export DFTRACER_ENABLE=1
+
+    LD_PRELOAD="$(dftracer-preload-library-path)" ./your_application
 
 Hybrid Example:
 **************************

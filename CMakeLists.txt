@@ -149,6 +149,7 @@ else()
 endif()
 
 option(DFTRACER_BUILD_PYTHON_BINDINGS "Build python bindings." ON)
+option(DFTRACER_PYTHON_PACKAGE_BUILD "Python packaging supplies the preload path command." OFF)
 set(DFTRACER_PYTHON_EXE "python3" CACHE STRING "Python executable to use for building.")
 set(DFTRACER_PYTHON_SITE $ENV{DFTRACER_PYTHON_SITE} CACHE STRING "Python site packages to use for building.")
 
@@ -1416,6 +1417,11 @@ else()
                 chmod +x ${CMAKE_BINARY_DIR}/symlink_dbg.sh
                 . ${CMAKE_BINARY_DIR}/symlink_dbg.sh
                 \")")
+        endif()
+
+        # pip supplies a console entry point using its own Python interpreter.
+        if(NOT DFTRACER_PYTHON_PACKAGE_BUILD)
+                include(cmake/modules/DFTracerPreloadHelper.cmake)
         endif()
 
         if(DFTRACER_ENABLE_NATIVE_SCRIPT)

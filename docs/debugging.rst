@@ -28,7 +28,7 @@ runtime instead of the libdftracer_preload.so library
     DFTRACER_LOG_LEVEL=DEBUG
 
     # Run your application
-    LD_PRELOAD=$VENV/lib/python*/site-packages/dftracer/lib64/libdftracer_preload_dbg.so ./your_application
+    LD_PRELOAD="$(dftracer-preload-library-path --debug)" ./your_application
 
 .. warning::
     Debug logs set with `DFTRACER_LOG_LEVEL` only work when debugging is enabled
