@@ -29,7 +29,7 @@ class PreloadPathTest(unittest.TestCase):
     def python_command(self, *args):
         env = dict(os.environ, PYTHONPATH=str(self.package.parent))
         return subprocess.run(
-            [sys.executable, "-m", "dftracer.preload", *args],
+            [sys.executable, str(ROOT / "script/dftracer-preload-library-path"), *args],
             cwd=self.root, env=env, capture_output=True, text=True,
         )
 

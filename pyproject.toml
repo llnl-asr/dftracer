@@ -61,9 +61,6 @@ Repository = "https://github.com/llnl-asr/dftracer"
 "Bug Tracker" = "https://github.com/llnl-asr/dftracer/issues"
 Documentation = "https://dftracer.readthedocs.io/en/latest/"
 
-[project.scripts]
-dftracer-preload-library-path = "dftracer.preload:main"
-
 [project.optional-dependencies]
 test = ['pytest>=6.0']
 dfanalyzer = [
@@ -129,6 +126,7 @@ target-version = "py38"
 
 [tool.setuptools]
 script-files = [
+  "script/dftracer-preload-library-path",
   "script/git_sparse_clone_interactive",
   "script/git_sparse_push_interactive",
 ]
