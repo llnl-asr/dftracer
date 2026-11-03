@@ -17,7 +17,7 @@ endif()
 # Escape single quotes in the shell assignment.
 string(REPLACE "'" "'\"'\"'" DFTRACER_PRELOAD_HELPER_LIBDIR "${DFTRACER_PRELOAD_HELPER_LIBDIR}")
 configure_file(
-    "${CMAKE_CURRENT_LIST_DIR}/../configure_files/dftracer-preload-library-path.in"
+    "${CMAKE_CURRENT_LIST_DIR}/../../script/dftracer-preload-library-path.in"
     "${CMAKE_CURRENT_BINARY_DIR}/dftracer-preload-library-path" @ONLY)
 install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/dftracer-preload-library-path"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
