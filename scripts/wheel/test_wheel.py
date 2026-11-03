@@ -10,24 +10,24 @@ the in-tree Python API, while this only exercises what the wheel itself ships.
 
 Checks, in order:
   1. `import dftracer` works and reports the expected version
-  2. the pybind11 extension modules import and expose the C API
-  3. every bundled shared library dlopen()s
-  4. every native executable in dftracer/bin starts (catches ELF corruption
+  2. the installed preload path command finds the release and debug libraries
+  3. the pybind11 extension modules import and expose the C API
+  4. every bundled shared library dlopen()s
+  5. every native executable in dftracer/bin starts (catches ELF corruption
      from the auditwheel/patchelf rewrite, which segfaults before main)
-  5. every shipped dftracer/ public header, except the bundled
+  6. every shipped dftracer/ public header, except the bundled
      dftracer-utils ones under dftracer/utils/, compiles against the wheel's
      own include/ directory alone (catches a header that includes a
      dependency whose headers the wheel does not ship, e.g. cpp-logger)
-  6. a real trace is produced: dftracer_service + an LD_PRELOAD'd workload,
+  7. a real trace is produced: dftracer_service + an LD_PRELOAD'd workload,
      and the resulting .pfw trace contains the I/O events
-  7. the pydftracer Python API layer, if installed, can log through the wheel
+  8. the pydftracer Python API layer, if installed, can log through the wheel
 """
 
 from __future__ import annotations
 
 import argparse
 import ctypes
-import glob
 import gzip
 import json
 import os
@@ -121,6 +121,7 @@ def run(cmd, env=None, cwd=None, timeout=120):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        check=False,
     )
 
 
@@ -155,6 +156,37 @@ def main() -> int:
         return 1
 
     libs_dir = pkg_dir.parent / f"{pkg_dir.name}.libs"
+
+    @check("preload library path command")
+    def _preload_path():
+        helper = Path(sys.executable).parent / "dftracer-preload-library-path"
+        if not helper.is_file():
+            raise AssertionError(f"installed command is missing: {helper}")
+        paths = {}
+        for args, filename in (
+            ([], "libdftracer_preload.so"),
+            (["--debug"], "libdftracer_preload_dbg.so"),
+            (["-d"], "libdftracer_preload_dbg.so"),
+        ):
+            proc = subprocess.run(
+                [str(helper), *args], env=clean_env(), cwd="/",
+                capture_output=True, text=True, check=False, timeout=30,
+            )
+            if proc.returncode or proc.stderr:
+                raise AssertionError(f"helper failed: {proc.stderr}")
+            path = Path(proc.stdout.strip())
+            expected = next(
+                (pkg_dir / libdir / filename for libdir in ("lib64", "lib")
+                 if (pkg_dir / libdir / filename).is_file()),
+                None,
+            )
+            if expected is None or not path.is_absolute() or path != expected.resolve():
+                raise AssertionError(f"wrong preload path: {proc.stdout!r}")
+            print(f"helper     : {args or ['release']} -> {path}")
+            paths[filename] = path
+        return paths
+
+    preload_paths = _preload_path
 
     @check("extension modules")
     def _extensions():
@@ -261,7 +293,9 @@ def main() -> int:
     @check("end to end trace (service + LD_PRELOAD)")
     def _trace():
         service = pkg_dir / "bin" / "dftracer_service"
-        preload = pkg_dir / "lib64" / "libdftracer_preload.so"
+        if preload_paths is None:
+            raise AssertionError("preload path command failed; cannot run workload")
+        preload = preload_paths["libdftracer_preload.so"]
         if not service.is_file():
             raise Skip("dftracer_service not in the wheel")
         if not preload.is_file():

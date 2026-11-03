@@ -146,6 +146,10 @@ endif()
 
 # Python for the check_*_trace.py validators below.
 find_program(DFTRACER_TRACE_CHECK_PYTHON NAMES python3 python)
+if(DFTRACER_TRACE_CHECK_PYTHON)
+    add_test(NAME preload_library_path
+        COMMAND ${DFTRACER_TRACE_CHECK_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/test_preload_path.py)
+endif()
 
 # Typed values, lists and metadata records through the region APIs (C, C++,
 # Python); traces checked by check_args_trace.py.
