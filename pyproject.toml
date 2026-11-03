@@ -61,6 +61,9 @@ Repository = "https://github.com/llnl-asr/dftracer"
 "Bug Tracker" = "https://github.com/llnl-asr/dftracer/issues"
 Documentation = "https://dftracer.readthedocs.io/en/latest/"
 
+[project.scripts]
+dftracer-preload-library-path = "dftracer.preload:main"
+
 [project.optional-dependencies]
 test = ['pytest>=6.0']
 dfanalyzer = [

@@ -1,0 +1,33 @@
+#!/bin/sh
+# Generated for this native installation; no Python runtime is required.
+debug=
+for arg in "$@"; do
+    case "$arg" in
+        -d|--debug) debug=_dbg ;;
+        -h|--help)
+            printf '%s\n' 'Usage: dftracer-preload-library-path [-d|--debug]' \
+                'Print the absolute path to this installation preload library.'
+            exit 0 ;;
+        *) printf '%s\n' "dftracer-preload-library-path: unknown argument: $arg" >&2
+           exit 2 ;;
+    esac
+done
+
+script=$0
+case "$script" in
+    */*) ;;
+    *) script=$(command -v "$script") || exit 1 ;;
+esac
+script=$(readlink -f "$script") || exit 1
+bindir=$(dirname "$script")
+library_dir='@DFTRACER_PRELOAD_HELPER_LIBDIR@'
+case "$library_dir" in
+    /*) ;;
+    *) library_dir="$bindir/$library_dir" ;;
+esac
+library="$library_dir/libdftracer_preload${debug}.so"
+if [ ! -f "$library" ]; then
+    printf '%s\n' "dftracer-preload-library-path: library not found: $library. Reinstall DFTracer with the requested library." >&2
+    exit 1
+fi
+readlink -f "$library"
