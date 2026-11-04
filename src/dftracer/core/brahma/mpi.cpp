@@ -1866,6 +1866,10 @@ int brahma::MPIDFTracer::MPI_Init(int* argc, char*** argv) {
   BRAHMA_MAP_OR_FAIL(MPI_Init);
   DFT_LOGGER_START_ALWAYS();
   int ret = __real_MPI_Init(argc, argv);
+  // This process has now legitimately initialized MPI itself, so it is
+  // safe again for tracing code to call into MPI (see
+  // dftracer_mpi_fork_guard).
+  if (ret == MPI_SUCCESS) dftracer_mpi_fork_guard().store(false);
   DFT_LOGGER_UPDATE_TYPE(ret, MetadataType::MT_VALUE);
   DFT_LOGGER_END();
   return ret;
@@ -1877,6 +1881,9 @@ int brahma::MPIDFTracer::MPI_Init_thread(int* argc, char*** argv, int required,
   DFT_LOGGER_START_ALWAYS();
   DFT_LOGGER_UPDATE_TYPE(required, MetadataType::MT_VALUE);
   int ret = __real_MPI_Init_thread(argc, argv, required, provided);
+  // See dftracer_mpi_fork_guard: this process has now legitimately
+  // initialized MPI itself.
+  if (ret == MPI_SUCCESS) dftracer_mpi_fork_guard().store(false);
   DFT_LOGGER_UPDATE_TYPE(ret, MetadataType::MT_VALUE);
   DFT_LOGGER_END();
   return ret;
