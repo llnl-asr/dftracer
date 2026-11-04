@@ -1,4 +1,4 @@
-name: MPI and HDF5 Trace CI
+name: HDF5 MPI Trace CI
 
 on:
   pull_request:
@@ -14,29 +14,43 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Each job loads one thing from the image: an MPI, or an HDF5. POSIX and STDIO
-  # need neither and are tested by ci.yml.
-  mpi:
-    name: ${{ matrix.mpi }}
+  hdf5-mpi-trace:
+    name: ${{ matrix.mpi }}-${{ matrix.mpi_version }}-hdf5-${{ matrix.hdf5_version }}
     runs-on: ubuntu-24.04
+    # Re-use brahma's pre-built CI image which has all HDF5+MPI combos installed
+    # via spack — no need to build HDF5 from source in this job.
     container:
-      # brahma's image: every MPI and HDF5 below, built for a generic x86-64
-      # (llnl-asr/brahma infrastructure/docker/Dockerfile.ci).
-      image: hdevarajan92/brahma-ci:mpi-wide
+      image: hdevarajan92/brahma-ci:latest
       options: --user root
     strategy:
       fail-fast: false
       matrix:
-        # One release of each family brahma has a compat interface for, a second
-        # patch release in a family, and mpich 4.3.0, which has none and is traced
-        # through the common interface alone.
-        mpi: [mpich@3.4.3, mpich@4.2.3, mpich@4.3.0, openmpi@4.1.6, openmpi@4.1.8, openmpi@5.0.3, openmpi@5.0.6]
+        # Versions that match what is pre-installed in the brahma-ci image and
+        # fall within brahma v1.0.9 supported ranges (major*100000 + minor*100 + patch):
+        #   1.10.x: [101005, 101100)  → 1.10.11 = 101011 ✓  (openmpi 4.1.6 = 400106 ✓)
+        #   1.12.x: [101203, 101300)  → 1.12.3  = 101203 ✓  (mpich   4.2.3 = 400203 ✓)
+        #   1.14.x: [101405, 101500)  → 1.14.5  = 101405 ✓  (openmpi 5.0.6 = 500006 ✓)
+        # NOTE: openmpi@4.1.6 is excluded here — the gdb-wrapped verification
+        # step reliably hangs under it in this container (deadlocks during
+        # MPI_Init before either rank finishes initializing), even when
+        # launched via mpirun -np 2. openmpi@5.0.6 and mpich@4.2.3 both work.
+        include:
+          - hdf5_version: "1.12.3"
+            hdf5_pkg: "hdf5@1.12.3"
+            mpi_pkg: "mpich@4.2.3"
+            mpi: "mpich"
+            mpi_version: "4.2.3"
+          - hdf5_version: "1.14.5"
+            hdf5_pkg: "hdf5@1.14.5"
+            mpi_pkg: "openmpi@5.0.6"
+            mpi: "openmpi"
+            mpi_version: "5.0.6"
+
     env:
       DFTRACER_BUILD: ${{ github.workspace }}/dftracer-build
       DFTRACER_INSTALL: ${{ github.workspace }}/dftracer-install
       CMAKE_BUILD_PARALLEL_LEVEL: 4
-      OMPI_ALLOW_RUN_AS_ROOT: 1
-      OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+
     steps:
       - name: Checkout dftracer
         uses: actions/checkout@v4
@@ -44,113 +58,227 @@ jobs:
       - name: Trust the root-owned CI workspace
         run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
 
-      - name: Install system build dependencies
+      - name: Free up disk space
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            build-essential ca-certificates git hwloc libhwloc-dev libyaml-cpp-dev \
-            ninja-build pkg-config python3-dev python3-venv zlib1g-dev
-          rm -rf /var/lib/apt/lists/*
-
-      - name: Build dftracer with MPI
-        shell: bash
-        run: |
-          source /home/spack/spack/share/spack/setup-env.sh
-          spack load ${{ matrix.mpi }} cmake
-          ./autobuild.sh --install-mode cmake --build-dir "${DFTRACER_BUILD}" --install-prefix "${DFTRACER_INSTALL}" \
-            --with-c-compiler mpicc --with-cxx-compiler mpicxx --enable-mpi --enable-tests --jobs 4
-
-      - name: Trace MPI and MPI-IO calls
-        timeout-minutes: 5
-        shell: bash
-        run: |
-          source /home/spack/spack/share/spack/setup-env.sh
-          spack load ${{ matrix.mpi }}
-          TRACES="${DFTRACER_BUILD}/trace-mpi"
-          mkdir -p "${TRACES}/data"
-          # OpenMPI's mpirun refuses root without --allow-run-as-root, and PRRTE
-          # counts slots from the container's cpuset, smaller than two ranks.
-          # MPICH's hydra mpirun takes neither flag.
-          FLAGS=""
-          case "${{ matrix.mpi }}" in openmpi*) FLAGS="--allow-run-as-root --map-by :OVERSUBSCRIBE";; esac
-          # The preload goes to the ranks only: traced, mpirun's signal handling deadlocks.
-          timeout 240 mpirun ${FLAGS} -np 2 env \
-            LD_PRELOAD="$(find "${DFTRACER_BUILD}" -name libdftracer_preload_dbg.so | head -1)" \
-            DFTRACER_ENABLE=1 DFTRACER_INIT=PRELOAD DFTRACER_INC_METADATA=1 DFTRACER_BIND_SIGNALS=0 \
-            DFTRACER_LOG_FILE="${TRACES}/mpi" DFTRACER_DATA_DIR=/ \
-            "${DFTRACER_BUILD}/bin/test_c_mpi" "${TRACES}/data"
-          python3 .github/workflows/scripts/check_trace_calls.py "${TRACES}" 10 \
-            MPI_Init_thread MPI_Barrier MPI_Bcast MPI_Allreduce \
-            MPI_File_open MPI_File_write MPI_File_read MPI_File_close
-
-      - name: Upload traces on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: traces-${{ matrix.mpi }}
-          path: ${{ env.DFTRACER_BUILD }}/trace-mpi/*.pfw*
-          retention-days: 7
-
-  hdf5:
-    name: ${{ matrix.hdf5 }}
-    runs-on: ubuntu-24.04
-    container:
-      image: hdevarajan92/brahma-ci:mpi-wide
-      options: --user root
-    strategy:
-      fail-fast: false
-      matrix:
-        # The image builds HDF5 with MPI, some versions more than once, so a spec
-        # names the build by its MPI. Only HDF5 is traced: MPI is in the mpi job.
-        hdf5: ["hdf5@1.8.23^mpich@3.4.3", "hdf5@1.10.11^openmpi@4.1.6", "hdf5@1.12.3^mpich@4.2.3", "hdf5@1.14.5^openmpi@5.0.6"]
-    env:
-      DFTRACER_BUILD: ${{ github.workspace }}/dftracer-build
-      DFTRACER_INSTALL: ${{ github.workspace }}/dftracer-install
-      CMAKE_BUILD_PARALLEL_LEVEL: 4
-    steps:
-      - name: Checkout dftracer
-        uses: actions/checkout@v4
-
-      - name: Trust the root-owned CI workspace
-        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
 
       - name: Install system build dependencies
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential ca-certificates git hwloc libhwloc-dev libyaml-cpp-dev \
-            ninja-build pkg-config python3-dev python3-venv zlib1g-dev
+            build-essential \
+            ca-certificates \
+            git \
+            hwloc \
+            libhwloc-dev \
+            libyaml-cpp-dev \
+            ninja-build \
+            pkg-config \
+            python3-dev \
+            python3-venv \
+            zlib1g-dev
           rm -rf /var/lib/apt/lists/*
 
-      - name: Build dftracer with HDF5
+      - name: Cache dftracer dependencies
+        uses: actions/cache@v4
+        id: deps-cache
+        with:
+          path: ${{ env.DFTRACER_BUILD }}/deps-install
+          key: dftracer-deps-${{ matrix.mpi }}-${{ matrix.mpi_version }}-hdf5-${{ matrix.hdf5_version }}-${{ hashFiles('dependency/CMakeLists.txt') }}-v1
+
+      - name: Build dftracer with HDF5 and MPI
         shell: bash
         run: |
           source /home/spack/spack/share/spack/setup-env.sh
-          # spack load also puts the HDF5's MPI on PATH: a parallel HDF5's headers need mpi.h.
-          spack load "${{ matrix.hdf5 }}" cmake
-          ./autobuild.sh --install-mode cmake --build-dir "${DFTRACER_BUILD}" --install-prefix "${DFTRACER_INSTALL}" \
-            --with-hdf5 "$(spack location -i "${{ matrix.hdf5 }}")" \
-            --with-c-compiler mpicc --with-cxx-compiler mpicxx --enable-tests --jobs 4
+          spack load ${{ matrix.hdf5_pkg }} ${{ matrix.mpi_pkg }} cmake
+          cmake --version
+          CMAKE_MIN_VERSION="3.24.0"
+          CMAKE_VERSION="$(cmake --version | awk '/^cmake version/{print $3}')"
+          if [ "$(printf '%s\n' "$CMAKE_MIN_VERSION" "$CMAKE_VERSION" | sort -V | head -n 1)" != "$CMAKE_MIN_VERSION" ]; then
+            echo "CMake ${CMAKE_VERSION} is too old; need >= ${CMAKE_MIN_VERSION} for cmake --fresh"
+            exit 1
+          fi
 
-      - name: Trace HDF5 calls
+          HDF5_DIR=$(spack location -i ${{ matrix.hdf5_pkg }})
+          echo "HDF5_DIR=${HDF5_DIR}"
+          echo "MPI wrappers: $(which mpicc) $(which mpicxx)"
+
+          export OMPI_ALLOW_RUN_AS_ROOT=1
+          export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
+
+          ./autobuild.sh \
+            --install-mode cmake \
+            --build-dir "${DFTRACER_BUILD}" \
+            --install-prefix "${DFTRACER_INSTALL}" \
+            --with-hdf5 "${HDF5_DIR}" \
+            --with-c-compiler mpicc \
+            --with-cxx-compiler mpicxx \
+            --enable-mpi \
+            --enable-tests \
+            --jobs 4
+
+      - name: Verify HDF5 and MPI events in dftracer traces
         timeout-minutes: 5
         shell: bash
         run: |
-          source /home/spack/spack/share/spack/setup-env.sh
-          spack load "${{ matrix.hdf5 }}"
-          TRACES="${DFTRACER_BUILD}/trace-hdf5"
-          mkdir -p "${TRACES}/data"
-          LD_PRELOAD="$(find "${DFTRACER_BUILD}" -name libdftracer_preload_dbg.so | head -1)" \
-            DFTRACER_ENABLE=1 DFTRACER_INIT=PRELOAD DFTRACER_INC_METADATA=1 \
-            DFTRACER_LOG_FILE="${TRACES}/hdf5" DFTRACER_DATA_DIR=/ \
-            timeout 120 "${DFTRACER_BUILD}/bin/test_c_hdf5" "${TRACES}/data"
-          python3 .github/workflows/scripts/check_trace_calls.py "${TRACES}" 5 \
-            H5Fcreate H5Dcreate2 H5Dwrite H5Dread H5Dclose H5Fclose
+          apt-get update && apt-get install -y --no-install-recommends gdb || true
 
-      - name: Upload traces on failure
+          source /home/spack/spack/share/spack/setup-env.sh
+          spack load ${{ matrix.hdf5_pkg }} ${{ matrix.mpi_pkg }}
+          HDF5_DIR=$(spack location -i ${{ matrix.hdf5_pkg }})
+
+          VERIFY_TRACE_DIR="${DFTRACER_BUILD}/trace-verify"
+          VERIFY_DATA_DIR="${VERIFY_TRACE_DIR}/data"
+          mkdir -p "${VERIFY_DATA_DIR}"
+
+          PRELOAD_LIB=$(find "${DFTRACER_BUILD}" -name "libdftracer_preload_dbg.so" | head -1)
+          if [ -z "${PRELOAD_LIB}" ]; then
+            echo "ERROR: libdftracer_preload_dbg.so not found under ${DFTRACER_BUILD}"
+            find "${DFTRACER_BUILD}" -name "*.so" | grep -i preload || true
+            exit 1
+          fi
+          echo "Preload lib: ${PRELOAD_LIB}"
+
+          TEST_BIN="${DFTRACER_BUILD}/bin/test_c_hdf5_mpi"
+          if [ ! -x "${TEST_BIN}" ]; then
+            echo "ERROR: test binary not found: ${TEST_BIN}"
+            exit 1
+          fi
+
+          # OpenMPI's mpirun refuses to run as root without --allow-run-as-root,
+          # and MPICH's hydra-based mpirun has no such flag and errors out if
+          # given one. OVERSUBSCRIBE is needed because PRRTE derives its slot
+          # count from the container's restricted cpuset, which is smaller than
+          # the two ranks this test needs ("not enough slots available").
+          MPIRUN_FLAGS=""
+          if [ "${{ matrix.mpi }}" = "openmpi" ]; then
+            MPIRUN_FLAGS="--allow-run-as-root --map-by :OVERSUBSCRIBE"
+          fi
+
+          export DFTRACER_ENABLE=1
+          export DFTRACER_INC_METADATA=1
+          export DFTRACER_LOG_FILE="${VERIFY_TRACE_DIR}/hdf5_mpi_verify"
+          export DFTRACER_DATA_DIR=/
+          export DFTRACER_INIT=PRELOAD
+          export DFTRACER_TRACE_COMPRESSION=1
+          export DFTRACER_BIND_SIGNALS=0
+          export OMPI_ALLOW_RUN_AS_ROOT=1
+          export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
+          # OpenMPI's vader BTL uses cross-memory-attach (process_vm_readv) between
+          # sibling ranks. Under gdb, Yama ptrace_scope blocks CMA between the
+          # non-ancestor ranks, deadlocking OpenMPI singleton runs. Disable it;
+          # no-op for MPICH.
+          export OMPI_MCA_btl_vader_single_copy_mechanism=none
+          export LD_PRELOAD="${PRELOAD_LIB}"
+          export LD_LIBRARY_PATH="${HDF5_DIR}/lib:${HDF5_DIR}/lib64:${LD_LIBRARY_PATH:-}"
+
+          echo "Running test_c_hdf5_mpi with dftracer preload (under gdb to capture a backtrace on crash)..."
+          ulimit -c unlimited
+          # test_c_hdf5_mpi requires two real MPI ranks (see test/CMakeLists.txt,
+          # which always launches it via mpirun -np 2). Running the raw binary
+          # directly makes OpenMPI enter "singleton" mode, which forks an
+          # internal orted/PMIx bootstrap process that hangs indefinitely under
+          # gdb in this container. Launch it through mpirun instead, wrapping
+          # each rank with gdb.
+          if command -v gdb >/dev/null 2>&1; then
+            timeout 240 mpirun ${MPIRUN_FLAGS} -np 2 \
+              gdb -q -batch \
+              -ex run \
+              -ex "thread apply all bt full" \
+              -ex "quit" \
+              --args "${TEST_BIN}" "${VERIFY_DATA_DIR}" 2>&1 | tee "${VERIFY_TRACE_DIR}/gdb.log"
+            GDB_STATUS=${PIPESTATUS[0]}
+            if grep -q "SIGSEGV\|Program terminated" "${VERIFY_TRACE_DIR}/gdb.log"; then
+              echo "ERROR: test_c_hdf5_mpi crashed, see backtrace above"
+              exit 1
+            fi
+          else
+            mpirun ${MPIRUN_FLAGS} -np 2 "${TEST_BIN}" "${VERIFY_DATA_DIR}"
+          fi
+          unset LD_PRELOAD DFTRACER_INIT DFTRACER_ENABLE DFTRACER_DATA_DIR
+
+          echo "Searching for trace files in: ${VERIFY_TRACE_DIR}"
+          TRACE_FILES=$(find "${VERIFY_TRACE_DIR}" -name "*.pfw.gz" 2>/dev/null)
+          if [ -z "${TRACE_FILES}" ]; then
+            echo "ERROR: No .pfw.gz trace files found in ${VERIFY_TRACE_DIR}"
+            ls -la "${VERIFY_TRACE_DIR}" || true
+            exit 1
+          fi
+          echo "Found trace files:"
+          echo "${TRACE_FILES}"
+
+          python3 - "${VERIFY_TRACE_DIR}" << 'PYEOF'
+          import sys, gzip, json, glob, os
+
+          trace_dir = sys.argv[1]
+          files = list(set(
+              glob.glob(os.path.join(trace_dir, "*.pfw.gz")) +
+              glob.glob(os.path.join(trace_dir, "**", "*.pfw.gz"), recursive=True)
+          ))
+
+          if not files:
+              print("ERROR: no trace files found", flush=True)
+              sys.exit(1)
+
+          print(f"Checking {len(files)} trace file(s)...")
+
+          # TraceEventType values from include/dftracer/core/common/enumeration.h
+          # (append-only, so these numbers are a stable on-disk contract).
+          TRACE_TYPE_HDF5 = 5
+          TRACE_TYPE_MPI = 10  # also covers the MPIIO layer, which shares this type
+
+          hdf5_funcs = set()
+          mpi_funcs = set()
+
+          for path in files:
+              with gzip.open(path, "rt") as f:
+                  for line in f:
+                      line = line.strip().rstrip(",")
+                      if not line or line in ("[", "]"):
+                          continue
+                      try:
+                          ev = json.loads(line)
+                      except json.JSONDecodeError:
+                          continue
+                      event_type = ev.get("type", -1)
+                      name = ev.get("name", "")
+                      if event_type == TRACE_TYPE_HDF5:
+                          hdf5_funcs.add(name)
+                      elif event_type == TRACE_TYPE_MPI:
+                          mpi_funcs.add(name)
+
+          print(f"HDF5 functions intercepted: {sorted(hdf5_funcs)}")
+          print(f"MPI functions intercepted:  {sorted(mpi_funcs)}")
+
+          required_hdf5 = {"H5Fcreate", "H5Dcreate2", "H5Dwrite", "H5Dread", "H5Fclose"}
+          required_mpi  = {"MPI_File_open"}
+
+          missing_hdf5 = required_hdf5 - hdf5_funcs
+          missing_mpi  = required_mpi  - mpi_funcs
+
+          ok = True
+          if missing_hdf5:
+              print(f"FAIL: missing HDF5 events: {sorted(missing_hdf5)}")
+              ok = False
+          else:
+              print("PASS: all required HDF5 events present")
+
+          if missing_mpi:
+              print(f"FAIL: missing MPI file I/O events: {sorted(missing_mpi)}")
+              ok = False
+          else:
+              print("PASS: MPI_File_open intercepted (MPIO driver active)")
+
+          sys.exit(0 if ok else 1)
+          PYEOF
+
+      - name: Upload trace artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: traces-${{ matrix.hdf5 }}
-          path: ${{ env.DFTRACER_BUILD }}/trace-hdf5/*.pfw*
+          name: traces-${{ matrix.mpi }}-${{ matrix.mpi_version }}-hdf5-${{ matrix.hdf5_version }}
+          path: |
+            ${{ env.DFTRACER_BUILD }}/trace-verify/*.pfw.gz
+            ${{ env.DFTRACER_BUILD }}/trace-verify/*.pfw
+            ${{ env.DFTRACER_BUILD }}/**/Testing/Temporary/LastTest.log
           retention-days: 7

@@ -50,12 +50,9 @@ def cmake_pins() -> dict[str, str]:
         text,
     ):
         pins[name] = tag_to_version(name, tag)
-    # A tag may be a cache variable, so it can be overridden: its default is the pin.
-    defaults = dict(re.findall(r'set\((\w+)\s+"([^"]+)"\s+CACHE', text))
     for name, tag in re.findall(
         r"ExternalProject_Add\(\s*(\w[\w-]*)(?:.|\n)*?GIT_TAG\s+(\S+)", text
     ):
-        tag = re.sub(r"\$\{(\w+)\}", lambda m: defaults.get(m.group(1), m.group(0)), tag)
         pins.setdefault(name, tag_to_version(name, tag))
     return pins
 

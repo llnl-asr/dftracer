@@ -101,24 +101,6 @@ SPECS: Dict[str, InterfaceSpec] = {
     ),
 }
 
-# Lines a wrapper runs right after the real call returns, keyed by interface and
-# method. Kept here, not in the generated files, so a regeneration keeps them.
-POST_CALL_LINES: Dict[str, Dict[str, List[str]]] = {
-    "mpi": {
-        "MPI_Init": [
-            "  // This process has now legitimately initialized MPI itself, so it is",
-            "  // safe again for tracing code to call into MPI (see",
-            "  // dftracer_mpi_fork_guard).",
-            "  if (ret == MPI_SUCCESS) dftracer_mpi_fork_guard().store(false);",
-        ],
-        "MPI_Init_thread": [
-            "  // See dftracer_mpi_fork_guard: this process has now legitimately",
-            "  // initialized MPI itself.",
-            "  if (ret == MPI_SUCCESS) dftracer_mpi_fork_guard().store(false);",
-        ],
-    },
-}
-
 NO_LOG_METHODS: Dict[str, Set[str]] = {
     # DFTLogger internally queries MPI state; wrapping these with
     # DFT_LOGGER_START_ALWAYS() causes recursive interception.
@@ -655,8 +637,6 @@ def method_impl_block(spec: InterfaceSpec, info: MethodInfo) -> str:
     log_block = "\n".join(log_lines)
     if log_block:
         log_block += "\n"
-    post_lines = POST_CALL_LINES.get(spec.parent or spec.name, {}).get(info.key.name, [])
-    post_block = "".join(f"{line}\n" for line in post_lines)
 
     if info.return_kind == cix.TypeKind.VOID:
         return (
@@ -677,7 +657,6 @@ def method_impl_block(spec: InterfaceSpec, info: MethodInfo) -> str:
         f"  DFT_LOGGER_START_ALWAYS();\n"
         f"{log_block}"
         f"  {info.key.return_type} ret = __real_{info.key.name}({arg_call});\n"
-        f"{post_block}"
         f"  DFT_LOGGER_UPDATE_TYPE(ret, MetadataType::MT_VALUE);\n"
         f"  DFT_LOGGER_END();\n"
         f"  return ret;\n"
