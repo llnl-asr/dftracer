@@ -227,10 +227,6 @@ INFO = {
     },
 }
 
-for _k in ("rocprofiler_sdk_version", "cuda_version"):
-    # unset versions render as ".."; show them as absent
-    if not INFO["gpu"][_k].strip("."):
-        INFO["gpu"][_k] = ""
 if INFO["gpu"]["cuda_version"]:
     INFO["gpu"]["cuda_status"] = cuda_status(INFO["gpu"]["cuda_version"])
 
