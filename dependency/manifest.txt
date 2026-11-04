@@ -7,4 +7,4 @@ cpp-logger   v0.0.8           https://github.com/llnl-asr/cpp-logger.git
 yaml-cpp     yaml-cpp-0.6.3   https://github.com/jbeder/yaml-cpp.git
 libuv        v1.52.1          https://github.com/libuv/libuv.git
 libdeflate   v1.24            https://github.com/ebiggers/libdeflate.git
-brahma       v1.1.1           https://github.com/llnl-asr/brahma.git
+brahma       556089549197417341c30c87e0108d73d7417033 https://github.com/llnl-asr/brahma.git

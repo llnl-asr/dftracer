@@ -235,6 +235,10 @@ bool dftracer::DFTracerCore::finalize() {
           mpiio_instance->unbind();
           mpiio_instance->finalize();
         }
+        // implementation-specific APIs beyond the common set; nothing is
+        // compiled here for an MPI without a compat interface
+        brahma::dftracer_mpi_compat_finalize();
+        brahma::dftracer_mpiio_compat_finalize();
 #endif
 #if defined(DFTRACER_HDF5_ENABLE) && defined(BRAHMA_ENABLE_HDF5)
         auto hdf5_instance = brahma::HDF5DFTracer::get_instance();
@@ -415,6 +419,8 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char* _log_file,
           mpi->bind<brahma::MPIDFTracer>("dftracer", conf->gotcha_priority);
           auto mpiio = brahma::MPIIODFTracer::get_instance();
           mpiio->bind<brahma::MPIIODFTracer>("dftracer", conf->gotcha_priority);
+          brahma::dftracer_mpi_compat_bind(conf->gotcha_priority);
+          brahma::dftracer_mpiio_compat_bind(conf->gotcha_priority);
 #endif
 #if defined(DFTRACER_HDF5_ENABLE) && defined(BRAHMA_ENABLE_HDF5)
           auto hdf5 = brahma::HDF5DFTracer::get_instance();

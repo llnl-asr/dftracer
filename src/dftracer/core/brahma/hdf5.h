@@ -1222,8 +1222,7 @@ class HDF5DFTracer : public HDF5 {
      (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))
   herr_t H5Fget_info1(hid_t obj_id, H5F_info1_t* file_info) override;
 #endif
-#if ((BRAHMA_HDF5_VERSION >= 100823 && BRAHMA_HDF5_VERSION < 100900) || \
-     (BRAHMA_HDF5_VERSION >= 101005 && BRAHMA_HDF5_VERSION < 101100) || \
+#if ((BRAHMA_HDF5_VERSION >= 101005 && BRAHMA_HDF5_VERSION < 101100) || \
      (BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) || \
      (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))
   herr_t H5Fget_info2(hid_t obj_id, H5F_info2_t* file_info) override;
@@ -4009,10 +4008,6 @@ class HDF5DFTracer : public HDF5 {
      (BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) || \
      (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))
   hid_t H5Rdereference1(hid_t obj_id, H5R_type_t ref_type,
-                        const void* ref) override;
-#endif
-#if (BRAHMA_HDF5_VERSION >= 100823 && BRAHMA_HDF5_VERSION < 100900)
-  hid_t H5Rdereference2(hid_t dataset, H5R_type_t ref_type,
                         const void* ref) override;
 #endif
 #if ((BRAHMA_HDF5_VERSION >= 101005 && BRAHMA_HDF5_VERSION < 101100) || \
