@@ -22,6 +22,9 @@ foreach (index RANGE ${formats_length})
     #set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/output_${format}/trace)
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_LEVEL=INFO)
 
+    # check_file.sh counts every line: keep out the FS records, which depend on
+    # where the tree is (they are checked by test_cpp_fs_metadata).
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_ENABLE_FS_METADATA=0)
     df_add_test(${test_name}_check_file_exists ${BASH_PROGRAM} ${CMAKE_SOURCE_DIR}/test/check_file.sh ${CMAKE_CURRENT_BINARY_DIR}/output_${format}/.trace*.pfw* ${line})
     set_tests_properties(${test_name}_check_file_exists PROPERTIES DEPENDS ${test_name})
 endforeach ()

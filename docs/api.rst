@@ -42,6 +42,7 @@ YAML configuration supported. WE need to set DFTRACER_CONFIGURATION ENV variable
       priority: 1       # PRIORITY of DFTracer in GOTCHA (default: True).
     features:
       core_affinity: True # Include core affinity (default True).
+      fs_metadata: True   # Write FS records at finalize: per mount (fs type, capacity, options), directory and file (Lustre layout/OSTs) (default True).
       io:
         enable: True    # Enable automatic binding of all I/O calls (default True).
         posix: True     # Enable automatic binding of POSIX I/O calls (default True).
@@ -71,6 +72,9 @@ Any other value turns it off, where a default of 1 applies.
                                             the last one will override the first. As a result, the first path won’t be traced.
                                             To avoid this, only use ``/local/scratch``.
    DFTRACER_SET_CORE_AFFINITY       INT     Include or exclude core affinity (default 0).
+   DFTRACER_ENABLE_FS_METADATA      INT     Write ``FS`` records at finalize for the mounts, directories and files traced:
+                                            file-system type, capacity, mount options and, on Lustre, MDTs, stripe layouts
+                                            and OSTs (default 1). See :ref:`File System Records`.
    DFTRACER_GOTCHA_PRIORITY         INT     PRIORITY of DFTracer in GOTCHA (default: 1).
    DFTRACER_LOG_LEVEL               STRING  Logging level within DFTracer ``ERROR``/``WARN``/``INFO``/``DEBUG`` (default ``ERROR``).
    DFTRACER_TIME_METRIC             STRING  Time scale used for event timestamps ``US``/``NS``/``MS``/``SEC`` (default ``US``).

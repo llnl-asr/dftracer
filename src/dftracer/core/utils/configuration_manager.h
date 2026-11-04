@@ -46,6 +46,10 @@ class ConfigurationManager {
   // ignored (with a warning when they ask to turn it off).
   bool metadata;
   bool core_affinity;
+  // Emit "FS" records at finalize for the traced files and the directories
+  // and mounts they are in (utils/fs_info.h). On by default; it costs a stat
+  // per unique file (and a layout lookup on Lustre) at the end of the run.
+  bool fs_metadata;
   int gotcha_priority;
   cpplogger::LoggerType logger_level;
   TimeMetricType time_metric;

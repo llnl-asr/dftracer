@@ -36,7 +36,9 @@ import re
 import sys
 
 # Values that legitimately differ between two runs or between the two modes.
-VOLATILE_ARGS = {"date", "ppid", "log_file", "pc_mode"}
+# "capacity" is an FS mount record's free/used space at finalize, which any
+# other writer on the file system changes between the two runs.
+VOLATILE_ARGS = {"date", "ppid", "log_file", "pc_mode", "capacity"}
 # Args that hold a memory address. Not comparable across runs or modes: ASLR
 # moves them, and the two modes allocate differently (in-process holds a
 # 16 MiB trace buffer), so later mappings land elsewhere. Only their presence
