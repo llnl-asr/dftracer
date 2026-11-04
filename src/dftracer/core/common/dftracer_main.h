@@ -13,9 +13,7 @@
 #endif
 #if defined(DFTRACER_MPI_ENABLE) && defined(BRAHMA_ENABLE_MPI)
 #include <dftracer/core/brahma/mpi.h>
-#include <dftracer/core/brahma/mpi_compat.h>
 #include <dftracer/core/brahma/mpiio.h>
-#include <dftracer/core/brahma/mpiio_compat.h>
 #endif
 #include <dftracer/core/brahma/posix.h>
 #include <dftracer/core/brahma/stdio.h>
