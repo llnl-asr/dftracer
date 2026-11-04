@@ -46,6 +46,9 @@ class MethodInfo:
     arg_names: List[str]
     return_kind: cix.TypeKind
     contexts: Set[ParseContext] = field(default_factory=set)
+    # Feature guards brahma wraps this method's declaration in (e.g.
+    # BRAHMA_MPI_HAS_MPI1_REMOVED); the override is emitted under the same.
+    guards: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -320,6 +323,71 @@ def build_condition(spec: InterfaceSpec, contexts: Set[ParseContext]) -> Optiona
     if len(impl_pieces) == 1:
         return impl_pieces[0]
     return f"({' || '.join(impl_pieces)})"
+
+
+_PP = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b\s*(.*?)\s*(?://.*)?$")
+
+
+def member_feature_guards(spec: InterfaceSpec, header_text: str) -> Dict[int, Tuple[str, ...]]:
+    """Feature guards brahma puts around members of spec.base_class.
+
+    Maps each 1-based header line inside the class body to the #if/#ifdef
+    conditions open there that were opened inside the class. Version and
+    implementation guards are left out: build_condition() already derives
+    those from the parse contexts. What remains are guards on what the
+    library's own header declares, such as BRAHMA_MPI_HAS_MPI1_REMOVED, which
+    the generated override must repeat or it overrides nothing.
+    """
+    lines = header_text.splitlines()
+    class_re = re.compile(r"^\s*class\s+%s\b" % re.escape(spec.base_class))
+    start = next((i for i, l in enumerate(lines) if class_re.match(l)), None)
+    out: Dict[int, Tuple[str, ...]] = {}
+    if start is None:
+        return out
+    stack: List[Optional[str]] = []
+    for i in range(start + 1, len(lines)):
+        m = _PP.match(lines[i])
+        if m:
+            kind, cond = m.group(1), m.group(2)
+            if kind in ("if", "ifdef", "ifndef"):
+                if kind == "ifdef":
+                    cond = f"defined({cond})"
+                elif kind == "ifndef":
+                    cond = f"!defined({cond})"
+                feature = (spec.version_macro not in cond
+                           and "BRAHMA_MPI_IMPL_" not in cond)
+                stack.append(cond if feature else None)
+            elif kind in ("elif", "else"):
+                if stack:
+                    stack[-1] = None  # alternative branches: not a feature guard
+            elif kind == "endif":
+                if not stack:
+                    break  # closed a guard opened before the class
+                stack.pop()
+            continue
+        if lines[i].startswith("};"):
+            break
+        out[i + 1] = tuple(c for c in stack if c)
+    return out
+
+
+def guard_macros(guards: Iterable[Tuple[str, ...]]) -> List[str]:
+    """Macros tested by feature guards, defined while parsing so every guarded
+    member is seen whatever the MPI header the parse picks up declares."""
+    names = set()
+    for conds in guards:
+        for c in conds:
+            names.update(re.findall(r"defined\((\w+)\)", c))
+    return sorted(names)
+
+
+def and_guards(condition: Optional[str], guards: Sequence[str]) -> Optional[str]:
+    parts = ([condition] if condition else []) + list(guards)
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0]
+    return " && ".join(f"({p})" for p in parts)
 
 
 def wrap_if(condition: Optional[str], body: str) -> str:
@@ -600,6 +668,8 @@ def collect_methods_for_interface(
 ) -> Dict[MethodKey, MethodInfo]:
     header_text = header_path.read_text(errors="ignore")
     contexts = build_contexts(spec, header_text)
+    feature_guards = member_feature_guards(spec, header_text)
+    guard_defines = guard_macros(feature_guards.values())
     if verbose:
         print(f"[{spec.name}] contexts: {len(contexts)}")
     methods: Dict[MethodKey, MethodInfo] = {}
@@ -608,7 +678,8 @@ def collect_methods_for_interface(
         return methods
 
     for idx, ctx in enumerate(contexts, start=1):
-        defines = [spec.enable_macro, f"{spec.version_macro}={ctx.version}", *spec.extra_defines]
+        defines = [spec.enable_macro, f"{spec.version_macro}={ctx.version}", *spec.extra_defines,
+                   *guard_defines]
         if ctx.impl_macro:
             defines.append(ctx.impl_macro)
 
@@ -634,6 +705,8 @@ def collect_methods_for_interface(
                     return_kind=cursor.result_type.kind,
                 )
                 methods[key] = info
+            if cursor.location.file and Path(cursor.location.file.name).resolve() == header_path.resolve():
+                info.guards = feature_guards.get(cursor.location.line, ())
             info.contexts.add(ctx)
     return methods
 
@@ -731,7 +804,7 @@ def generate_header(spec: InterfaceSpec, methods: Sequence[MethodInfo], timestam
 
     decls: List[str] = []
     for method in methods:
-        cond = build_condition(spec, method.contexts)
+        cond = and_guards(build_condition(spec, method.contexts), method.guards)
         decls.append(wrap_if(cond, method_decl_line(method)))
 
     return (
@@ -779,7 +852,7 @@ def generate_header(spec: InterfaceSpec, methods: Sequence[MethodInfo], timestam
 def generate_cpp(spec: InterfaceSpec, methods: Sequence[MethodInfo], timestamp: str, provenance: str = "") -> str:
     blocks: List[str] = []
     for method in methods:
-        cond = build_condition(spec, method.contexts)
+        cond = and_guards(build_condition(spec, method.contexts), method.guards)
         blocks.append(wrap_if(cond, method_impl_block(spec, method)))
 
     category_static = (

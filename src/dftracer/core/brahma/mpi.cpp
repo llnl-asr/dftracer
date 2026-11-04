@@ -88,6 +88,7 @@ int brahma::MPIDFTracer::MPI_Add_error_string(int errorcode,
   DFT_LOGGER_END();
   return ret;
 }
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
 int brahma::MPIDFTracer::MPI_Address(void* location, MPI_Aint* address) {
   ConstEventNameType CATEGORY = "datatype";
   BRAHMA_MAP_OR_FAIL(MPI_Address);
@@ -97,6 +98,7 @@ int brahma::MPIDFTracer::MPI_Address(void* location, MPI_Aint* address) {
   DFT_LOGGER_END();
   return ret;
 }
+#endif
 int brahma::MPIDFTracer::MPI_Allgather(const void* sendbuf, int sendcount,
                                        MPI_Datatype sendtype, void* recvbuf,
                                        int recvcount, MPI_Datatype recvtype,
@@ -945,6 +947,7 @@ int brahma::MPIDFTracer::MPI_Errhandler_free(MPI_Errhandler* errhandler) {
   DFT_LOGGER_END();
   return ret;
 }
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
 int brahma::MPIDFTracer::MPI_Errhandler_get(MPI_Comm comm,
                                             MPI_Errhandler* errhandler) {
   ConstEventNameType CATEGORY = "comm";
@@ -956,6 +959,8 @@ int brahma::MPIDFTracer::MPI_Errhandler_get(MPI_Comm comm,
   DFT_LOGGER_END();
   return ret;
 }
+#endif
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
 int brahma::MPIDFTracer::MPI_Errhandler_set(MPI_Comm comm,
                                             MPI_Errhandler errhandler) {
   ConstEventNameType CATEGORY = "comm";
@@ -968,6 +973,7 @@ int brahma::MPIDFTracer::MPI_Errhandler_set(MPI_Comm comm,
   DFT_LOGGER_END();
   return ret;
 }
+#endif
 int brahma::MPIDFTracer::MPI_Error_class(int errorcode, int* errorclass) {
   ConstEventNameType CATEGORY = "env";
   BRAHMA_MAP_OR_FAIL(MPI_Error_class);
@@ -3182,6 +3188,7 @@ int brahma::MPIDFTracer::MPI_Type_dup(MPI_Datatype type,
   DFT_LOGGER_END();
   return ret;
 }
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
 int brahma::MPIDFTracer::MPI_Type_extent(MPI_Datatype type, MPI_Aint* extent) {
   ConstEventNameType CATEGORY = "datatype";
   BRAHMA_MAP_OR_FAIL(MPI_Type_extent);
@@ -3192,6 +3199,7 @@ int brahma::MPIDFTracer::MPI_Type_extent(MPI_Datatype type, MPI_Aint* extent) {
   DFT_LOGGER_END();
   return ret;
 }
+#endif
 int brahma::MPIDFTracer::MPI_Type_free(MPI_Datatype* type) {
   ConstEventNameType CATEGORY = "datatype";
   BRAHMA_MAP_OR_FAIL(MPI_Type_free);
@@ -3312,6 +3320,7 @@ int brahma::MPIDFTracer::MPI_Type_get_true_extent_x(MPI_Datatype datatype,
   DFT_LOGGER_END();
   return ret;
 }
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
 int brahma::MPIDFTracer::MPI_Type_hindexed(int count,
                                            int array_of_blocklengths[],
                                            MPI_Aint array_of_displacements[],
@@ -3328,6 +3337,8 @@ int brahma::MPIDFTracer::MPI_Type_hindexed(int count,
   DFT_LOGGER_END();
   return ret;
 }
+#endif
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
 int brahma::MPIDFTracer::MPI_Type_hvector(int count, int blocklength,
                                           MPI_Aint stride, MPI_Datatype oldtype,
                                           MPI_Datatype* newtype) {
@@ -3344,6 +3355,7 @@ int brahma::MPIDFTracer::MPI_Type_hvector(int count, int blocklength,
   DFT_LOGGER_END();
   return ret;
 }
+#endif
 int brahma::MPIDFTracer::MPI_Type_indexed(int count,
                                           const int array_of_blocklengths[],
                                           const int array_of_displacements[],
@@ -3360,6 +3372,7 @@ int brahma::MPIDFTracer::MPI_Type_indexed(int count,
   DFT_LOGGER_END();
   return ret;
 }
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
 int brahma::MPIDFTracer::MPI_Type_lb(MPI_Datatype type, MPI_Aint* lb) {
   ConstEventNameType CATEGORY = "datatype";
   BRAHMA_MAP_OR_FAIL(MPI_Type_lb);
@@ -3370,6 +3383,7 @@ int brahma::MPIDFTracer::MPI_Type_lb(MPI_Datatype type, MPI_Aint* lb) {
   DFT_LOGGER_END();
   return ret;
 }
+#endif
 int brahma::MPIDFTracer::MPI_Type_match_size(int typeclass, int size,
                                              MPI_Datatype* type) {
   ConstEventNameType CATEGORY = "datatype";
@@ -3425,6 +3439,7 @@ int brahma::MPIDFTracer::MPI_Type_size_x(MPI_Datatype type, MPI_Count* size) {
   DFT_LOGGER_END();
   return ret;
 }
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
 int brahma::MPIDFTracer::MPI_Type_struct(int count, int array_of_blocklengths[],
                                          MPI_Aint array_of_displacements[],
                                          MPI_Datatype array_of_types[],
@@ -3440,6 +3455,8 @@ int brahma::MPIDFTracer::MPI_Type_struct(int count, int array_of_blocklengths[],
   DFT_LOGGER_END();
   return ret;
 }
+#endif
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
 int brahma::MPIDFTracer::MPI_Type_ub(MPI_Datatype mtype, MPI_Aint* ub) {
   ConstEventNameType CATEGORY = "datatype";
   BRAHMA_MAP_OR_FAIL(MPI_Type_ub);
@@ -3450,6 +3467,7 @@ int brahma::MPIDFTracer::MPI_Type_ub(MPI_Datatype mtype, MPI_Aint* ub) {
   DFT_LOGGER_END();
   return ret;
 }
+#endif
 int brahma::MPIDFTracer::MPI_Type_vector(int count, int blocklength, int stride,
                                          MPI_Datatype oldtype,
                                          MPI_Datatype* newtype) {

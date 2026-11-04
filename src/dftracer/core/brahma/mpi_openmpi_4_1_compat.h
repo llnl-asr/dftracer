@@ -54,8 +54,10 @@ class MPI_OPENMPI_4_1_COMPAT_DFTracer : public MPI_OPENMPI_4_1_COMPAT {
 
   void finalize() { stop_trace = true; }
 
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
   int MPI_Errhandler_create(MPI_Handler_function* function,
                             MPI_Errhandler* errhandler) override;
+#endif
 };
 }  // namespace brahma
 

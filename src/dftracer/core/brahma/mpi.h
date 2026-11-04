@@ -61,7 +61,9 @@ class MPIDFTracer : public MPI {
   int MPI_Add_error_class(int* errorclass) override;
   int MPI_Add_error_code(int errorclass, int* errorcode) override;
   int MPI_Add_error_string(int errorcode, const char* string) override;
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
   int MPI_Address(void* location, MPI_Aint* address) override;
+#endif
   int MPI_Allgather(const void* sendbuf, int sendcount, MPI_Datatype sendtype,
                     void* recvbuf, int recvcount, MPI_Datatype recvtype,
                     MPI_Comm comm) override;
@@ -193,8 +195,12 @@ class MPIDFTracer : public MPI {
   int MPI_Dist_graph_neighbors_count(MPI_Comm comm, int* inneighbors,
                                      int* outneighbors, int* weighted) override;
   int MPI_Errhandler_free(MPI_Errhandler* errhandler) override;
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
   int MPI_Errhandler_get(MPI_Comm comm, MPI_Errhandler* errhandler) override;
+#endif
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
   int MPI_Errhandler_set(MPI_Comm comm, MPI_Errhandler errhandler) override;
+#endif
   int MPI_Error_class(int errorcode, int* errorclass) override;
   int MPI_Error_string(int errorcode, char* string, int* resultlen) override;
   int MPI_Exscan(const void* sendbuf, void* recvbuf, int count,
@@ -575,7 +581,9 @@ class MPIDFTracer : public MPI {
                                MPI_Datatype* newtype) override;
   int MPI_Type_delete_attr(MPI_Datatype type, int type_keyval) override;
   int MPI_Type_dup(MPI_Datatype type, MPI_Datatype* newtype) override;
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
   int MPI_Type_extent(MPI_Datatype type, MPI_Aint* extent) override;
+#endif
   int MPI_Type_free(MPI_Datatype* type) override;
   int MPI_Type_free_keyval(int* type_keyval) override;
   int MPI_Type_get_attr(MPI_Datatype type, int type_keyval, void* attribute_val,
@@ -598,26 +606,36 @@ class MPIDFTracer : public MPI {
                                MPI_Aint* true_extent) override;
   int MPI_Type_get_true_extent_x(MPI_Datatype datatype, MPI_Count* true_lb,
                                  MPI_Count* true_extent) override;
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
   int MPI_Type_hindexed(int count, int array_of_blocklengths[],
                         MPI_Aint array_of_displacements[], MPI_Datatype oldtype,
                         MPI_Datatype* newtype) override;
+#endif
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
   int MPI_Type_hvector(int count, int blocklength, MPI_Aint stride,
                        MPI_Datatype oldtype, MPI_Datatype* newtype) override;
+#endif
   int MPI_Type_indexed(int count, const int array_of_blocklengths[],
                        const int array_of_displacements[], MPI_Datatype oldtype,
                        MPI_Datatype* newtype) override;
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
   int MPI_Type_lb(MPI_Datatype type, MPI_Aint* lb) override;
+#endif
   int MPI_Type_match_size(int typeclass, int size, MPI_Datatype* type) override;
   int MPI_Type_set_attr(MPI_Datatype type, int type_keyval,
                         void* attr_val) override;
   int MPI_Type_set_name(MPI_Datatype type, const char* type_name) override;
   int MPI_Type_size(MPI_Datatype type, int* size) override;
   int MPI_Type_size_x(MPI_Datatype type, MPI_Count* size) override;
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
   int MPI_Type_struct(int count, int array_of_blocklengths[],
                       MPI_Aint array_of_displacements[],
                       MPI_Datatype array_of_types[],
                       MPI_Datatype* newtype) override;
+#endif
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
   int MPI_Type_ub(MPI_Datatype mtype, MPI_Aint* ub) override;
+#endif
   int MPI_Type_vector(int count, int blocklength, int stride,
                       MPI_Datatype oldtype, MPI_Datatype* newtype) override;
   int MPI_Unpack(const void* inbuf, int insize, int* position, void* outbuf,

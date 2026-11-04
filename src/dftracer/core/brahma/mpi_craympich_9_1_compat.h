@@ -176,8 +176,10 @@ class MPI_CRAYMPICH_9_1_COMPAT_DFTracer : public MPI_CRAYMPICH_9_1_COMPAT {
   int MPI_Comm_idup_with_info(MPI_Comm comm, MPI_Info info, MPI_Comm* newcomm,
                               MPI_Request* request) override;
   int MPI_Comm_iflush_buffer(MPI_Comm comm, MPI_Request* request) override;
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
   int MPI_Errhandler_create(MPI_Comm_errhandler_function* comm_errhandler_fn,
                             MPI_Errhandler* errhandler) override;
+#endif
   int MPI_Exscan_c(const void* sendbuf, void* recvbuf, MPI_Count count,
                    MPI_Datatype datatype, MPI_Op op, MPI_Comm comm) override;
   int MPI_Exscan_init(const void* sendbuf, void* recvbuf, int count,

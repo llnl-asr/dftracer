@@ -26,6 +26,7 @@ std::shared_ptr<brahma::MPI_OPENMPI_4_1_COMPAT_DFTracer>
     brahma::MPI_OPENMPI_4_1_COMPAT_DFTracer::instance = nullptr;
 bool brahma::MPI_OPENMPI_4_1_COMPAT_DFTracer::stop_trace = false;
 
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
 int brahma::MPI_OPENMPI_4_1_COMPAT_DFTracer::MPI_Errhandler_create(
     MPI_Handler_function* function, MPI_Errhandler* errhandler) {
   ConstEventNameType CATEGORY = "comm";
@@ -36,5 +37,6 @@ int brahma::MPI_OPENMPI_4_1_COMPAT_DFTracer::MPI_Errhandler_create(
   DFT_LOGGER_END();
   return ret;
 }
+#endif
 
 #endif  // BRAHMA_MPI_OPENMPI_4_1_COMPAT

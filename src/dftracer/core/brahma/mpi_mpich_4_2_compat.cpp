@@ -627,6 +627,7 @@ int brahma::MPI_MPICH_4_2_COMPAT_DFTracer::MPI_Comm_iflush_buffer(
   DFT_LOGGER_END();
   return ret;
 }
+#if defined(BRAHMA_MPI_HAS_MPI1_REMOVED)
 int brahma::MPI_MPICH_4_2_COMPAT_DFTracer::MPI_Errhandler_create(
     MPI_Comm_errhandler_function* comm_errhandler_fn,
     MPI_Errhandler* errhandler) {
@@ -638,6 +639,7 @@ int brahma::MPI_MPICH_4_2_COMPAT_DFTracer::MPI_Errhandler_create(
   DFT_LOGGER_END();
   return ret;
 }
+#endif
 int brahma::MPI_MPICH_4_2_COMPAT_DFTracer::MPI_Exscan_c(
     const void* sendbuf, void* recvbuf, MPI_Count count, MPI_Datatype datatype,
     MPI_Op op, MPI_Comm comm) {
