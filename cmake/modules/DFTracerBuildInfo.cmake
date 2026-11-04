@@ -4,8 +4,10 @@
 # dftracer, without the MPI/HDF5/PAPI runtimes loaded, and on a relocated tree.
 
 # Escape a value so it can sit between double quotes in the generated script.
+# Unfound dependencies (FOO-NOTFOUND) are reported as absent, not as a path.
 function(_dftracer_bi_set name)
     set(_v "${ARGN}")
+    list(FILTER _v EXCLUDE REGEX "-NOTFOUND$")
     string(REPLACE "\\" "\\\\" _v "${_v}")
     string(REPLACE "\"" "\\\"" _v "${_v}")
     set(DFTRACER_BI_${name} "${_v}" PARENT_SCOPE)
@@ -194,7 +196,7 @@ list(REMOVE_DUPLICATES _bi_rocm_gates)
 list(SORT _bi_rocm_gates COMPARE NATURAL)
 _dftracer_bi_set(ROCM_GATES "${_bi_rocm_gates}")
 
-_dftracer_bi_set(VERSION "${DFTRACER_PACKAGE_VERSION}")
+_dftracer_bi_set(VERSION "${DFTRACER_PACKAGE_VERSION_STRING}")
 _dftracer_bi_set(PREFIX "${CMAKE_INSTALL_PREFIX}")
 _dftracer_bi_set(BUILD_TYPE "${CMAKE_BUILD_TYPE}")
 _dftracer_bi_set(CMAKE_VERSION "${CMAKE_VERSION}")
@@ -244,8 +246,17 @@ _dftracer_bi_set(PAPI_FIT "${DFTRACER_PAPI_FITTING_COUNTERS}")
 
 # GPU / power / topology
 _dftracer_bi_set(ROCPROFILER_INCLUDE "${rocprofiler-sdk_INCLUDE_DIR}")
-_dftracer_bi_set(ROCPROFILER_VERSION "${DFTRACER_ROCPROFILER_VERSION_MAJOR}.${DFTRACER_ROCPROFILER_VERSION_MINOR}.${DFTRACER_ROCPROFILER_VERSION_PATCH}")
-_dftracer_bi_set(CUDA_VERSION "${DFTRACER_CUDA_VERSION_MAJOR}.${DFTRACER_CUDA_VERSION_MINOR}.${DFTRACER_CUDA_VERSION_PATCH}")
+# Both default to 0.0.0 when the SDK/toolkit was not found; report that as absent.
+set(_bi_v "")
+if(DFTRACER_ROCPROFILER_VERSION_FOUND)
+    set(_bi_v "${DFTRACER_ROCPROFILER_VERSION_MAJOR}.${DFTRACER_ROCPROFILER_VERSION_MINOR}.${DFTRACER_ROCPROFILER_VERSION_PATCH}")
+endif()
+_dftracer_bi_set(ROCPROFILER_VERSION "${_bi_v}")
+set(_bi_v "")
+if(DFTRACER_CUDA_VERSION_MAJOR GREATER 0)
+    set(_bi_v "${DFTRACER_CUDA_VERSION_MAJOR}.${DFTRACER_CUDA_VERSION_MINOR}.${DFTRACER_CUDA_VERSION_PATCH}")
+endif()
+_dftracer_bi_set(CUDA_VERSION "${_bi_v}")
 _dftracer_bi_set(CUPTI_INCLUDE "${CUPTI_INCLUDE_DIR}")
 _dftracer_bi_set(VARIORUM_INCLUDE_DIRS "${VARIORUM_INCLUDE_DIRS}")
 _dftracer_bi_set(VARIORUM_LIBRARIES "${VARIORUM_LIBRARIES}")
