@@ -1062,6 +1062,7 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/dftracer_main.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/event_loop.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/configuration_manager.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/fs_info.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/md5.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/df_logger.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/utils.cpp

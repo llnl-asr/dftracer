@@ -250,6 +250,10 @@ inline double time_metric_units_per_second(const TimeMetricType& type) {
 #define METADATA_NAME_FILE_HASH "FH"
 #define METADATA_NAME_HOSTNAME_HASH "HH"
 #define METADATA_NAME_STRING_HASH "SH"
+// File-system facts at mount, directory and file level (fs type, capacity,
+// mount options, Lustre MDT/layout/OSTs), keyed by FH hashes and emitted at
+// finalize unless DFTRACER_ENABLE_FS_METADATA=0 (utils/fs_info.h).
+#define METADATA_NAME_FILE_SYSTEM "FS"
 // Event arg holding an event's relations to other things, e.g.
 //   "relations": {"used":["<16-hex>",...], "generated":[...], ...}
 // (DFTracer::append_id). It is an event's semantic content, not optional

@@ -14,6 +14,7 @@
 #include <dftracer/core/common/singleton.h>
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/utils/configuration_manager.h>
+#include <dftracer/core/utils/fs_info.h>
 #include <dftracer/core/utils/md5.h>
 #include <dftracer/core/utils/posix_bypass.h>
 #include <dftracer/core/utils/utils.h>
@@ -34,6 +35,8 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 #ifdef DFTRACER_HWLOC_ENABLE
 #include <hwloc.h>
 #endif
@@ -63,14 +66,21 @@ class DFTLogger {
   inline void clear_hash_cache() {
     std::unique_lock<std::shared_mutex> lock(map_mtx);
     for (auto& hash : computed_hash) {
-      if (hash.second) free(hash.second);
+      if (hash.second.hash) free(hash.second.hash);
     }
     computed_hash.clear();
   }
   bool throw_error;
   bool is_init, dftracer_tid;
   ProcessID process_id;
-  std::unordered_map<std::string, HashType> computed_hash;
+  // Every string hashed this run, keyed by the string as traced. `file` marks
+  // the FH (file) ones, which get "FS" records at finalize (emit_fs_records);
+  // that walk is the only cost, so tracing pays nothing per operation.
+  struct HashEntry {
+    HashType hash;
+    bool file;
+  };
+  std::unordered_map<std::string, HashEntry> computed_hash;
   std::atomic_int index;
   [[maybe_unused]] bool is_aggregated;
   bool has_entry;
@@ -349,13 +359,14 @@ class DFTLogger {
   inline HashType has_hash(ConstEventNameType key) {
     std::shared_lock<std::shared_mutex> lock(map_mtx);
     auto iter = computed_hash.find(key);
-    if (iter != computed_hash.end()) return iter->second;
+    if (iter != computed_hash.end()) return iter->second.hash;
     return NO_HASH_DEFAULT;
   }
 
-  inline void insert_hash(ConstEventNameType key, HashType hash) {
+  inline void insert_hash(ConstEventNameType key, HashType hash,
+                          bool file = false) {
     std::unique_lock<std::shared_mutex> lock(map_mtx);
-    computed_hash.insert_or_assign(key, hash);
+    computed_hash.insert_or_assign(key, HashEntry{hash, file});
   }
 
   inline TimeResolution get_time() {
@@ -540,7 +551,9 @@ class DFTLogger {
     HashType hash = has_hash(file);
     if (hash == NO_HASH_DEFAULT) {
       hash = get_hash(file);
-      insert_hash(file, hash);
+      // Keyed by the path as traced, before fix_str below, so finalize can
+      // still look the file up.
+      insert_hash(file, hash, strcmp(name, METADATA_NAME_FILE_HASH) == 0);
       ThreadID tid = 0;
       if (dftracer_tid) {
         tid = df_gettid();
@@ -637,9 +650,48 @@ class DFTLogger {
     if (this->buffer_manager != nullptr) this->buffer_manager->flush();
   }
 
+  // The "FS" records (utils/fs_info.h): for every traced file one at file
+  // level, plus one per directory and per mount it is in, the first time
+  // either is seen, so a fact is stored once at the level where it changes:
+  //   {"level":"mount","mhash":..,"fs":"lustre","bsize":..,"capacity":{..},
+  //    "mount":{"type":..,"source":..,"options":..},"lustre":{"fsname":..}}
+  //   {"level":"dir","dhash":..,"mhash":..,"lustre":{"mdt":0,..}}
+  //   {"level":"file","fhash":..,"dhash":..,"size":..,"blksize":..,
+  //    "lustre":{"stripe_count":4,..,"osts":[3,9,12,40]}}
+  // Done at finalize from the hash table, once the run has created and laid
+  // out its files, and after the interceptors are unbound, so the lookups are
+  // not traced. A file already removed by then has no record.
+  inline void emit_fs_records() {
+    std::vector<std::pair<std::string, std::string>> files;
+    {
+      std::shared_lock<std::shared_mutex> lock(map_mtx);
+      for (const auto& entry : computed_hash)
+        if (entry.second.file && entry.second.hash != NO_HASH_DEFAULT)
+          files.emplace_back(entry.first, entry.second.hash);
+    }
+    if (files.empty()) return;
+    dftracer::FsRecordWriter writer(
+        [this](const std::string& path) {
+          // Directories and mount points get FH records like files, so
+          // dhash/mhash resolve to paths the same way fhash does.
+          HashType h = hash_and_store(path.c_str(), METADATA_NAME_FILE_HASH);
+          return h == NO_HASH_DEFAULT ? std::string() : std::string(h);
+        },
+        [this](dftracer::Metadata* fields) {
+          log_record(METADATA_NAME_FILE_SYSTEM, fields,
+                     TraceEventType::TRACE_TYPE_DFTRACER);
+        });
+    size_t found = 0;
+    for (const auto& file : files)
+      if (writer.add(file.first, file.second)) ++found;
+    DFTRACER_LOG_INFO("Wrote %zu FS records for %zu of %zu traced files",
+                      writer.records(), found, files.size());
+  }
+
   inline void finalize() {
     DFTRACER_LOG_DEBUG("DFTLogger.finalize");
     if (this->buffer_manager != nullptr) {
+      if (config->fs_metadata) emit_fs_records();
       auto meta = new dftracer::Metadata();
       meta->insert_or_assign("num_events", index.load());
       add_end_event_metadata(meta);

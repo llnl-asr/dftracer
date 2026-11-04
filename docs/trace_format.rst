@@ -60,7 +60,7 @@ meets a value it does not know should treat it as UNKNOWN rather than fail.
 
 Custom metadata events carry the type of the API that logged them, so metadata
 written from Python is PYTHON and metadata written through the C API is C_APP.
-The hash events (FH, SH, HH) and the process and thread metadata are DFTRACER:
+The hash events (FH, SH, HH), the FS records, and the process and thread metadata are DFTRACER:
 they are emitted by the tracer's own bookkeeping. A hash record in particular
 is written once by whichever layer first saw the string, so attributing it to
 that layer would not be meaningful.
@@ -236,6 +236,71 @@ metadata, its ``args`` hold the fields rather than ``name``/``value``:
 .. code-block:: bash
 
     {"name":"dataset","cat":"CPP_APP","type":9,"pid":1,"tid":1,"ph":4,"args":{"hhash":"...","id":"8f0de68c04eea0bf","uri":"/p/out/a.h5"}}
+
+.. _`File System Records`:
+
+Unless turned off with ``DFTRACER_ENABLE_FS_METADATA=0`` (or
+``features.fs_metadata: False``), each process writes ``FS`` records at
+finalize describing where its traced files live. Each fact is stored once, at
+the level where it can change, and ``"level"`` says which:
+
+=========  ==========  ===========================================================
+level      keyed by    holds
+=========  ==========  ===========================================================
+``mount``  ``mhash``   once per mount: ``fs`` (type from ``statfs(2)``; hex magic
+                       when unknown), ``bsize``, ``capacity`` (``total_bytes``,
+                       ``free_bytes``, ``avail_bytes``, ``total_inodes``,
+                       ``free_inodes``), ``namelen``, ``read_only``, ``mount``
+                       (``type``, ``source`` and ``options`` from
+                       ``/proc/self/mountinfo``, e.g. ``vers=3,rsize=65536,...``
+                       on NFS), ``rotational`` (local block devices only: 1 disk,
+                       0 flash) and, on Lustre, ``lustre``: ``fsname`` and
+                       ``liblustreapi`` (0 when the library is not installed, so
+                       there are no layouts below)
+``dir``    ``dhash``   once per directory: the ``mhash`` of its mount and, on
+                       Lustre, ``lustre``: its ``mdt`` and the layout new files in
+                       it get (``pool``, ``pattern``, ``stripe_count``,
+                       ``stripe_size``, or ``components``)
+``file``   ``fhash``   once per traced file: the ``dhash`` of its directory,
+                       ``size`` at finalize, ``blksize`` (``st_blksize``, the
+                       preferred I/O size: stripe size times count on Lustre)
+                       and, on Lustre, ``lustre``: its own layout, with ``osts``
+                       the (sorted, unique) OSTs it has objects on
+=========  ==========  ===========================================================
+
+``fhash``, ``dhash`` and ``mhash`` are all ``FH`` hashes, so each resolves to
+its path like any file hash, and a file's I/O events join to its file, then
+its directory, then its mount. A traced directory (such as the cwd) has only a
+``dir`` record. For example, two files in one Lustre directory:
+
+.. code-block:: bash
+
+    {"name":"FS",...,"args":{"hhash":"...","level":"mount","mhash":"940a3a65897f3c06","fs":"lustre","bsize":4096,
+      "capacity":{"total_bytes":47080707004039168,"free_bytes":37021728739688448,"avail_bytes":37021718101884928,"total_inodes":10789490110,"free_inodes":8826710276},
+      "namelen":256,"read_only":0,"mount":{"type":"lustre","source":"<nids>:/lustre5","options":"rw,nosuid,rw,flock,lazystatfs,..."},
+      "lustre":{"liblustreapi":1,"fsname":"lustre5"}}}
+    {"name":"FS",...,"args":{"hhash":"...","level":"dir","dhash":"5ecd366a4122c081","mhash":"940a3a65897f3c06",
+      "lustre":{"mdt":3,"pool":"","mirrors":1,"pattern":"raid0","stripe_count":4,"stripe_size":1048576,"osts":[]}}}
+    {"name":"FS",...,"args":{"hhash":"...","level":"file","fhash":"398df582dcb774ae","dhash":"5ecd366a4122c081","size":8388608,"blksize":4194304,
+      "lustre":{"pool":"","mirrors":1,"pattern":"raid0","stripe_count":4,"stripe_size":1048576,"osts":[15,16,17,18]}}}
+    {"name":"FS",...,"args":{"hhash":"...","level":"file","fhash":"e5aeb28e9909bdba","dhash":"5ecd366a4122c081","size":8388608,"blksize":4194304,
+      "lustre":{"pool":"","mirrors":1,"pattern":"raid0","stripe_count":4,"stripe_size":1048576,"osts":[19,20,21,22]}}}
+
+A plain Lustre layout has ``pattern``, ``stripe_count`` and ``stripe_size``
+next to ``osts``. A composite (PFL or FLR) one instead has only ``osts`` (the
+union) and each component under ``components``, ``end`` being -1 for end of
+file. ``pattern`` ``mdt`` is Data-on-MDT (the extent lives on the MDT, no
+OSTs). A component the file never reached is not instantiated: it has no
+``osts``, and Lustre may report -1 for its ``stripe_count`` (the default).
+
+Everything is collected at finalize, after interception is switched off, so
+tracing pays nothing per I/O operation and the lookups are not traced
+themselves. Per traced file it costs one ``stat`` and, on Lustre, one layout
+lookup; ``statfs`` (a server round trip on NFS), the mount table and the
+Lustre directory lookups are done once per mount or directory. Only facts the
+node can answer are recorded, so they depend on the node: ``liblustreapi`` is
+loaded at run time, and only once a file is really on Lustre, so DFTracer
+builds and runs without Lustre. Files removed before finalize have no record.
 
 Events can carry a ``relations`` object in their ``args`` (built with
 ``append_id("relations", <name>, <id>)``), e.g.

@@ -41,6 +41,7 @@
 #define DFT_YAML_FEATURES "features"
 #define DFT_YAML_FEATURES_METADATA "metadata"
 #define DFT_YAML_FEATURES_CORE_AFFINITY "core_affinity"
+#define DFT_YAML_FEATURES_FS_METADATA "fs_metadata"
 #define DFT_YAML_FEATURES_IO "io"
 #define DFT_YAML_FEATURES_IO_ENABLE "enable"
 #define DFT_YAML_FEATURES_IO_POSIX "posix"
@@ -134,6 +135,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
       data_dirs("all"),
       metadata(true),
       core_affinity(false),
+      fs_metadata(true),
       gotcha_priority(1),
       logger_level(cpplogger::CPP_LOGGER_ERROR),
       time_metric(TimeMetricType::TIME_METRIC_US),
@@ -283,6 +285,12 @@ dftracer::ConfigurationManager::ConfigurationManager()
       }
       DFTRACER_LOG_DEBUG("YAML ConfigurationManager.core_affinity %d",
                          this->core_affinity);
+      if (config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_FS_METADATA]) {
+        this->fs_metadata =
+            config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_FS_METADATA].as<bool>();
+      }
+      DFTRACER_LOG_DEBUG("YAML ConfigurationManager.fs_metadata %d",
+                         this->fs_metadata);
       if (config[DFT_YAML_FEATURES][DFT_YAML_TRACER_INTERVAL]) {
         this->trace_interval_ms =
             config[DFT_YAML_FEATURES][DFT_YAML_TRACER_INTERVAL].as<size_t>();
@@ -520,6 +528,13 @@ dftracer::ConfigurationManager::ConfigurationManager()
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.core_affinity %d",
                        this->core_affinity);
+
+    const char* env_fs_metadata = getenv(DFTRACER_ENABLE_FS_METADATA);
+    if (env_fs_metadata != nullptr) {
+      fs_metadata = env_flag(env_fs_metadata);
+    }
+    DFTRACER_LOG_DEBUG("ENV ConfigurationManager.fs_metadata %d",
+                       this->fs_metadata);
 
     const char* env_gotcha_priority = getenv(DFTRACER_GOTCHA_PRIORITY);
     if (env_gotcha_priority != nullptr) {
@@ -848,6 +863,7 @@ void dftracer::ConfigurationManager::populate_metadata(
       << "\"enable\":" << (int)this->enable << ","
       << "\"metadata\":" << (int)this->metadata << ","
       << "\"core_affinity\":" << (int)this->core_affinity << ","
+      << "\"fs_metadata\":" << (int)this->fs_metadata << ","
       << "\"time_metric\":\"" << to_string(this->time_metric) << "\","
       << "\"io\":" << (int)this->io << ","
       << "\"posix\":" << (int)this->posix << ","
