@@ -182,6 +182,11 @@ if(DFTRACER_ENABLE_HDF5 AND NOT "${CMAKE_PREFIX_PATH}" STREQUAL "")
     "-DCMAKE_PREFIX_PATH:STRING=${CMAKE_PREFIX_PATH}")
 endif()
 
+# Which brahma to build: the release below, or another (a fork, a local clone, a
+# commit not yet released) for testing dftracer against it.
+set(DFTRACER_BRAHMA_GIT_REPOSITORY "https://github.com/llnl-asr/brahma.git" CACHE STRING
+    "Git repository brahma is built from")
+set(DFTRACER_BRAHMA_GIT_TAG "556089549197417341c30c87e0108d73d7417033" CACHE STRING "Tag, branch or commit of brahma to build")
 find_package(brahma 5.1.1 QUIET)
 if(brahma_FOUND)
   message(STATUS "[${PROJECT_NAME}] found brahma already installed")
@@ -189,8 +194,8 @@ else()
   ExternalProject_Add(
     brahma
     PREFIX ${CMAKE_BINARY_DIR}
-    GIT_REPOSITORY https://github.com/llnl-asr/brahma.git
-    GIT_TAG v1.1.1
+    GIT_REPOSITORY ${DFTRACER_BRAHMA_GIT_REPOSITORY}
+    GIT_TAG ${DFTRACER_BRAHMA_GIT_TAG}
     TIMEOUT 10
     CMAKE_ARGS
       "-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}"

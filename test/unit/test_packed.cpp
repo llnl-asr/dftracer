@@ -166,7 +166,7 @@ static void check_aggregation() {
   // than trace_interval_ms later in any time unit.
   const TimeResolution later = 1000ULL * 1000 * 1000 * 10;
   std::vector<Event> events;
-  for (int64_t i = 0; i < 4; ++i) {
+  for (TimeResolution i = 0; i < 4; ++i) {
     for (const char* fhash : {"aaa", "bbb"}) {
       for (ThreadID tid : {1, 2}) {
         for (TimeResolution base : {TimeResolution(0), later}) {

@@ -50,7 +50,8 @@ free-form and holds the sub-category within that layer.
  7         PSUTIL         dftracer_service telemetry (cat: sys, net, io)
  8         FINSTRUMENT    ``-finstrument-functions`` (cat: FUNC)
  9         CPP_APP        C++ API (``DFTRACER_CPP_*``)
- 10        MPI            MPI and MPI-IO interception (cat: MPI, MPIIO)
+ 10        MPI            MPI and MPI-IO interception (cat: MPIIO, or the
+                          MPI function family: env, p2p, collective, ...)
  11        CUDA           CUPTI (cat: the CUDA activity kind)
 ========  =============  ===================================================
 
@@ -198,33 +199,144 @@ in the second example above) is instead reported plain, without a suffix.
 Non-numeric metadata is not aggregated: only its presence is recorded via
 "dft_cnt".
 
+.. _`Metadata Events`:
+
 ----------------------------------------
 Metadata Events
 ----------------------------------------
 
-Within DFTracer, there are two types of metadata events.
-One is similar to the chrome tracing format, which modifies the name in the perfetto ui view.
-For this, we support process name (in case of MPI we show rank of the process) and thread name which shows process id.
-Another type of metadata event supports are internal metadata events such as hash function.
+Each process writes its own trace file, and DFTracer adds the metadata records below to it.
+Every record has ``"type":1`` (``DFTRACER``) and ``"cat":"dftracer"``; all but ``start``
+and ``end`` are metadata records (``"ph":4``). Every record, metadata or event, carries
+``args.hhash``: the hash of the host it ran on. The excerpts below are rank 0 of a 4-rank
+IOR MPI-IO run with OpenMPI 5.0.3, in file order.
 
-.. _`Hash Events`:
-
-A sample hash event looks like the following
-
-
-Here, "name" is the type of hash. "HH" for hostname hash, "FH" for filename hash, "SH" for general string hash.
-"args.name" refers to the string that was hashed.
-Finally, the "value" refers to the hash value. 
-
-
-Finally, there are custom metadata events to store auxiliary information. 
-An example of such event is below.
+Once, when the trace file is opened:
 
 .. code-block:: bash
 
-    {"name":"PR","cat":"dftracer","type":1,"pid":3487304,"tid":6974608,"ph":4,"args":{"name":"core_affinity","value":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47]}}
+    {"name":"HH","cat":"dftracer","type":1,"pid":13916,"tid":13916,"ph":4,"args":{"hhash":"2cbe8604f36e21bf","name":"083d7212109e","value":"2cbe8604f36e21bf"}}
+    {"name":"thread_name","cat":"dftracer","type":1,"pid":13916,"tid":13916,"ph":4,"args":{"hhash":"2cbe8604f36e21bf","name":"13916","value":"thread_name"}}
+    {"name":"CM","cat":"dftracer","type":1,"pid":13916,"tid":13916,"ph":4,"args":{"hhash":"2cbe8604f36e21bf","name":"time_metric","value":"US"}}
+    {"name":"FH","cat":"dftracer","type":1,"pid":13916,"tid":13916,"ph":4,"args":{"hhash":"2cbe8604f36e21bf","name":"/tmp/ior-openmpi-5.0.3","value":"9f2b1a4271ca33dc"}}
+    {"name":"SH","cat":"dftracer","type":1,"pid":13916,"tid":13916,"ph":4,"args":{"hhash":"2cbe8604f36e21bf","name":"/tmp/ior-openmpi-5.0.3/inst/bin/ior;-a;MPIIO;-c;-w;-r;-b;4m;-t;1m;-s;2;-e;-o;/tmp/d/openmpi-5.0.3/traced.dat","value":"4629c7cd2590fc22"}}
+    {"name":"SH","cat":"dftracer","type":1,"pid":13916,"tid":13916,"ph":4,"args":{"hhash":"2cbe8604f36e21bf","name":"ior","value":"a01da183974134df"}}
+    {"id":1,"name":"start","cat":"dftracer","type":1,"pid":13916,"tid":13916,"ts":1793772882984178,"dur":0,"ph":1,"args":{"hhash":"2cbe8604f36e21bf","ppid":13913,"cmd_hash":"4629c7cd2590fc22","exec_hash":"a01da183974134df","version":20003,"date":"Wed Nov  4 06:14:42 2026","cwd":"9f2b1a4271ca33dc"}}
 
-Here, the "name" "PR" represents a metadata event for process and the args contain the metadata name and its value.
+Once, after ``MPI_Init`` or ``MPI_Init_thread`` returns:
+
+.. code-block:: bash
+
+    {"name":"PR","cat":"dftracer","type":1,"pid":13916,"tid":13916,"ph":4,"args":{"hhash":"2cbe8604f36e21bf","name":"rank","value":"0"}}
+    {"name":"process_name","cat":"dftracer","type":1,"pid":13916,"tid":13916,"ph":4,"args":{"hhash":"2cbe8604f36e21bf","name":"Rank 0","value":"process_name"}}
+
+Once, at finalize:
+
+.. code-block:: bash
+
+    {"id":257,"name":"end","cat":"dftracer","type":1,"pid":13916,"tid":13916,"ts":1793772883174841,"dur":0,"ph":1,"args":{"hhash":"2cbe8604f36e21bf","app":{},"used":{"LIBC_IO":1,"MPI":1},"cfg":{"enable":1,"metadata":1,"core_affinity":0,"time_metric":"US","io":1,"posix":1,"stdio":1,"trace_all_files":0,"tids":1,"bind_signals":0,"write_buffer_size":16777216,"trace_interval_ms":10,"libuv_thread_count":1,"variorum_power":1,"aggregation_enable":1,"pc_mode":0,"aggregation_type":"SELECTIVE","bind":1,"log_file":"/work/traces/openmpi-5.0.3/ior-680a7086970519bf-preload.pfw.gz"},"build":{"mpi":1,"hdf5":0,"hip":0,"cuda":0,"finstrument":0,"variorum":0},"num_events":256}}
+
+.. _`Hash Events`:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 22 30 32
+
+   * - Record
+     - Written
+     - ``args``
+     - Use in analysis
+   * - ``HH``
+     - Once per process, first record in the file
+     - ``name``: the hostname; ``value``: its hash
+     - Resolve every record's ``hhash`` to a node: group ranks by node, count nodes
+   * - ``thread_name``
+     - Once per process
+     - ``name``: the process id
+     - Label for trace viewers
+   * - ``CM`` ``time_metric``
+     - Once per process
+     - ``value``: unit of ``ts`` and ``dur`` (``US``, microseconds, by default)
+     - Convert times
+   * - ``FH``
+     - The first time each path is hashed: the working directory, then each file touched
+     - ``name``: the path; ``value``: its hash
+     - Resolve ``fhash`` in POSIX, STDIO and MPI-IO events, and ``cwd`` in ``start``, to a path
+   * - ``SH``
+     - The first time each string is hashed: the command line and executable name, among others
+     - ``name``: the string; ``value``: its hash
+     - Resolve ``cmd_hash`` and ``exec_hash`` in ``start``
+   * - ``start``
+     - Once per process, when the trace is opened
+     - With ``DFTRACER_INC_METADATA=1``: ``ppid``, ``cmd_hash``, ``exec_hash``, ``cwd``, ``version``, ``date``
+     - Which program, command line and directory each process ran
+   * - ``PR`` ``rank``
+     - Once per process, at the first record logged after ``MPI_Init`` or ``MPI_Init_thread`` returns and before ``MPI_Finalize``
+     - ``value``: the rank in ``MPI_COMM_WORLD``
+     - Map ``pid`` (and so the whole file) to an MPI rank
+   * - ``process_name``
+     - With ``PR`` ``rank``
+     - ``name``: ``Rank <n>``
+     - Label for trace viewers
+   * - ``PR`` ``core_affinity``
+     - Once per process, with ``DFTRACER_SET_CORE_AFFINITY=1`` in a build with hwloc
+     - ``value``: the cores the process may run on
+     - Check rank placement and oversubscription
+   * - ``CM`` (other names)
+     - Each time the application logs a key/value metadata event (see `Custom Metadata`_)
+     - ``name``: the key; ``value``: the value
+     - Application values at a point in the run
+   * - ``end``
+     - Once per process, at finalize
+     - ``num_events``, ``cfg``, ``build``, ``used``, ``app``
+     - Effective configuration, which layers produced events, and the application's ``set_app_metadata_*`` values
+
+.. _`Custom Metadata`:
+
+**Custom metadata (CM).** ``CM`` records hold a key and a value as strings: ``args.name`` is
+the key and ``args.value`` the value. DFTracer writes one itself, ``time_metric``, with
+``"type":1``. Every other ``CM`` record comes from the application, which can log one at any
+point in the run:
+
+========  ============================================  ==================
+ API       Call                                          ``type`` written
+========  ============================================  ==================
+ C         ``DFTRACER_C_METADATA(name, key, value)``     2 (``C_APP``)
+ C++       ``DFTRACER_CPP_METADATA(name, key, value)``   9 (``CPP_APP``)
+ Python    ``log_metadata_event(key, value)``            6 (``PYTHON``)
+========  ============================================  ==================
+
+``name`` in the C and C++ macros only names the local variable; it is not written. The record
+keeps ``"cat":"dftracer"``; ``type`` tells which layer wrote it. A C program calling
+``DFTRACER_C_METADATA(meta, "solver", "cg")`` writes:
+
+.. code-block:: bash
+
+    {"name":"CM","cat":"dftracer","type":2,"pid":1574378,"tid":1574378,"ph":4,"args":{"hhash":"2d851440028991ea","name":"solver","value":"cg"}}
+
+A key logged twice gives two records; nothing folds them. With fields instead of a single
+value (``DFTRACER_C_RECORD_START``, ``DFTRACER_CPP_RECORD``, or
+``log_metadata_event(key, fields=...)`` in Python), the application writes a metadata record
+named after the key rather than a ``CM`` record (see `Metadata Records`_). For values that
+describe the whole run, use ``set_app_metadata_int`` / ``set_app_metadata_string`` instead:
+they land once in the ``app`` object of the ``end`` record, last value per key. The same C
+program calling ``DFTRACER_C_APP_METADATA_INT("nx", 64)`` and
+``DFTRACER_C_APP_METADATA_STR("input_deck", "sedov.in")`` ends with
+``"app":{"input_deck":"sedov.in","nx":64}``.
+
+The rank is read with ``PMPI_Comm_rank(MPI_COMM_WORLD)``, so a process that never initializes
+MPI has no ``PR`` ``rank`` record. Because a trace file belongs to one process, the rank applies
+to the whole file, including the events before ``MPI_Init``.
+
+Run-level values an application sets itself, in the spirit of Adiak (problem size, input deck,
+solver options), go in the ``app`` object of the ``end`` record: call
+``set_app_metadata_int`` or ``set_app_metadata_string``, or ``DFTRACER_C_APP_METADATA_INT`` /
+``_STR`` and ``DFTRACER_CPP_APP_METADATA_INT`` / ``_STR``. The last value set for a key wins.
+
+DFTracer does not record the size of ``MPI_COMM_WORLD``, the MPI library version, or the job
+id of the launcher. The world size can be counted from the distinct ``PR`` ``rank`` values when
+every rank was traced. The MPI implementation and version DFTracer was built against are
+reported by ``dftracer_install_info``, not in the trace.
 
 .. _`Metadata Records`:
 

@@ -3312,8 +3312,7 @@ herr_t brahma::HDF5DFTracer::H5Fget_info1(hid_t obj_id,
   return ret;
 }
 #endif
-#if ((BRAHMA_HDF5_VERSION >= 100823 && BRAHMA_HDF5_VERSION < 100900) || \
-     (BRAHMA_HDF5_VERSION >= 101005 && BRAHMA_HDF5_VERSION < 101100) || \
+#if ((BRAHMA_HDF5_VERSION >= 101005 && BRAHMA_HDF5_VERSION < 101100) || \
      (BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) || \
      (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))
 herr_t brahma::HDF5DFTracer::H5Fget_info2(hid_t obj_id,
@@ -10796,19 +10795,6 @@ hid_t brahma::HDF5DFTracer::H5Rdereference1(hid_t obj_id, H5R_type_t ref_type,
   DFT_LOGGER_START_ALWAYS();
   DFT_LOGGER_UPDATE_TYPE(obj_id, MetadataType::MT_VALUE);
   hid_t ret = __real_H5Rdereference1(obj_id, ref_type, ref);
-  DFT_LOGGER_UPDATE_TYPE(ret, MetadataType::MT_VALUE);
-  DFT_LOGGER_END();
-  return ret;
-}
-#endif
-#if (BRAHMA_HDF5_VERSION >= 100823 && BRAHMA_HDF5_VERSION < 100900)
-hid_t brahma::HDF5DFTracer::H5Rdereference2(hid_t dataset, H5R_type_t ref_type,
-                                            const void* ref) {
-  ConstEventNameType CATEGORY = "h5r";
-  BRAHMA_MAP_OR_FAIL(H5Rdereference2);
-  DFT_LOGGER_START_ALWAYS();
-  DFT_LOGGER_UPDATE_TYPE(dataset, MetadataType::MT_VALUE);
-  hid_t ret = __real_H5Rdereference2(dataset, ref_type, ref);
   DFT_LOGGER_UPDATE_TYPE(ret, MetadataType::MT_VALUE);
   DFT_LOGGER_END();
   return ret;

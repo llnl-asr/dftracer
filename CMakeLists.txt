@@ -1081,6 +1081,12 @@ else()
                 list(APPEND DFTRACER_CORE_SRC
                         ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpi.cpp
                         ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpiio.cpp)
+                # One tracer per brahma compat interface (generated). Each compiles
+                # to nothing unless the build's MPI is the one it was generated for.
+                file(GLOB DFTRACER_MPI_COMPAT_SRC CONFIGURE_DEPENDS
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpi_*_compat.cpp
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpiio_*_compat.cpp)
+                list(APPEND DFTRACER_CORE_SRC ${DFTRACER_MPI_COMPAT_SRC})
         endif()
 
         # Add HDF5 sources if HDF5 is enabled
@@ -1121,7 +1127,13 @@ else()
         if(DFTRACER_MPI_ENABLE)
                 list(APPEND DFTRACER_CORE_PRIVATE_INCLUDE
                         ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpi.h
-                        ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpiio.h)
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpiio.h
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpi_compat.h
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpiio_compat.h)
+                file(GLOB DFTRACER_MPI_COMPAT_HDR CONFIGURE_DEPENDS
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpi_*_compat.h
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpiio_*_compat.h)
+                list(APPEND DFTRACER_CORE_PRIVATE_INCLUDE ${DFTRACER_MPI_COMPAT_HDR})
         endif()
 
         if(DFTRACER_HDF5_ENABLE)

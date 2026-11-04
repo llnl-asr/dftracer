@@ -66,6 +66,11 @@ class DFTLogger {
       if (hash.second) free(hash.second);
     }
     computed_hash.clear();
+#ifdef DFTRACER_MPI_ENABLE
+    // Its values point into computed_hash, freed above.
+    std::unique_lock<std::shared_mutex> file_lock(mpi_file_mtx);
+    mpi_file_hash.clear();
+#endif
   }
   bool throw_error;
   bool is_init, dftracer_tid;
@@ -76,6 +81,19 @@ class DFTLogger {
   bool has_entry;
 #ifdef DFTRACER_MPI_ENABLE
   bool mpi_event;
+  // The fhash of the path each open MPI_File was opened with, keyed by the
+  // handle's bits. An MPI-IO call records this fhash, never the handle: a
+  // handle is an opaque pointer in OpenMPI and ROMIO and means nothing in a
+  // trace. Values are owned by computed_hash.
+  std::shared_mutex mpi_file_mtx;
+  std::unordered_map<uint64_t, HashType> mpi_file_hash;
+  static uint64_t mpi_file_key(MPI_File fh) {
+    static_assert(sizeof(MPI_File) <= sizeof(uint64_t),
+                  "an MPI_File handle must fit the map key");
+    uint64_t key = 0;
+    std::memcpy(&key, &fh, sizeof(fh));
+    return key;
+  }
 #endif
 #ifdef DFTRACER_HWLOC_ENABLE
   hwloc_topology_t topology;
@@ -358,6 +376,27 @@ class DFTLogger {
     computed_hash.insert_or_assign(key, hash);
   }
 
+#ifdef DFTRACER_MPI_ENABLE
+  // MPI_File_open: `fh` now refers to the file whose path hashed to `fhash`.
+  inline void mpi_file_opened(MPI_File fh, HashType fhash) {
+    if (fhash == NO_HASH_DEFAULT) return;
+    std::unique_lock<std::shared_mutex> lock(mpi_file_mtx);
+    mpi_file_hash.insert_or_assign(mpi_file_key(fh), fhash);
+  }
+  // The fhash of the file `fh` was opened on, or NO_HASH_DEFAULT if it was
+  // not opened through a traced MPI_File_open.
+  inline HashType mpi_file_fhash(MPI_File fh) {
+    std::shared_lock<std::shared_mutex> lock(mpi_file_mtx);
+    auto iter = mpi_file_hash.find(mpi_file_key(fh));
+    return iter != mpi_file_hash.end() ? iter->second : NO_HASH_DEFAULT;
+  }
+  // MPI_File_close: the handle no longer refers to the file (MPI may reuse it).
+  inline void mpi_file_closed(MPI_File fh) {
+    std::unique_lock<std::shared_mutex> lock(mpi_file_mtx);
+    mpi_file_hash.erase(mpi_file_key(fh));
+  }
+#endif
+
   inline TimeResolution get_time() {
     DFTRACER_LOG_DEBUG("DFTLogger.get_time");
     struct timeval tv{};
@@ -383,7 +422,8 @@ class DFTLogger {
     return t;
   }
 
-// Which MPI implementations brahma actually intercepts.
+// brahma's common MPI interface is compiled for every MPI implementation and
+// version, so these calls are always intercepted when MPI tracing is on.
 //
 // dftracer's OWN MPI calls in handle_mpi() below must use the PMPI_ entry
 // points for every implementation in this set. If they use the public MPI_
@@ -396,11 +436,11 @@ class DFTLogger {
 // than a stack overflow. Measured on MVAPICH2 2.3.7: a SINGLE rank exhausted a
 // 515 GB node and the trace was left 0 bytes.
 //
-// This set MUST stay in sync with the implementation arms of the interceptor
-// guards in core/brahma/mpi.cpp and core/brahma/mpiio.cpp. Adding an
-// implementation there without adding it here reintroduces the recursion.
-#if defined(BRAHMA_MPI_IMPL_CRAYMPICH) || defined(BRAHMA_MPI_IMPL_MPICH) || \
-    defined(BRAHMA_MPI_IMPL_OPENMPI) || defined(BRAHMA_MPI_IMPL_MVAPICH)
+// The common interface in core/brahma/mpi.cpp and core/brahma/mpiio.cpp has no
+// implementation or version guards, so it holds for any MPI, including one
+// brahma has never seen. Do not narrow this to a list of implementations: an
+// MPI outside the list would still be intercepted and recurse.
+#if defined(BRAHMA_ENABLE_MPI)
 #define DFTRACER_MPI_SELF_CALLS_ARE_INTERCEPTED 1
 #endif
 
@@ -679,6 +719,24 @@ class DFTLogger {
         this->logger->hash_and_store(value, METADATA_NAME_FILE_HASH); \
     DFT_LOGGER_UPDATE(value##_hash);                                  \
   }
+
+#ifdef DFTRACER_MPI_ENABLE
+// MPI-IO calls on an open file record the fhash of the path it was opened
+// with, as POSIX calls do, instead of the handle (see mpi_file_fhash).
+#define DFT_LOGGER_UPDATE_MPI_FILE(fh)                      \
+  if (trace && this->logger->include_metadata) {            \
+    HashType fhash = this->logger->mpi_file_fhash(fh);      \
+    if (fhash != NO_HASH_DEFAULT) DFT_LOGGER_UPDATE(fhash); \
+  }
+// MPI_File_open and MPI_File_delete: hash the path (writing its FH record
+// the first time) into `fhash` and record it.
+#define DFT_LOGGER_UPDATE_MPI_PATH(path)                                   \
+  HashType fhash = NO_HASH_DEFAULT;                                        \
+  if (trace && (path) != nullptr) {                                        \
+    fhash = this->logger->hash_and_store((path), METADATA_NAME_FILE_HASH); \
+    DFT_LOGGER_UPDATE(fhash);                                              \
+  }
+#endif
 
 #define DFT_LOGGER_START(entity)                             \
   HashType fhash = is_traced(entity, __FUNCTION__);          \

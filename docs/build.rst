@@ -180,6 +180,38 @@ matching interception:
     -- [dftracer] dependency: MPI C probe: impl=MVAPICH brahma_version=200307
     -- [dftracer] Forwarding BRAHMA_MPI_IMPL=MVAPICH to brahma
 
+Supported MPI
+*******************************
+
+DFTracer traces the MPI and MPI-IO calls through brahma, which splits them in two.
+The *common* functions are the ones with the same signature in every supported MPI.
+They are traced for any MPI implementation and version, including ones not listed
+below, so an MPI that DFTracer has never seen still produces ``MPI`` and ``MPIIO``
+events for the common calls.
+The *compat* functions are the ones an MPI has beyond the common set, for example the
+MPI-4 large-count ``_c`` calls. They are traced only for the families below, and cover
+every patch release of a family.
+
+=============== ================================== ================================
+Implementation  Compat functions traced for        Built and tested with
+=============== ================================== ================================
+OpenMPI         4.1.x, 5.0.x                       4.1.6, 4.1.8, 5.0.3, 5.0.6
+MPICH           3.4.x, 4.2.x                       3.4.3, 4.2.3, 4.3.0 (common only)
+MVAPICH2        2.3.x                              not in CI (spack build fails)
+Cray MPICH      8.1.x, 9.0.x, 9.1.x                not in CI (proprietary)
+=============== ================================== ================================
+
+The exact MPI releases the interfaces were generated from are recorded in the header
+comment of every generated file under ``src/dftracer/core/brahma``. The compat functions
+of a family are those present in every release that was read for it, so a patch release
+that was not read is covered only if it has the same functions.
+The build detects the implementation and version and passes them to brahma, as shown
+above. Set ``DFTRACER_MPI_IMPL`` to override the detected implementation. The same
+brahma table, and how to add an MPI release, are in the brahma README.
+
+The functions in the common set and in each family's compat set are listed in
+:doc:`mpi_support`.
+
 Dependencies
 *******************************
 
@@ -195,7 +227,9 @@ Verifying
 Run the application with ``DFTRACER_ENABLE=1`` and confirm the trace contains the
 categories you enabled (``MPI``, ``MPIIO``, ``HDF5``) rather than only ``POSIX``.
 An enabled feature that was linked against a mismatched library builds
-successfully but produces no events of that category.
+successfully but produces no events of that category. For MPI this applies to the
+compat calls only: an MPI release outside the table above still traces the common
+calls, and is missing just the implementation-specific ones.
 
 To check this without running an application, run ``dftracer_install_info``. It
 lists which features were enabled, the MPI, HDF5, PAPI, ROCm and CUDA versions

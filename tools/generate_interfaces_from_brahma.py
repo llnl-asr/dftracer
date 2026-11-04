@@ -59,6 +59,10 @@ class InterfaceSpec:
     category: str
     trace_type: str
     mpi_interface: bool
+    # compat interfaces only: the interface they extend, and extra -D flags
+    # needed to parse their (guarded) brahma header
+    parent: str = ""
+    extra_defines: Tuple[str, ...] = ()
 
 
 SPECS: Dict[str, InterfaceSpec] = {
@@ -95,6 +99,49 @@ SPECS: Dict[str, InterfaceSpec] = {
         trace_type="TRACE_TYPE_MPI",
         mpi_interface=True,
     ),
+}
+
+# Lines a wrapper runs right after the real call returns, keyed by interface and
+# method. Kept here, not in the generated files, so a regeneration keeps them.
+POST_CALL_LINES: Dict[str, Dict[str, List[str]]] = {
+    "mpi": {
+        "MPI_Init": [
+            "  // This process has now legitimately initialized MPI itself, so it is",
+            "  // safe again for tracing code to call into MPI (see",
+            "  // dftracer_mpi_fork_guard).",
+            "  if (ret == MPI_SUCCESS) dftracer_mpi_fork_guard().store(false);",
+        ],
+        "MPI_Init_thread": [
+            "  // See dftracer_mpi_fork_guard: this process has now legitimately",
+            "  // initialized MPI itself.",
+            "  if (ret == MPI_SUCCESS) dftracer_mpi_fork_guard().store(false);",
+        ],
+    },
+    "mpiio": {
+        # An MPI_File is a key, not a value: the open maps it to the fhash of
+        # its path, every later call records that fhash (see
+        # DFT_LOGGER_UPDATE_MPI_FILE), and the close drops the mapping.
+        "MPI_File_open": [
+            "  if (trace && ret == MPI_SUCCESS && fh != nullptr)",
+            "    this->logger->mpi_file_opened(*fh, fhash);",
+        ],
+        "MPI_File_close": [
+            "  if (ret == MPI_SUCCESS) this->logger->mpi_file_closed(closing);",
+        ],
+    },
+}
+
+# Lines a wrapper runs before the real call, after its arguments are recorded.
+PRE_CALL_LINES: Dict[str, Dict[str, List[str]]] = {
+    "mpiio": {
+        "MPI_File_open": ["  DFT_LOGGER_UPDATE_MPI_PATH(filename);"],
+        # The close sets *fh to MPI_FILE_NULL, so take the handle first.
+        "MPI_File_close": [
+            "  const MPI_File closing = fh != nullptr ? *fh : MPI_FILE_NULL;",
+            "  DFT_LOGGER_UPDATE_MPI_FILE(closing);",
+        ],
+        "MPI_File_delete": ["  DFT_LOGGER_UPDATE_MPI_PATH(filename);"],
+    },
 }
 
 NO_LOG_METHODS: Dict[str, Set[str]] = {
@@ -527,7 +574,9 @@ def find_virtual_methods(
 def build_contexts(spec: InterfaceSpec, header_text: str) -> List[ParseContext]:
     versions = extract_versions(header_text, spec.version_macro)
     if not versions:
-        return []
+        # A layered MPI header (core or compat) carries no per-function version
+        # guards: everything in it applies wherever the header is compiled.
+        return [ParseContext(version=0)] if spec.mpi_interface else []
     if not spec.mpi_interface:
         return [ParseContext(version=v) for v in versions]
 
@@ -559,7 +608,7 @@ def collect_methods_for_interface(
         return methods
 
     for idx, ctx in enumerate(contexts, start=1):
-        defines = [spec.enable_macro, f"{spec.version_macro}={ctx.version}"]
+        defines = [spec.enable_macro, f"{spec.version_macro}={ctx.version}", *spec.extra_defines]
         if ctx.impl_macro:
             defines.append(ctx.impl_macro)
 
@@ -597,9 +646,9 @@ def method_decl_line(info: MethodInfo) -> str:
 def method_impl_block(spec: InterfaceSpec, info: MethodInfo) -> str:
     args = ", ".join(info.args)
     arg_call = ", ".join(info.arg_names)
-    skip_logging = info.key.name in NO_LOG_METHODS.get(spec.name, set())
+    skip_logging = info.key.name in NO_LOG_METHODS.get(spec.parent or spec.name, set())
 
-    category_fn = PER_FUNCTION_CATEGORY.get(spec.name)
+    category_fn = PER_FUNCTION_CATEGORY.get(spec.parent or spec.name)
     category_line = (
         f'  ConstEventNameType CATEGORY = "{category_fn(info.key.name)}";\n'
         if category_fn and not skip_logging
@@ -626,11 +675,17 @@ def method_impl_block(spec: InterfaceSpec, info: MethodInfo) -> str:
     for arg_type, arg_name in zip(info.arg_types, info.arg_names):
         if arg_type == "void":
             continue
-        if should_log_arg(arg_type):
+        if normalize_ws(arg_type) == "MPI_File":
+            # A key, not a value: record the fhash it was opened with.
+            log_lines.append(f"  DFT_LOGGER_UPDATE_MPI_FILE({arg_name});")
+        elif should_log_arg(arg_type):
             log_lines.append(f"  DFT_LOGGER_UPDATE_TYPE({arg_name}, MetadataType::MT_VALUE);")
+    log_lines += PRE_CALL_LINES.get(spec.parent or spec.name, {}).get(info.key.name, [])
     log_block = "\n".join(log_lines)
     if log_block:
         log_block += "\n"
+    post_lines = POST_CALL_LINES.get(spec.parent or spec.name, {}).get(info.key.name, [])
+    post_block = "".join(f"{line}\n" for line in post_lines)
 
     if info.return_kind == cix.TypeKind.VOID:
         return (
@@ -651,6 +706,7 @@ def method_impl_block(spec: InterfaceSpec, info: MethodInfo) -> str:
         f"  DFT_LOGGER_START_ALWAYS();\n"
         f"{log_block}"
         f"  {info.key.return_type} ret = __real_{info.key.name}({arg_call});\n"
+        f"{post_block}"
         f"  DFT_LOGGER_UPDATE_TYPE(ret, MetadataType::MT_VALUE);\n"
         f"  DFT_LOGGER_END();\n"
         f"  return ret;\n"
@@ -658,7 +714,19 @@ def method_impl_block(spec: InterfaceSpec, info: MethodInfo) -> str:
     )
 
 
-def generate_header(spec: InterfaceSpec, methods: Sequence[MethodInfo], timestamp: str) -> str:
+def read_provenance(header_text: str) -> str:
+    """The brahma header's record of which MPI releases it was generated from."""
+    m = re.search(
+        r"^/// Generated from these MPI headers \(implementation version\):\n((?:///   .*\n)+)",
+        header_text,
+        re.M,
+    )
+    if not m:
+        return ""
+    return "///\n/// Brahma interfaces generated from these MPI headers (implementation version):\n" + m.group(1)
+
+
+def generate_header(spec: InterfaceSpec, methods: Sequence[MethodInfo], timestamp: str, provenance: str = "") -> str:
     guard = f"DFTRACER_{spec.base_class}_H"
 
     decls: List[str] = []
@@ -670,6 +738,7 @@ def generate_header(spec: InterfaceSpec, methods: Sequence[MethodInfo], timestam
         "///\n"
         f"/// This file is generated by tools/generate_interfaces_from_brahma.py\n"
         f"/// Generated on: {timestamp}\n"
+        f"{provenance}"
         "///\n"
         "/// This is a dftracer stub file. Regenerate and customize as needed.\n"
         "///\n\n"
@@ -707,7 +776,7 @@ def generate_header(spec: InterfaceSpec, methods: Sequence[MethodInfo], timestam
     )
 
 
-def generate_cpp(spec: InterfaceSpec, methods: Sequence[MethodInfo], timestamp: str) -> str:
+def generate_cpp(spec: InterfaceSpec, methods: Sequence[MethodInfo], timestamp: str, provenance: str = "") -> str:
     blocks: List[str] = []
     for method in methods:
         cond = build_condition(spec, method.contexts)
@@ -715,7 +784,7 @@ def generate_cpp(spec: InterfaceSpec, methods: Sequence[MethodInfo], timestamp: 
 
     category_static = (
         ""
-        if spec.name in PER_FUNCTION_CATEGORY
+        if (spec.parent or spec.name) in PER_FUNCTION_CATEGORY
         else f'static ConstEventNameType CATEGORY = "{spec.category}";\n'
     )
 
@@ -723,6 +792,7 @@ def generate_cpp(spec: InterfaceSpec, methods: Sequence[MethodInfo], timestamp: 
         "///\n"
         f"/// This file is generated by tools/generate_interfaces_from_brahma.py\n"
         f"/// Generated on: {timestamp}\n"
+        f"{provenance}"
         "///\n"
         "/// This is a dftracer stub file. Regenerate and customize as needed.\n"
         "///\n\n"
@@ -734,6 +804,79 @@ def generate_cpp(spec: InterfaceSpec, methods: Sequence[MethodInfo], timestamp: 
         f"bool brahma::{spec.tracer_class}::stop_trace = false;\n\n"
         + "".join(blocks)
         + f"\n#endif // {spec.enable_macro}\n"
+    )
+
+
+def discover_compat_specs(brahma_include_root: Path, parents: Sequence[str]) -> List[InterfaceSpec]:
+    """One spec per brahma compat interface (mpi_<impl>_<x>_<y>_compat.h)."""
+    out: List[InterfaceSpec] = []
+    interface_dir = brahma_include_root / "brahma/interface"
+    for parent in parents:
+        parent_spec = SPECS[parent]
+        for header in sorted(interface_dir.glob(f"{parent}_*_compat.h")):
+            m = re.match(rf"^{parent}_(.+)_compat$", header.stem)
+            macro = re.search(r"#define\s+(BRAHMA_\w+_COMPAT)\s+1", header.read_text(errors="ignore"))
+            if not m or not macro:
+                continue
+            base = f"{parent_spec.base_class}_{m.group(1).upper()}_COMPAT"
+            out.append(
+                InterfaceSpec(
+                    name=header.stem,
+                    base_class=base,
+                    tracer_class=f"{base}_DFTracer",
+                    enable_macro=macro.group(1),
+                    version_macro=parent_spec.version_macro,
+                    system_header=parent_spec.system_header,
+                    category=parent_spec.category,
+                    trace_type=parent_spec.trace_type,
+                    mpi_interface=True,
+                    parent=parent,
+                    extra_defines=(parent_spec.enable_macro,),
+                )
+            )
+    return out
+
+
+def generate_compat_aggregator(parent: str, compat: Sequence[InterfaceSpec], timestamp: str) -> Tuple[str, str]:
+    """Header/cpp-free helper that binds, unbinds and finalizes every compat tracer.
+
+    Each tracer only exists when the build's MPI matches its implementation and
+    major.minor, so the calls below compile to nothing for any other MPI.
+    """
+    spec = SPECS[parent]
+    name = f"{parent}_compat"
+    guard = f"DFTRACER_{parent.upper()}_COMPAT_H"
+    includes = "".join(f"#include <dftracer/core/brahma/{c.name}.h>\n" for c in compat)
+
+    def each(body: str) -> str:
+        return "".join(
+            f"#ifdef {c.enable_macro}\n"
+            + body.format(cls=f"brahma::{c.tracer_class}")
+            + "#endif\n"
+            for c in compat
+        )
+
+    return name, (
+        "///\n"
+        "/// This file is generated by tools/generate_interfaces_from_brahma.py\n"
+        f"/// Generated on: {timestamp}\n"
+        "///\n\n"
+        f"#ifndef {guard}\n#define {guard}\n\n"
+        f"#include <dftracer/core/brahma/{parent}.h>\n{includes}\n"
+        f"#ifdef {spec.enable_macro}\n"
+        "namespace brahma {\n"
+        f"inline void dftracer_{parent}_compat_bind(uint16_t priority) {{\n"
+        + each('  {cls}::get_instance()->bind<{cls}>("dftracer", priority);\n')
+        + "}\n"
+        f"inline void dftracer_{parent}_compat_finalize() {{\n"
+        + each(
+            "  {{\n    auto i = {cls}::get_instance();\n"
+            "    if (i != nullptr) {{\n      i->unbind();\n      i->finalize();\n    }}\n  }}\n"
+        )
+        + "}\n"
+        "}  // namespace brahma\n"
+        f"#endif  // {spec.enable_macro}\n"
+        f"#endif  // {guard}\n"
     )
 
 
@@ -785,6 +928,22 @@ def parse_args() -> argparse.Namespace:
             "to their underlying type."
         ),
     )
+    parser.add_argument(
+        "--compat-include-dir",
+        action="append",
+        default=[],
+        dest="compat_include_dirs",
+        metavar="SLUG=DIR",
+        help=(
+            "MPI include dir to parse one compat interface against, e.g. "
+            "craympich_9_0=/opt/cray/pe/mpich/9.0.1/ofi/crayclang/20.0/include "
+            "(repeatable). A compat interface holds signatures that exist only "
+            "in its own MPI, so it must be parsed with that MPI's mpi.h: another "
+            "implementation declares some of them differently and clang then "
+            "produces garbage for them. Without a mapping the --extra-include-dir "
+            "paths are used."
+        ),
+    )
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     return parser.parse_args()
 
@@ -832,18 +991,42 @@ def main() -> int:
         shim_root = make_shim_brahma_config(Path(tmp))
         include_dirs_with_shim = [str(shim_root)] + include_dirs
 
-        for name in args.interfaces:
-            spec = SPECS[name]
+        compat_dirs = dict(item.split("=", 1) for item in args.compat_include_dirs)
+        compat_specs = discover_compat_specs(
+            brahma_include_root, [n for n in args.interfaces if SPECS[n].mpi_interface]
+        )
+        all_specs = {n: SPECS[n] for n in args.interfaces}
+        all_specs.update({c.name: c for c in compat_specs})
+        if compat_specs:
+            print(f"[compat] {len(compat_specs)} compat interfaces: {[c.name for c in compat_specs]}")
+
+        # Drop stale compat output so a removed brahma family does not linger.
+        for stale in output_dir.glob("mpi*_compat.*"):
+            stale.unlink()
+
+        for name, spec in all_specs.items():
             header_path = brahma_include_root / "brahma/interface" / f"{name}.h"
             if not header_path.exists():
                 print(f"[{name}] missing source header: {header_path}")
                 return 1
 
+            spec_include_dirs = include_dirs_with_shim
+            if spec.parent:
+                slug = re.sub(rf"^{spec.parent}_|_compat$", "", spec.name)
+                if slug in compat_dirs:
+                    spec_include_dirs = [str(shim_root)] + build_include_dirs(
+                        brahma_include_root,
+                        workspace_root,
+                        extra_include_dirs=[compat_dirs[slug]],
+                    )
+                else:
+                    print(f"[warn] {spec.name}: no --compat-include-dir {slug}=DIR; parsing with the default MPI headers")
+
             methods_map = collect_methods_for_interface(
                 index,
                 spec,
                 header_path,
-                include_dirs_with_shim,
+                spec_include_dirs,
                 verbose=args.verbose,
             )
 
@@ -853,8 +1036,9 @@ def main() -> int:
 
             header_out = output_dir / f"{name}.h"
             cpp_out = output_dir / f"{name}.cpp"
-            header_out.write_text(generate_header(spec, methods, timestamp))
-            cpp_out.write_text(generate_cpp(spec, methods, timestamp))
+            provenance = read_provenance(header_path.read_text(errors="ignore"))
+            header_out.write_text(generate_header(spec, methods, timestamp, provenance))
+            cpp_out.write_text(generate_cpp(spec, methods, timestamp, provenance))
             print(f"[{name}] generated: {header_out} ({len(methods)} methods)")
             print(f"[{name}] generated: {cpp_out}")
 
@@ -868,6 +1052,15 @@ def main() -> int:
                         f"[warn] clang-format failed for {name} "
                         f"(exit={fmt.returncode}); leaving generated files unformatted."
                     )
+
+        for parent in [n for n in args.interfaces if SPECS[n].mpi_interface]:
+            mine = [c for c in compat_specs if c.parent == parent]
+            agg_name, agg_text = generate_compat_aggregator(parent, mine, timestamp)
+            agg_path = output_dir / f"{agg_name}.h"
+            agg_path.write_text(agg_text)
+            print(f"[{parent}] generated: {agg_path}")
+            if clang_format_exe:
+                subprocess.run([clang_format_exe, "-i", str(agg_path)], check=False)
 
     return 0
 
