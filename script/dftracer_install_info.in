@@ -14,39 +14,25 @@ import textwrap
 L = lambda s: [x for x in s.split(";") if x]
 B = lambda v: bool(v)
 
-# HDF5 is still version-gated: outside these ranges the wrappers are compiled
-# out and nothing is traced. Mirrors the guards in core/brahma/hdf5.cpp; keep in
-# sync. MPI is not gated this way (see mpi_slug below): the compat interfaces
-# are read from brahma's installed headers at configure time.
+# Mirrors the interceptor guards in core/brahma/{mpi,hdf5}.cpp: outside these
+# ranges the wrappers are compiled out and nothing is traced. Keep in sync.
+MPI_RANGES = {
+    "OPENMPI": [(400106, 400200), (500006, 500100)],
+    "MPICH": [(300403, 300500), (400203, 400300)],
+    "MVAPICH": [(200300, 200400)],
+    "CRAYMPICH": [(800108, 800200), (900001, 900200)],
+}
 HDF5_RANGES = [(100823, 100900), (101005, 101100), (101203, 101300), (101405, 101500)]
 
-
-_IMPL_NAMES = {"openmpi": "OpenMPI", "mpich": "MPICH", "mvapich": "MVAPICH2",
-               "craympich": "Cray MPICH"}
-
-
-def family_name(slug):
-    impl, major, minor = slug.rsplit("_", 2)
-    return "%s %s.%s.x" % (_IMPL_NAMES.get(impl, impl), major, minor)
-
-
-MPI_FAMILIES = L("@DFTRACER_BI_MPI_COMPAT_FAMILIES@")
-MPIIO_FAMILIES = L("@DFTRACER_BI_MPIIO_COMPAT_FAMILIES@")
-GENERATED_FROM = L("@DFTRACER_BI_MPI_GENERATED_FROM@")
-COMPAT_TEXT = ", ".join(family_name(f) for f in MPI_FAMILIES) or "no implementation"
-GENERATED_TEXT = ", ".join(
-    "%s %s" % (_IMPL_NAMES.get(g.split()[0], g.split()[0]), g.split()[1])
-    for g in GENERATED_FROM)
 
 # What this DFTracer is written and verified against. Bounds come from the
 # source, not from CI: CUDA from the CUPTI struct bands and the header list in
 # core/function/cuda/intercept.cpp, rocprofiler-sdk from the API gates in
 # core/function/hip/intercept.cpp. Keep in sync when those change.
 SUPPORTED = {
-    "mpi": "any MPI implementation and version traces the common MPI and "
-           "MPI-IO calls. Calls beyond the common set are traced for " + COMPAT_TEXT
-           + (" (generated from " + GENERATED_TEXT + ")" if GENERATED_TEXT else "")
-           + ".",
+    "mpi": "OpenMPI 4.1.6-4.1.x and 5.0.6-5.0.x; MPICH 3.4.3-3.4.x and "
+           "4.2.3-4.2.x; MVAPICH2 2.3.x; Cray MPICH 8.1.8-8.1.x and 9.0.1-9.1.x. "
+           "Other versions build but trace no MPI calls.",
     "hdf5": "1.8.23-1.8.x, 1.10.5-1.10.x, 1.12.3-1.12.x, 1.14.5-1.14.x. "
             "Other versions build but trace no HDF5 calls.",
     "cuda": "CUDA 10.1 through 13.x (headers checked: 10.1, 10.2, 11.1-11.8, "
@@ -84,10 +70,7 @@ def in_ranges(n, rs):
 
 mpi_on, hdf5_on = B(@DFTRACER_BI_ON_MPI@), B(@DFTRACER_BI_ON_HDF5@)
 mpi_n, hdf5_n = int("@DFTRACER_BI_BRAHMA_MPI_VERSION@"), int("@DFTRACER_BI_BRAHMA_HDF5_VERSION@")
-# The compat interface compiled for this build, by implementation, major and
-# minor; none if brahma has no compat interface for this MPI.
-mpi_slug = ("%s_%d_%d" % ("@DFTRACER_BI_BRAHMA_MPI_IMPL@".lower(), mpi_n // 100000,
-                          (mpi_n // 100) % 1000)) if mpi_n and "@DFTRACER_BI_BRAHMA_MPI_IMPL@" else ""
+mpi_rs = MPI_RANGES.get("@DFTRACER_BI_BRAHMA_MPI_IMPL@", [])
 ev = L("@DFTRACER_BI_PAPI_EVENTS@".replace(",", ";"))
 fit = int("@DFTRACER_BI_PAPI_FIT@" or 0)
 
@@ -116,11 +99,8 @@ INFO = {
         "brahma_implementation": "@DFTRACER_BI_BRAHMA_MPI_IMPL@",
         "brahma_enabled": @DFTRACER_BI_BRAHMA_MPI@,
         "brahma_version_number": mpi_n,
-        "common_calls_traced": mpi_on and @DFTRACER_BI_BRAHMA_MPI@,
-        "compat_interface": mpi_slug if mpi_slug in MPI_FAMILIES else "",
-        "mpiio_compat_interface": mpi_slug if mpi_slug in MPIIO_FAMILIES else "",
-        "compat_interfaces_available": MPI_FAMILIES,
-        "generated_from": GENERATED_FROM,
+        "supported_ranges": fmt_ranges(mpi_rs),
+        "calls_traced": mpi_on and @DFTRACER_BI_BRAHMA_MPI@ and in_ranges(mpi_n, mpi_rs),
     },
     "hdf5": {
         "version": "@DFTRACER_BI_HDF5_VERSION@",
@@ -197,26 +177,15 @@ def pretty(i):
     for k, (req, on) in i["features"].items():
         warn = "   <-- requested but NOT enabled" if req and not on else ""
         out.append("  %s %-18s %s%s" % (OK if on else NO, k, "ON" if on else "off", warn))
-    m = i["mpi"]
-    out += ["", "MPI"]
-    out += [row(k, v) for k, v in m.items()
-            if k not in ("common_calls_traced", "compat_interface", "mpiio_compat_interface",
-                         "compat_interfaces_available", "generated_from")]
-    on = i["features"]["mpi"][1]
-    out.append("  %-22s: %s" % ("common calls traced", OK if m["common_calls_traced"] else NO))
-    if on:
-        out.append(row("compat calls traced", m["compat_interface"] or
-                       "none (no compat interface for this MPI; common calls only)"))
-        out.append(row("MPI-IO compat calls", m["mpiio_compat_interface"] or "none"))
-    out.append(row("compat interfaces for", ", ".join(family_name(f) for f in m["compat_interfaces_available"])))
-    out.append(row("generated from", ", ".join(m["generated_from"])))
-    h = i["hdf5"]
-    out += ["", "HDF5"]
-    out += [row(k, v) for k, v in h.items() if k not in ("calls_traced", "supported_ranges")]
-    out.append(row("supported versions", h["supported_ranges"]))
-    out.append("  %-22s: %s%s" % ("calls traced", OK if h["calls_traced"] else NO,
-        "" if h["calls_traced"] or not i["features"]["hdf5"][1] else
-        "   (version outside supported ranges: wrappers compiled out)"))
+    for sec, title in (("mpi", "MPI"), ("hdf5", "HDF5")):
+        s = i[sec]
+        out += ["", title]
+        out += [row(k, v) for k, v in s.items()
+                if k not in ("calls_traced", "supported_ranges")]
+        out.append(row("supported versions", s["supported_ranges"]))
+        out.append("  %-22s: %s%s" % ("calls traced", OK if s["calls_traced"] else NO,
+            "" if s["calls_traced"] or not i["features"][sec][1] else
+            "   (version outside supported ranges: wrappers compiled out)"))
     out += ["", "Supported versions"]
     for k, v in i["supported_versions"].items():
         out.append(textwrap.fill(v, 78, initial_indent="  %-9s " % k,
