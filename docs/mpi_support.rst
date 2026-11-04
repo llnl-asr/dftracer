@@ -39,7 +39,11 @@ functions only. Set ``DFTRACER_MPI_IMPL`` to override the detected implementatio
 To see what an installed DFTracer selected, run ``dftracer_install_info``. Its MPI section
 lists ``common_calls_traced``, the ``compat_interface`` and ``mpiio_compat_interface`` of this
 build (empty if there is none), every compat interface available, and the MPI releases they
-were generated from.
+were generated from. A family is available only when brahma ships its interface and DFTracer has
+a tracer for it; ``compat_brahma_only`` lists families this brahma has that DFTracer has not been
+regenerated for, and ``compat_tracer_only`` the reverse. All of it is read at configure time from
+brahma's installed headers and ``src/dftracer/core/brahma/``, so adding a family needs no edit to
+the tool.
 
 Supported MPI versions
 *******************************

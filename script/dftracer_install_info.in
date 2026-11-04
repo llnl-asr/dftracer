@@ -8,86 +8,132 @@ MPI/HDF5/PAPI runtime has to be loaded.
 Usage: dftracer_install_info [--json]
 """
 import json
+import re
 import sys
 import textwrap
 
 L = lambda s: [x for x in s.split(";") if x]
 B = lambda v: bool(v)
 
-# HDF5 is still version-gated: outside these ranges the wrappers are compiled
-# out and nothing is traced. Mirrors the guards in core/brahma/hdf5.cpp; keep in
-# sync. MPI is not gated this way (see mpi_slug below): the compat interfaces
-# are read from brahma's installed headers at configure time.
-HDF5_RANGES = [(100823, 100900), (101005, 101100), (101203, 101300), (101405, 101500)]
+# Nothing below is a hand-kept version table. CMake (DFTracerBuildInfo.cmake)
+# read every list from the sources this build compiled and the brahma headers
+# it compiled against:
+#   MPI   compat families = brahma interface/<kind>_*_compat.h that also have a
+#         tracer in core/brahma/<kind>_*_compat.cpp
+#   HDF5  the BRAHMA_HDF5_VERSION ranges guarding core/brahma/hdf5.cpp
+#   CUDA  the CUPTI struct bands and verified-headers list in
+#         core/function/cuda/intercept.cpp
+#   ROCm  the rocprofiler-sdk API gates in core/function/hip/
+MPI_FAMILIES = L("@DFTRACER_BI_MPI_COMPAT_FAMILIES@")
+MPIIO_FAMILIES = L("@DFTRACER_BI_MPIIO_COMPAT_FAMILIES@")
+MPI_BRAHMA_ONLY = L("@DFTRACER_BI_MPI_COMPAT_BRAHMA_ONLY@") + \
+    ["mpiio " + s for s in L("@DFTRACER_BI_MPIIO_COMPAT_BRAHMA_ONLY@")]
+MPI_TRACER_ONLY = L("@DFTRACER_BI_MPI_COMPAT_TRACER_ONLY@") + \
+    ["mpiio " + s for s in L("@DFTRACER_BI_MPIIO_COMPAT_TRACER_ONLY@")]
+GENERATED_FROM = L("@DFTRACER_BI_MPI_GENERATED_FROM@")
+HDF5_GATES = [tuple(int(x) for x in r.split(":")) for r in L("@DFTRACER_BI_HDF5_RANGES@")]
+CUDA_BANDS = L("@DFTRACER_BI_CUDA_BANDS@")
+CUDA_VERIFIED = "@DFTRACER_BI_CUDA_VERIFIED@"
+ROCM_GATES = L("@DFTRACER_BI_ROCM_GATES@")
 
-
+# Display names only; an implementation missing here prints as brahma names it.
 _IMPL_NAMES = {"openmpi": "OpenMPI", "mpich": "MPICH", "mvapich": "MVAPICH2",
-               "craympich": "Cray MPICH"}
+               "craympich": "Cray MPICH", "intelmpi": "Intel MPI"}
+
+
+def impl_name(impl):
+    return _IMPL_NAMES.get(impl, impl)
 
 
 def family_name(slug):
     impl, major, minor = slug.rsplit("_", 2)
-    return "%s %s.%s.x" % (_IMPL_NAMES.get(impl, impl), major, minor)
-
-
-MPI_FAMILIES = L("@DFTRACER_BI_MPI_COMPAT_FAMILIES@")
-MPIIO_FAMILIES = L("@DFTRACER_BI_MPIIO_COMPAT_FAMILIES@")
-GENERATED_FROM = L("@DFTRACER_BI_MPI_GENERATED_FROM@")
-COMPAT_TEXT = ", ".join(family_name(f) for f in MPI_FAMILIES) or "no implementation"
-GENERATED_TEXT = ", ".join(
-    "%s %s" % (_IMPL_NAMES.get(g.split()[0], g.split()[0]), g.split()[1])
-    for g in GENERATED_FROM)
-
-# What this DFTracer is written and verified against. Bounds come from the
-# source, not from CI: CUDA from the CUPTI struct bands and the header list in
-# core/function/cuda/intercept.cpp, rocprofiler-sdk from the API gates in
-# core/function/hip/intercept.cpp. Keep in sync when those change.
-SUPPORTED = {
-    "mpi": "any MPI implementation and version traces the common MPI and "
-           "MPI-IO calls. Calls beyond the common set are traced for " + COMPAT_TEXT
-           + (" (generated from " + GENERATED_TEXT + ")" if GENERATED_TEXT else "")
-           + ".",
-    "hdf5": "1.8.23-1.8.x, 1.10.5-1.10.x, 1.12.3-1.12.x, 1.14.5-1.14.x. "
-            "Other versions build but trace no HDF5 calls.",
-    "cuda": "CUDA 10.1 through 13.x (headers checked: 10.1, 10.2, 11.1-11.8, "
-            "12.2, 12.6, 12.9, 13.1). CUPTI record structs are chosen from the "
-            "toolkit version.",
-    "rocm": "rocprofiler-sdk, shipped with ROCm 6.2.0 and later; older ROCm "
-            "has no rocprofiler-sdk. Code paths exist for API < 1.0.0 and >= 1.0.0.",
-    "papi": "any PAPI that provides the preset events; no version gate.",
-    "variorum": "any Variorum; no version gate.",
-    "hwloc": "any hwloc; no version gate.",
-}
-CUDA_MIN, CUDA_MAX_MAJOR = (10, 1), 13
-
-
-def cuda_status(v):
-    try:
-        t = tuple(int(x) for x in v.split(".")[:2])
-    except ValueError:
-        return "unknown"
-    return "supported" if (t >= CUDA_MIN and t[0] <= CUDA_MAX_MAJOR) else \
-        "outside the verified range (CUPTI struct selection may be wrong)"
+    return "%s %s.%s.x" % (impl_name(impl), major, minor)
 
 
 def ver(n):  # brahma encodes major*100000 + minor*100 + patch
     return "%d.%d.%d" % (n // 100000, (n // 100) % 1000, n % 100) if n else ""
 
 
+def merge(rs):
+    """Union of [lo, hi) ranges, sorted."""
+    out = []
+    for a, b in sorted(rs):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def fmt_range(a, b):
+    lo, hi = ver(a), ver(b - 1)
+    # [1.14.5, 1.15.0) reads as 1.14.5-1.14.x
+    if b % 100 == 0 and (a // 100) == ((b - 1) // 100):
+        return "%s-%s.x" % (lo, hi.rsplit(".", 1)[0])
+    return "%s-%s" % (lo, hi)
+
+
 def fmt_ranges(rs):
-    return ", ".join("%s-%s" % (ver(a), ver(b - 1)) for a, b in rs)
+    return ", ".join(fmt_range(a, b) for a, b in rs)
 
 
 def in_ranges(n, rs):
     return any(a <= n < b for a, b in rs)
 
 
+def vtuple(v):
+    return tuple(int(x) for x in v.split(".") if x.isdigit())
+
+
+HDF5_RANGES = merge(HDF5_GATES)
+_cuda_vs = sorted({vtuple(v) for v in re.findall(r"\d+\.\d+", CUDA_VERIFIED)} |
+                  {vtuple(b) for b in CUDA_BANDS})
+CUDA_MIN = min((vtuple(v) for v in re.findall(r"\d+\.\d+", CUDA_VERIFIED)), default=None)
+CUDA_MAX_MAJOR = _cuda_vs[-1][0] if _cuda_vs else None
+
+COMPAT_TEXT = ", ".join(family_name(f) for f in MPI_FAMILIES) or "no implementation"
+GENERATED_TEXT = ", ".join(
+    "%s %s" % (impl_name(g.split()[0]), g.split()[1]) for g in GENERATED_FROM)
+
+SUPPORTED = {
+    "mpi": "any MPI implementation and version traces the common MPI and "
+           "MPI-IO calls. Calls beyond the common set are traced for " + COMPAT_TEXT
+           + (" (generated from " + GENERATED_TEXT + ")" if GENERATED_TEXT else "")
+           + ".",
+    "hdf5": (fmt_ranges(HDF5_RANGES) + ". Other versions build but trace no HDF5 calls.")
+            if HDF5_RANGES else "no HDF5 wrappers found in core/brahma/hdf5.cpp.",
+    "cuda": ("CUDA %d.%d through %d.x" % (CUDA_MIN + (CUDA_MAX_MAJOR,))
+             + (" (headers checked: %s)" % CUDA_VERIFIED if CUDA_VERIFIED else "")
+             + ". CUPTI record structs are chosen from the toolkit version"
+             + (", with bands starting at " + ", ".join(sorted(CUDA_BANDS, key=vtuple))
+                if CUDA_BANDS else "") + ".")
+            if CUDA_MIN and CUDA_MAX_MAJOR else "no CUPTI version bands found.",
+    "rocm": "rocprofiler-sdk, shipped with ROCm 6.2.0 and later; older ROCm "
+            "has no rocprofiler-sdk."
+            + (" Code paths branch at API " + ", ".join(ROCM_GATES) + "."
+               if ROCM_GATES else ""),
+    "papi": "any PAPI that provides the preset events; no version gate.",
+    "variorum": "any Variorum; no version gate.",
+    "hwloc": "any hwloc; no version gate.",
+}
+
+
+def cuda_status(v):
+    try:
+        t = vtuple(v)[:2]
+    except ValueError:
+        return "unknown"
+    if not (CUDA_MIN and CUDA_MAX_MAJOR):
+        return "unknown"
+    return "supported" if (t >= CUDA_MIN and t[0] <= CUDA_MAX_MAJOR) else \
+        "outside the verified range (CUPTI struct selection may be wrong)"
+
+
 mpi_on, hdf5_on = B(@DFTRACER_BI_ON_MPI@), B(@DFTRACER_BI_ON_HDF5@)
 mpi_n, hdf5_n = int("@DFTRACER_BI_BRAHMA_MPI_VERSION@"), int("@DFTRACER_BI_BRAHMA_HDF5_VERSION@")
-# The compat interface compiled for this build, by implementation, major and
-# minor; none if brahma has no compat interface for this MPI.
-mpi_slug = ("%s_%d_%d" % ("@DFTRACER_BI_BRAHMA_MPI_IMPL@".lower(), mpi_n // 100000,
-                          (mpi_n // 100) % 1000)) if mpi_n and "@DFTRACER_BI_BRAHMA_MPI_IMPL@" else ""
+# The compat family brahma compiles in for this MPI (implementation, major,
+# minor), as CMake computed it from brahma_config.hpp.
+mpi_slug = "@DFTRACER_BI_MPI_ACTIVE_SLUG@"
 ev = L("@DFTRACER_BI_PAPI_EVENTS@".replace(",", ";"))
 fit = int("@DFTRACER_BI_PAPI_FIT@" or 0)
 
@@ -120,6 +166,12 @@ INFO = {
         "compat_interface": mpi_slug if mpi_slug in MPI_FAMILIES else "",
         "mpiio_compat_interface": mpi_slug if mpi_slug in MPIIO_FAMILIES else "",
         "compat_interfaces_available": MPI_FAMILIES,
+        "mpiio_compat_interfaces_available": MPIIO_FAMILIES,
+        # brahma ships these but DFTracer has no tracer: rerun
+        # tools/generate_interfaces_from_brahma.py against this brahma.
+        "compat_brahma_only": MPI_BRAHMA_ONLY,
+        # DFTracer has a tracer but this brahma has no interface for it.
+        "compat_tracer_only": MPI_TRACER_ONLY,
         "generated_from": GENERATED_FROM,
     },
     "hdf5": {
@@ -201,7 +253,8 @@ def pretty(i):
     out += ["", "MPI"]
     out += [row(k, v) for k, v in m.items()
             if k not in ("common_calls_traced", "compat_interface", "mpiio_compat_interface",
-                         "compat_interfaces_available", "generated_from")]
+                         "compat_interfaces_available", "mpiio_compat_interfaces_available",
+                         "compat_brahma_only", "compat_tracer_only", "generated_from")]
     on = i["features"]["mpi"][1]
     out.append("  %-22s: %s" % ("common calls traced", OK if m["common_calls_traced"] else NO))
     if on:
@@ -209,7 +262,13 @@ def pretty(i):
                        "none (no compat interface for this MPI; common calls only)"))
         out.append(row("MPI-IO compat calls", m["mpiio_compat_interface"] or "none"))
     out.append(row("compat interfaces for", ", ".join(family_name(f) for f in m["compat_interfaces_available"])))
+    out.append(row("MPI-IO compat for", ", ".join(family_name(f) for f in m["mpiio_compat_interfaces_available"])))
     out.append(row("generated from", ", ".join(m["generated_from"])))
+    if m["compat_brahma_only"]:
+        out.append(row("brahma-only (untraced)", m["compat_brahma_only"])
+                   + "   <-- regenerate DFTracer's compat tracers")
+    if m["compat_tracer_only"]:
+        out.append(row("tracer-only (unused)", m["compat_tracer_only"]))
     h = i["hdf5"]
     out += ["", "HDF5"]
     out += [row(k, v) for k, v in h.items() if k not in ("calls_traced", "supported_ranges")]

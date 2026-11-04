@@ -52,21 +52,32 @@ if(_bi_brahma_hdr)
     endif()
 endif()
 
-# Which MPI compat interfaces brahma generated, and from which MPI releases.
-# Read from brahma's installed headers so the report cannot drift from them.
-set(_bi_compat_mpi "")
-set(_bi_compat_mpiio "")
+# Everything below that says what is supported is read from the sources this
+# build compiles and the brahma headers it compiles against, so the generated
+# script has no version tables of its own to keep in sync.
+set(_bi_src "${CMAKE_CURRENT_LIST_DIR}/../../src/dftracer/core")
+
+# MPI compat interfaces. A family is traced only when brahma ships the
+# interface (include/brahma/interface/<kind>_<slug>_compat.h) and DFTracer has
+# a tracer for it (src/dftracer/core/brahma/<kind>_<slug>_compat.cpp, the files
+# the core library globs). Families on one side only are reported so a brahma
+# that is newer than the generated tracers is visible.
+function(_dftracer_bi_compat_slugs out kind dir ext)
+    set(_slugs "")
+    file(GLOB _files "${dir}/${kind}_*_compat.${ext}")
+    foreach(_f ${_files})
+        get_filename_component(_n "${_f}" NAME_WE)
+        string(REGEX REPLACE "^${kind}_(.*)_compat$" "\\1" _slug "${_n}")
+        list(APPEND _slugs "${_slug}")
+    endforeach()
+    list(SORT _slugs)
+    set(${out} "${_slugs}" PARENT_SCOPE)
+endfunction()
+
 set(_bi_generated_from "")
+set(_bi_brahma_dir "")
 if(_bi_brahma_hdr)
     get_filename_component(_bi_brahma_dir "${_bi_brahma_hdr}" DIRECTORY)
-    foreach(_kind mpi mpiio)
-        file(GLOB _bi_files "${_bi_brahma_dir}/interface/${_kind}_*_compat.h")
-        foreach(_f ${_bi_files})
-            get_filename_component(_n "${_f}" NAME_WE)
-            string(REGEX REPLACE "^${_kind}_(.*)_compat$" "\\1" _slug "${_n}")
-            list(APPEND _bi_compat_${_kind} "${_slug}")
-        endforeach()
-    endforeach()
     set(_bi_agg "${_bi_brahma_dir}/interface/mpi_compat.h")
     if(EXISTS "${_bi_agg}")
         file(STRINGS "${_bi_agg}" _bi_lines REGEX "^///   [a-z]+ [0-9.]+$")
@@ -76,11 +87,112 @@ if(_bi_brahma_hdr)
         endforeach()
     endif()
 endif()
-list(SORT _bi_compat_mpi)
-list(SORT _bi_compat_mpiio)
-_dftracer_bi_set(MPI_COMPAT_FAMILIES "${_bi_compat_mpi}")
-_dftracer_bi_set(MPIIO_COMPAT_FAMILIES "${_bi_compat_mpiio}")
+
+# The family brahma compiles in for this MPI: same rule as the gate in each
+# brahma compat header (implementation, major, minor of BRAHMA_MPI_VERSION).
+set(_bi_active_slug "")
+if(_bi_b_mpi_impl AND _bi_b_mpi_ver GREATER 0)
+    string(TOLOWER "${_bi_b_mpi_impl}" _bi_impl_lc)
+    math(EXPR _bi_major "${_bi_b_mpi_ver} / 100000")
+    math(EXPR _bi_minor "(${_bi_b_mpi_ver} / 100) % 1000")
+    set(_bi_active_slug "${_bi_impl_lc}_${_bi_major}_${_bi_minor}")
+endif()
+_dftracer_bi_set(MPI_ACTIVE_SLUG "${_bi_active_slug}")
+
+foreach(_kind mpi mpiio)
+    string(TOUPPER "${_kind}" _K)
+    set(_brahma "")
+    if(_bi_brahma_dir)
+        _dftracer_bi_compat_slugs(_brahma ${_kind} "${_bi_brahma_dir}/interface" h)
+    endif()
+    _dftracer_bi_compat_slugs(_tracers ${_kind} "${_bi_src}/brahma" cpp)
+    set(_both "")
+    set(_brahma_only "")
+    set(_tracer_only "${_tracers}")
+    foreach(_s ${_brahma})
+        if(_s IN_LIST _tracers)
+            list(APPEND _both "${_s}")
+            list(REMOVE_ITEM _tracer_only "${_s}")
+        else()
+            list(APPEND _brahma_only "${_s}")
+        endif()
+    endforeach()
+    _dftracer_bi_set(${_K}_COMPAT_FAMILIES "${_both}")
+    _dftracer_bi_set(${_K}_COMPAT_BRAHMA_ONLY "${_brahma_only}")
+    _dftracer_bi_set(${_K}_COMPAT_TRACER_ONLY "${_tracer_only}")
+endforeach()
 _dftracer_bi_set(MPI_GENERATED_FROM "${_bi_generated_from}")
+
+# HDF5: every [lo, hi) BRAHMA_HDF5_VERSION range any wrapper in hdf5.cpp is
+# compiled for. The script merges them into the versions that trace anything.
+set(_bi_hdf5_ranges "")
+if(EXISTS "${_bi_src}/brahma/hdf5.cpp")
+    file(READ "${_bi_src}/brahma/hdf5.cpp" _bi_txt)
+    string(REGEX MATCHALL
+        "BRAHMA_HDF5_VERSION >= [0-9]+ && BRAHMA_HDF5_VERSION < [0-9]+"
+        _bi_pairs "${_bi_txt}")
+    list(REMOVE_DUPLICATES _bi_pairs)
+    foreach(_p ${_bi_pairs})
+        string(REGEX REPLACE ".*>= ([0-9]+) .*< ([0-9]+)" "\\1:\\2" _p "${_p}")
+        list(APPEND _bi_hdf5_ranges "${_p}")
+    endforeach()
+endif()
+_dftracer_bi_set(HDF5_RANGES "${_bi_hdf5_ranges}")
+
+# CUDA: the CUPTI struct bands (DFTRACER_GET_VERSION thresholds) in
+# cuda/intercept.cpp, and the toolkit headers its "Verified against the
+# headers of CUDA ..." comment lists.
+set(_bi_cuda_bands "")
+set(_bi_cuda_verified "")
+set(_bi_f "${_bi_src}/function/cuda/intercept.cpp")
+if(EXISTS "${_bi_f}")
+    file(READ "${_bi_f}" _bi_txt)
+    string(REGEX MATCHALL
+        "DFTRACER_CUDA_VERSION >= DFTRACER_GET_VERSION\\([0-9]+, [0-9]+, [0-9]+\\)"
+        _bi_m "${_bi_txt}")
+    foreach(_g ${_bi_m})
+        string(REGEX REPLACE ".*\\(([0-9]+), ([0-9]+), ([0-9]+)\\)" "\\1.\\2" _g "${_g}")
+        list(APPEND _bi_cuda_bands "${_g}")
+    endforeach()
+    list(REMOVE_DUPLICATES _bi_cuda_bands)
+    file(STRINGS "${_bi_f}" _bi_lines)
+    set(_in FALSE)
+    set(_bi_txt "")
+    foreach(_l IN LISTS _bi_lines)
+        if(_l MATCHES "Verified against the headers of CUDA")
+            set(_in TRUE)
+        endif()
+        if(_in)
+            string(APPEND _bi_txt " ${_l}")
+            if(_l MATCHES "\\.[ \t]*$" OR NOT _l MATCHES "^[ \t]*//")
+                break()
+            endif()
+        endif()
+    endforeach()
+    string(REGEX REPLACE ".*headers of CUDA" "" _bi_txt "${_bi_txt}")
+    string(REGEX REPLACE "[ \t]*//[ \t]*" " " _bi_txt "${_bi_txt}")
+    string(REGEX REPLACE "\\.[ \t]*$" "" _bi_txt "${_bi_txt}")
+    string(STRIP "${_bi_txt}" _bi_cuda_verified)
+endif()
+_dftracer_bi_set(CUDA_BANDS "${_bi_cuda_bands}")
+_dftracer_bi_set(CUDA_VERIFIED "${_bi_cuda_verified}")
+
+# ROCm: every rocprofiler-sdk API version hip/intercept.cpp branches on.
+set(_bi_rocm_gates "")
+file(GLOB _bi_hip_files "${_bi_src}/function/hip/*.cpp" "${_bi_src}/function/hip/*.h")
+foreach(_f ${_bi_hip_files})
+    file(READ "${_f}" _bi_txt)
+    string(REGEX MATCHALL
+        "DFTRACER_ROCPROFILER_API_VERSION [<>=]+ DFTRACER_GET_VERSION\\([0-9]+, [0-9]+, [0-9]+\\)"
+        _bi_m "${_bi_txt}")
+    foreach(_g ${_bi_m})
+        string(REGEX REPLACE ".*\\(([0-9]+), ([0-9]+), ([0-9]+)\\)" "\\1.\\2.\\3" _g "${_g}")
+        list(APPEND _bi_rocm_gates "${_g}")
+    endforeach()
+endforeach()
+list(REMOVE_DUPLICATES _bi_rocm_gates)
+list(SORT _bi_rocm_gates COMPARE NATURAL)
+_dftracer_bi_set(ROCM_GATES "${_bi_rocm_gates}")
 
 _dftracer_bi_set(VERSION "${DFTRACER_PACKAGE_VERSION}")
 _dftracer_bi_set(PREFIX "${CMAKE_INSTALL_PREFIX}")

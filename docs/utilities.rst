@@ -87,24 +87,39 @@ build-time modules are not loaded. It lists:
 * whether MPI and HDF5 calls will actually be traced;
 * the versions each component is supported against.
 
-MPI and HDF5 interception is compiled for specific library versions. A build
-against any other version succeeds and reports the feature as enabled, but
-records no MPI or HDF5 events. The report shows this as
+HDF5 interception is compiled for specific library versions. A build against any
+other HDF5 succeeds and reports the feature as enabled, but records no HDF5
+events; the report shows this as
 ``calls traced: ✘ (version outside supported ranges: wrappers compiled out)``.
-The supported versions are:
+MPI is not gated this way: every MPI traces the common MPI and MPI-IO calls, and
+the implementation-specific calls are traced when a compat interface exists for
+the build's implementation, major and minor (see :doc:`mpi_support`).
 
-================ ==========================================================
-Component        Supported versions
-================ ==========================================================
-MPI              OpenMPI 4.1.6 and 5.0.6 onward (same minor series);
-                 MPICH 3.4.3 and 4.2.3 onward; MVAPICH2 2.3.x;
-                 Cray MPICH 8.1.8 onward and 9.0.1 to 9.1.x
-HDF5             1.8.23, 1.10.5, 1.12.3 and 1.14.5 onward (same minor series)
-CUDA             10.1 through 13.x
-ROCm             rocprofiler-sdk, shipped with ROCm 6.2.0 and later
+The supported versions are not a table kept by hand. CMake reads them at
+configure time from what the build compiles:
+
+================ ==============================================================
+Component        Read from
+================ ==============================================================
+MPI              compat families that brahma ships
+                 (``include/brahma/interface/<kind>_*_compat.h``) and that
+                 DFTracer has a tracer for
+                 (``src/dftracer/core/brahma/<kind>_*_compat.cpp``); the MPI
+                 releases they were generated from come from brahma's
+                 ``mpi_compat.h``
+HDF5             the ``BRAHMA_HDF5_VERSION`` ranges guarding
+                 ``src/dftracer/core/brahma/hdf5.cpp``
+CUDA             the CUPTI struct bands and the verified-headers list in
+                 ``src/dftracer/core/function/cuda/intercept.cpp``
+ROCm             the rocprofiler-sdk API gates in
+                 ``src/dftracer/core/function/hip/``
 PAPI, Variorum,  no version gate
 hwloc
-================ ==========================================================
+================ ==============================================================
+
+A family brahma ships but DFTracer has no tracer for is listed as
+``brahma-only (untraced)``: regenerate the tracers with
+``tools/generate_interfaces_from_brahma.py`` against that brahma.
 
 Run it first when MPI or HDF5 events are missing from a trace. See
 :doc:`build` for building with these features.
