@@ -186,7 +186,7 @@ endif()
 # commit not yet released) for testing dftracer against it.
 set(DFTRACER_BRAHMA_GIT_REPOSITORY "https://github.com/llnl-asr/brahma.git" CACHE STRING
     "Git repository brahma is built from")
-set(DFTRACER_BRAHMA_GIT_TAG "d49f0eda0377f05614217428fb0671b157ec9d99" CACHE STRING "Tag, branch or commit of brahma to build")
+set(DFTRACER_BRAHMA_GIT_TAG "58586ec05c7b4a3d9e0434d21bfe69407f3fdcce" CACHE STRING "Tag, branch or commit of brahma to build")
 find_package(brahma 5.1.1 QUIET)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/modules/DFTracerBrahmaCheck.cmake)
 if(brahma_FOUND AND (DFTRACER_ENABLE_MPI OR DFTRACER_ENABLE_DYNAMIC_DETECTION))
