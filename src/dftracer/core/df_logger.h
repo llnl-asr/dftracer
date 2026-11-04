@@ -383,7 +383,8 @@ class DFTLogger {
     return t;
   }
 
-// Which MPI implementations brahma actually intercepts.
+// brahma's common MPI interface is compiled for every MPI implementation and
+// version, so these calls are always intercepted when MPI tracing is on.
 //
 // dftracer's OWN MPI calls in handle_mpi() below must use the PMPI_ entry
 // points for every implementation in this set. If they use the public MPI_
@@ -396,11 +397,11 @@ class DFTLogger {
 // than a stack overflow. Measured on MVAPICH2 2.3.7: a SINGLE rank exhausted a
 // 515 GB node and the trace was left 0 bytes.
 //
-// This set MUST stay in sync with the implementation arms of the interceptor
-// guards in core/brahma/mpi.cpp and core/brahma/mpiio.cpp. Adding an
-// implementation there without adding it here reintroduces the recursion.
-#if defined(BRAHMA_MPI_IMPL_CRAYMPICH) || defined(BRAHMA_MPI_IMPL_MPICH) || \
-    defined(BRAHMA_MPI_IMPL_OPENMPI) || defined(BRAHMA_MPI_IMPL_MVAPICH)
+// The common interface in core/brahma/mpi.cpp and core/brahma/mpiio.cpp has no
+// implementation or version guards, so it holds for any MPI, including one
+// brahma has never seen. Do not narrow this to a list of implementations: an
+// MPI outside the list would still be intercepted and recurse.
+#if defined(BRAHMA_ENABLE_MPI)
 #define DFTRACER_MPI_SELF_CALLS_ARE_INTERCEPTED 1
 #endif
 
