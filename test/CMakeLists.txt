@@ -266,6 +266,30 @@ foreach(variant plain fortify)
     set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
 endforeach()
 
+# Every thread does each call once per file per round, and main creates the
+# files first, so each count is exact (issue #396).
+set(_threads 8)
+set(_files 100)
+set(_rounds 10)
+math(EXPR _calls "${_threads} * ${_files} * ${_rounds}")
+math(EXPR _opens "${_calls} + ${_files}")
+add_executable(test_threaded_io c/test_threaded_io.c)
+target_compile_options(test_threaded_io PRIVATE -O0 -U_FORTIFY_SOURCE)
+target_compile_definitions(test_threaded_io PRIVATE
+    NTHREADS=${_threads} NFILES=${_files} ROUNDS=${_rounds})
+target_link_libraries(test_threaded_io pthread)
+add_dependencies(test_threaded_io ${PROJECT_NAME}_preload_dbg)
+set(test_name test_threaded_io)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/${test_name} ${CMAKE_CURRENT_BINARY_DIR}/data)
+set_common_properties(${test_name})
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*
+    "stat|__xstat=${_calls}" open=${_opens} write=${_files} pread=${_calls} close=${_opens}
+    fopen=${_calls} fread=${_calls} fclose=${_calls}
+    opendir=${_calls} readdir=${_calls} closedir=${_calls})
+set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
+
 add_executable(test_relative_path c/test_relative_path.c)
 add_dependencies(test_relative_path ${PROJECT_NAME}_preload_dbg)
 df_add_test(test_relative_path ${CMAKE_BINARY_DIR}/bin/test_relative_path ${CMAKE_CURRENT_BINARY_DIR}/data)

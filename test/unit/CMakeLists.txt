@@ -55,6 +55,10 @@ add_dependencies(test_packed ${PROJECT_NAME}_core_dbg)
 add_executable(test_ring test_ring.cpp)
 target_link_libraries(test_ring pthread rt)
 
+# The lock-free FILE* table of the STDIO interceptors (header-only).
+add_executable(test_file_handle_table test_file_handle_table.cpp)
+target_link_libraries(test_file_handle_table pthread)
+
 # Add tests to CTest
 set(test_name unit_test_aggregator)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_aggregator)
@@ -90,6 +94,10 @@ set_common_properties(${test_name})
 
 set(test_name unit_test_ring)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_ring)
+set_common_properties(${test_name})
+
+set(test_name unit_test_file_handle_table)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_file_handle_table)
 set_common_properties(${test_name})
 
 set(test_name unit_test_aggregated_value)

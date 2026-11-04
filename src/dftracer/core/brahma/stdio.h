@@ -11,6 +11,7 @@
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/df_logger.h>
+#include <dftracer/core/utils/file_handle_table.h>
 #include <dftracer/core/utils/stdio_bypass.h>
 #include <dftracer/core/utils/utils.h>
 #include <fcntl.h>
@@ -33,7 +34,9 @@ class STDIODFTracer : public STDIO {
     static auto* leaked_instance = new std::shared_ptr<STDIODFTracer>();
     return *leaked_instance;
   }
-  std::unordered_map<FILE*, HashType> tracked_fh;
+  // Threads open, use and close streams at the same time, so this is a
+  // lock-free table rather than a std::unordered_map (issue #396).
+  dftracer::FileHandleTable tracked_fh;
   std::shared_ptr<DFTLogger> logger;
   bool trace_all_files;
 
@@ -41,11 +44,7 @@ class STDIODFTracer : public STDIO {
     DFTRACER_LOG_DEBUG("Calling STDIODFTracer.is_traced for %s", func);
     if (stop_trace) return NO_HASH_DEFAULT;
     if (fh == NULL) return NO_HASH_DEFAULT;
-    auto iter = tracked_fh.find(fh);
-    if (iter != tracked_fh.end()) {
-      return iter->second;
-    }
-    return NO_HASH_DEFAULT;
+    return tracked_fh.find(fh);
   }
 
   inline HashType is_traced(int fd, const char* func) {
@@ -79,7 +78,10 @@ class STDIODFTracer : public STDIO {
   inline void trace(FILE* fh, HashType hash) {
     DFTRACER_LOG_DEBUG("Calling STDIODFTracer.trace with hash %s", hash);
     if (fh == nullptr) return;
-    tracked_fh.insert_or_assign(fh, hash);
+    if (!tracked_fh.insert(fh, hash)) {
+      DFTRACER_LOG_WARN("no free slot to trace FILE* %p", fh);
+      return;
+    }
     trace_stream_fd(fh, hash);
   }
 
@@ -96,8 +98,7 @@ class STDIODFTracer : public STDIO {
   }
 
  public:
-  STDIODFTracer(bool trace_all)
-      : STDIO(), tracked_fh(), trace_all_files(trace_all) {
+  STDIODFTracer(bool trace_all) : STDIO(), trace_all_files(trace_all) {
     DFTRACER_LOG_DEBUG("STDIO class intercepted");
     logger = DFT_LOGGER_INIT();
   }
