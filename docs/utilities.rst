@@ -60,6 +60,55 @@ To stop a shell script if lookup fails, check the result before exporting:
     preload_library=$(dftracer-preload-library-path) || exit 1
     export LD_PRELOAD="$preload_library"
 
+Install Info
+^^^^^^^^^^^^
+
+``dftracer_install_info`` shows how the installed DFTracer was configured and
+built, so you can tell what an installation supports without rebuilding it.
+Activate your Python environment after installing with pip, or add
+``<prefix>/bin`` to ``PATH`` after a native CMake installation.
+
+.. code-block:: bash
+
+    dftracer_install_info          # readable report
+    dftracer_install_info --json   # the same data for scripts
+
+The report is written at build time, with full paths baked in. It needs only
+Python 3 and its standard library. It does not load the tracer and does not need
+the MPI, HDF5 or PAPI libraries available, so it works in a shell where the
+build-time modules are not loaded. It lists:
+
+* every feature (MPI, HDF5, function tracing, HIP, CUDA, PAPI, Variorum, hwloc)
+  as requested at build time versus enabled, and warns when a feature was
+  requested but not enabled;
+* the MPI implementation and version, the HDF5 version, the PAPI counters that
+  were detected and whether they are multiplexed, the rocprofiler-sdk and CUDA
+  versions, and the compilers and paths the build used;
+* whether MPI and HDF5 calls will actually be traced;
+* the versions each component is supported against.
+
+MPI and HDF5 interception is compiled for specific library versions. A build
+against any other version succeeds and reports the feature as enabled, but
+records no MPI or HDF5 events. The report shows this as
+``calls traced: ✘ (version outside supported ranges: wrappers compiled out)``.
+The supported versions are:
+
+================ ==========================================================
+Component        Supported versions
+================ ==========================================================
+MPI              OpenMPI 4.1.6 and 5.0.6 onward (same minor series);
+                 MPICH 3.4.3 and 4.2.3 onward; MVAPICH2 2.3.x;
+                 Cray MPICH 8.1.8 onward and 9.0.1 to 9.1.x
+HDF5             1.8.23, 1.10.5, 1.12.3 and 1.14.5 onward (same minor series)
+CUDA             10.1 through 13.x
+ROCm             rocprofiler-sdk, shipped with ROCm 6.2.0 and later
+PAPI, Variorum,  no version gate
+hwloc
+================ ==========================================================
+
+Run it first when MPI or HDF5 events are missing from a trace. See
+:doc:`build` for building with these features.
+
 Sparse Git Clone
 ^^^^^^^^^^^^^^^^
 

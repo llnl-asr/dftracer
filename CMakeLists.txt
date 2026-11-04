@@ -1419,6 +1419,7 @@ else()
         endif()
 
         include(cmake/modules/DFTracerPreloadHelper.cmake)
+        include(cmake/modules/DFTracerBuildInfo.cmake)
 
         if(DFTRACER_ENABLE_NATIVE_SCRIPT)
                 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/script/dftracer_compact ${EXECUTABLE_OUTPUT_PATH}/dftracer_compact COPYONLY)

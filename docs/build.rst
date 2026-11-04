@@ -197,6 +197,11 @@ categories you enabled (``MPI``, ``MPIIO``, ``HDF5``) rather than only ``POSIX``
 An enabled feature that was linked against a mismatched library builds
 successfully but produces no events of that category.
 
+To check this without running an application, run ``dftracer_install_info``. It
+lists which features were enabled, the MPI, HDF5, PAPI, ROCm and CUDA versions
+the build found, whether MPI and HDF5 calls will be traced, and the versions
+DFTracer supports. See :doc:`utilities`.
+
 -----------------------------------------
 Build DFTracer with Spack
 -----------------------------------------
