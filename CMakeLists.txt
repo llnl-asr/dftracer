@@ -487,6 +487,16 @@ else()
         endif()
 
         find_package(brahma 5.1.1 REQUIRED)
+        if(DFTRACER_ENABLE_MPI OR DFTRACER_ENABLE_DYNAMIC_DETECTION)
+                include(cmake/modules/DFTracerBrahmaCheck.cmake)
+                dftracer_brahma_missing_features(_brahma_missing ${BRAHMA_INCLUDE_DIRS})
+                if(_brahma_missing)
+                        message(FATAL_ERROR "[${PROJECT_NAME}] brahma at ${brahma_DIR} lacks "
+                                "${_brahma_missing}, which DFTracer's MPI tracers need. Rebuild "
+                                "brahma at the commit in dependency/manifest.txt, or remove that "
+                                "install so -DDFTRACER_INSTALL_DEPENDENCIES=ON builds it.")
+                endif()
+        endif()
 
         if(${brahma_FOUND})
                 message(STATUS "[BRAHMA] found brahma at ${BRAHMA_INCLUDE_DIRS}")
