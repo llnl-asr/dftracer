@@ -88,7 +88,8 @@ class DFTLogger {
   std::unordered_map<std::string, HashEntry> computed_hash;
   std::atomic_int index;
   [[maybe_unused]] bool is_aggregated;
-  bool has_entry;
+  // Every logging thread sets it.
+  std::atomic<bool> has_entry;
 #ifdef DFTRACER_MPI_ENABLE
   bool mpi_event;
   // The fhash of the path each open MPI_File was opened with, keyed by the
@@ -530,7 +531,7 @@ class DFTLogger {
     this->buffer_manager->log_data_event(current_index, event_name, category,
                                          type, start_time, duration, metadata,
                                          this->process_id, tid);
-    has_entry = true;
+    has_entry.store(true, std::memory_order_relaxed);
     // Other projects' layers (DFTRACER_TRACE_TYPE_EXTERNAL up) are not
     // tracked here.
     if (type != TraceEventType::TRACE_TYPE_DFTRACER &&

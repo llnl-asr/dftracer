@@ -1115,6 +1115,7 @@ else()
         set(DFTRACER_CORE_PRIVATE_INCLUDE
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/posix_bypass.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/stdio_bypass.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/file_handle_table.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/utils.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/md5.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/finstrument/functions.h

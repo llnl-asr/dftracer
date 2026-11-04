@@ -25,6 +25,7 @@
 #include <sys/uio.h>
 #include <sys/wait.h>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -42,9 +43,12 @@ class POSIXDFTracer : public POSIX {
   }
   // One slot per descriptor number, allocated once at startup. Slots are
   // zero when the descriptor is not traced, and calloc leaves pages that are
-  // never touched unused, so a large table costs address space only.
+  // never touched unused, so a large table costs address space only. Each
+  // slot is atomic because threads open and close descriptors at once.
   size_t max_fd;
-  HashType* tracked_fd;
+  std::atomic<HashType>* tracked_fd;
+  static_assert(std::atomic<HashType>::is_always_lock_free,
+                "calloc'd slots must be plain pointers");
 
   std::shared_ptr<DFTLogger> logger;
   bool trace_all_files;
@@ -52,7 +56,7 @@ class POSIXDFTracer : public POSIX {
   inline HashType is_traced(int fd, const char* func) {
     if (stop_trace) return NO_HASH_DEFAULT;
     if (fd < 0 || static_cast<size_t>(fd) >= max_fd) return NO_HASH_DEFAULT;
-    HashType trace = tracked_fd[fd];
+    HashType trace = tracked_fd[fd].load(std::memory_order_acquire);
     if (trace == NO_HASH_DEFAULT) {
       DFTRACER_LOG_DEBUG(
           "Calling POSIXDFTracer.is_traced for %s and"
@@ -101,7 +105,7 @@ class POSIXDFTracer : public POSIX {
   inline void trace(int fd, HashType hash) {
     DFTRACER_LOG_DEBUG("Calling POSIXDFTracer.trace for %d and %s", fd, hash);
     if (fd < 0 || static_cast<size_t>(fd) >= max_fd) return;
-    tracked_fd[fd] = hash;
+    tracked_fd[fd].store(hash, std::memory_order_release);
   }
 
   inline void remove_trace(int fd) {
@@ -109,7 +113,7 @@ class POSIXDFTracer : public POSIX {
     // A vfork child's close loop (CPython subprocess on glibc < 2.34) must not
     // untrack the parent's open fds. Only close pays for the getpid syscall.
     if (fd < 0 || static_cast<size_t>(fd) >= max_fd || in_vfork_child()) return;
-    tracked_fd[fd] = NO_HASH_DEFAULT;
+    tracked_fd[fd].store(NO_HASH_DEFAULT, std::memory_order_release);
   }
 
   // Writes only traced slots, so a wide range does not fault in the
@@ -118,8 +122,8 @@ class POSIXDFTracer : public POSIX {
     if (stop_trace || max_fd == 0) return false;
     bool removed = false;
     for (size_t fd = first; fd <= last && fd < max_fd; ++fd) {
-      if (tracked_fd[fd] != NO_HASH_DEFAULT) {
-        tracked_fd[fd] = NO_HASH_DEFAULT;
+      if (tracked_fd[fd].load(std::memory_order_relaxed) != NO_HASH_DEFAULT) {
+        tracked_fd[fd].store(NO_HASH_DEFAULT, std::memory_order_release);
         removed = true;
       }
     }
@@ -149,7 +153,8 @@ class POSIXDFTracer : public POSIX {
   POSIXDFTracer(bool trace_all, size_t table_size)
       : POSIX(),
         max_fd(table_size),
-        tracked_fd(static_cast<HashType*>(calloc(max_fd, sizeof(HashType)))),
+        tracked_fd(static_cast<std::atomic<HashType>*>(
+            calloc(max_fd, sizeof(std::atomic<HashType>)))),
         trace_all_files(trace_all) {
     DFTRACER_LOG_DEBUG("POSIX class intercepted");
     if (tracked_fd == nullptr) {

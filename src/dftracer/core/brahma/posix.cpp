@@ -1221,9 +1221,11 @@ int brahma::POSIXDFTracer::closedir(DIR* dir) {
   BRAHMA_MAP_OR_FAIL(closedir);
   int fd = this->dir_fd(dir);
   DFT_LOGGER_START(fd);
+  // Untrack before the real closedir, as close does: once it returns, another
+  // thread can get the same fd number and its entry must not be cleared.
+  if (trace) this->remove_trace(fd);
   int ret = __real_closedir(dir);
   DFT_LOGGER_END();
-  if (trace) this->remove_trace(fd);
   return ret;
 }
 
