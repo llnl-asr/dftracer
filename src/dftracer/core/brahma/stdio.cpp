@@ -7,7 +7,7 @@
 #include <dftracer/core/utils/stdio_bypass.h>
 
 static ConstEventNameType CATEGORY = "STDIO";
-static TraceEventType TRACE_TYPE = TraceEventType::TRACE_TYPE_LIBC_IO;
+static constexpr TraceEventType TRACE_TYPE = TraceEventType::TRACE_TYPE_LIBC_IO;
 
 std::shared_ptr<brahma::STDIODFTracer> brahma::STDIODFTracer::instance =
     nullptr;

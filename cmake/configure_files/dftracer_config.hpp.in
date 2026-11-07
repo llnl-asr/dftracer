@@ -61,6 +61,9 @@
 #cmakedefine DFTRACER_MPI_IMPL_NAME "@DFTRACER_MPI_IMPL_NAME@"
 #cmakedefine DFTRACER_HDF5_ENABLE 1
 #cmakedefine DFTRACER_FTRACING_ENABLE 1
+// -DDFTRACER_ENABLE_PROFILING=ON: time each phase of the tracing pipeline
+// (core/common/profiler.h). Compiled out otherwise.
+#cmakedefine DFTRACER_PROFILING_ENABLE 1
 #cmakedefine DFTRACER_HWLOC_ENABLE 1
 #cmakedefine DFTRACER_HIP_TRACING_ENABLE 1
 #cmakedefine DFTRACER_PAPI_TRACING_ENABLE 1

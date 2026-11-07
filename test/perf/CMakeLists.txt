@@ -29,3 +29,25 @@ set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT
     C_OVERHEAD_BASE=${CMAKE_BINARY_DIR}/bin/c_overhead_base
     C_OVERHEAD_DFT=${CMAKE_BINARY_DIR}/bin/c_overhead_dft)
 set_tests_properties(${test_name} PROPERTIES LABELS perf TIMEOUT 7200)
+
+# Where each event's overhead goes, phase by phase (capture from POSIX and the
+# C API, aggregation, serialization, compression, store), without dftracer,
+# in-process (aggregation on and off) and in producer/consumer mode. Needs
+# -DDFTRACER_ENABLE_PROFILING=ON, which the per-phase numbers come from.
+# Writes runs.csv, profile.csv, summary.csv and summary.txt.
+# Knobs: THREADS, ITERS, REPS, META, POSIX, API, IO_BYTES, FIRST_CPU, MODES
+# (see run_pipeline_profile.sh).
+add_executable(pipeline_profile_base pipeline_profile/pipeline_profile.c)
+target_link_libraries(pipeline_profile_base pthread)
+add_executable(pipeline_profile_dft pipeline_profile/pipeline_profile.c)
+target_compile_definitions(pipeline_profile_dft PRIVATE WITH_DFTRACER)
+target_link_libraries(pipeline_profile_dft ${PROJECT_NAME}_core pthread)
+if(DFTRACER_ENABLE_PROFILING AND TARGET ${PROJECT_NAME}_service)
+    set(test_name perf_pipeline_profile)
+    add_test(NAME ${test_name}
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/pipeline_profile/run_pipeline_profile.sh
+                     ${CMAKE_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/pipeline_profile_work)
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT
+        LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}:$ENV{LD_LIBRARY_PATH})
+    set_tests_properties(${test_name} PROPERTIES LABELS perf TIMEOUT 7200)
+endif()

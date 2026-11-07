@@ -1,5 +1,6 @@
 #include <dftracer/core/buffer/local_buffer_manager.h>
 #include <dftracer/core/common/event_types.h>
+#include <dftracer/core/common/profiler.h>
 #include <dftracer/core/serialization/packed_json.h>
 #include <unistd.h>
 template <>
@@ -43,17 +44,22 @@ void LocalBufferManager::compress_and_write_if_needed(size_t size, bool force) {
       buffer_pos += size;
       size = 0;
       auto data = dftracer::AggregatedDataType();
+      DFTRACER_PROFILE_SCOPE_UNCOUNTED(DFTRACER_PROFILE_PHASE(AGGREGATION));
       if (this->aggregator->get_previous_aggregations(data, false))
         write_aggregations(data, 0, rank);
     }
 
     // Always one complete gzip member per write.
-    size = this->compressor->compress(buffer, buffer_pos + size);
+    {
+      DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(COMPRESSION));
+      size = this->compressor->compress(buffer, buffer_pos + size);
+    }
     DFTRACER_LOG_DEBUG(
         "BufferManager.compress_and_write_if_needed compressed size %zu "
         "bytes",
         size);
     if (size > 0) {
+      DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(STORE));
       size = this->writer->write(buffer, size, true);
       DFTRACER_LOG_DEBUG(
           "BufferManager.compress_and_write_if_needed wrote %zu bytes", size);
@@ -110,6 +116,7 @@ int LocalBufferManager::finalize(int index, ProcessID process_id) {
     // Only the aggregates still open; the chunk belongs to the caller.
     if (buffer != nullptr && this->config->aggregation_enable) {
       auto data = dftracer::AggregatedDataType();
+      DFTRACER_PROFILE_SCOPE_UNCOUNTED(DFTRACER_PROFILE_PHASE(AGGREGATION));
       this->aggregator->get_previous_aggregations(data, true);
       write_aggregations(data, index, process_id);
       this->aggregator->finalize();
@@ -121,6 +128,7 @@ int LocalBufferManager::finalize(int index, ProcessID process_id) {
     size_t size = 0;
     if (this->config->aggregation_enable) {
       auto data = dftracer::AggregatedDataType();
+      DFTRACER_PROFILE_SCOPE_UNCOUNTED(DFTRACER_PROFILE_PHASE(AGGREGATION));
       this->aggregator->get_previous_aggregations(data, true);
       write_aggregations(data, index, process_id);
       this->aggregator->finalize();
@@ -128,7 +136,10 @@ int LocalBufferManager::finalize(int index, ProcessID process_id) {
     compress_and_write_if_needed(size, true);
 
     this->compressor->finalize();
-    this->writer->finalize(index);
+    {
+      DFTRACER_PROFILE_SCOPE_UNCOUNTED(DFTRACER_PROFILE_PHASE(STORE));
+      this->writer->finalize(index);
+    }
     free(buffer);
     buffer = nullptr;
     buffer_pos = 0;
@@ -145,10 +156,12 @@ void LocalBufferManager::flush() {
     // All intervals, the current one too: after a successful exec nothing
     // would write them. If exec fails, later events open fresh buckets.
     auto data = dftracer::AggregatedDataType();
+    DFTRACER_PROFILE_SCOPE_UNCOUNTED(DFTRACER_PROFILE_PHASE(AGGREGATION));
     if (this->aggregator->get_previous_aggregations(data, true) > 0)
       write_aggregations(data, 0, static_cast<ProcessID>(getpid()));
   }
   compress_and_write_if_needed(size, true);
+  DFTRACER_PROFILE_SCOPE_UNCOUNTED(DFTRACER_PROFILE_PHASE(STORE));
   this->writer->flush();
 }
 
@@ -158,6 +171,7 @@ void LocalBufferManager::log_data_event(
     dftracer::Metadata* metadata, ProcessID process_id, ThreadID tid) {
   // Reject events outside [initialize(), finalize()) -- see is_ready().
   if (!is_ready()) return;
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(BUFFER));
   std::unique_lock<std::shared_mutex> lock(mtx);
   DFTRACER_LOG_DEBUG("BufferManager.log_data_event %d", index);
   size_t size = 0;
@@ -165,6 +179,9 @@ void LocalBufferManager::log_data_event(
   // An event type that is not aggregatable is always traced in full.
   if (this->config->aggregation_enable && strcmp(category, "dftracer") != 0 &&
       dftracer::event_type_aggregatable(type)) {
+    // Counted once per event that goes through the aggregator; writing a
+    // finished interval out (serialization, compression, store) nests in it.
+    DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(AGGREGATION));
     enable_tracing = false;
     auto aggregated_key =
         AggregatedKey{category, event_name,     type, start_time, duration, tid,
@@ -205,6 +222,7 @@ void LocalBufferManager::log_counter_event(
     ThreadID thread_id, dftracer::Metadata* metadata) {
   // Reject events outside [initialize(), finalize()) -- see is_ready().
   if (!is_ready()) return;
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(BUFFER));
   std::unique_lock<std::shared_mutex> lock(mtx);
   DFTRACER_LOG_DEBUG("BufferManager.log_counter_event %d", index);
   size_t size = this->serializer->counter(buffer + buffer_pos, index, name,
@@ -218,6 +236,7 @@ void LocalBufferManager::log_record(ConstEventNameType record_name,
                                     TraceEventType type, ProcessID process_id,
                                     ThreadID tid) {
   if (!is_ready()) return;
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(BUFFER));
   std::unique_lock<std::shared_mutex> lock(mtx);
   size_t size = this->serializer->record(buffer + buffer_pos, record_name,
                                          fields, type, process_id, tid);
@@ -228,6 +247,7 @@ void LocalBufferManager::log_record(ConstEventNameType record_name,
                                     const char* fields, TraceEventType type,
                                     ProcessID process_id, ThreadID tid) {
   if (!is_ready()) return;
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(BUFFER));
   std::unique_lock<std::shared_mutex> lock(mtx);
   size_t size = this->serializer->record(buffer + buffer_pos, record_name,
                                          fields, type, process_id, tid);
@@ -242,6 +262,7 @@ void LocalBufferManager::log_metadata_event(ConstEventNameType name,
                                             bool is_string) {
   // Reject events outside [initialize(), finalize()) -- see is_ready().
   if (!is_ready()) return;
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(BUFFER));
   std::unique_lock<std::shared_mutex> lock(mtx);
   DFTRACER_LOG_DEBUG("BufferManager.log_metadata_event %s", value);
   size_t size =

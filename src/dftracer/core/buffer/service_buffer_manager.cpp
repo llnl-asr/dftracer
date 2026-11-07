@@ -1,6 +1,7 @@
 #include <dftracer/core/buffer/service_buffer_manager.h>
 #include <dftracer/core/common/event_types.h>
 #include <dftracer/core/common/logging.h>
+#include <dftracer/core/common/profiler.h>
 #include <dftracer/core/common/singleton.h>
 #include <dftracer/core/utils/configuration_manager.h>
 #include <dftracer/core/utils/posix_bypass.h>
@@ -173,11 +174,18 @@ bool ServiceBufferManager::emit(ShmRecordKind kind, Encode&& encode) {
     if (ipc::monotonic_ns() < spill_until_ns) return false;
     spill_until_ns = 0;
   }
+  // Profiled as: store = getting the slot, the copy into the ring and
+  // publishing it; serialization = the binary encoding in between.
+  DFTRACER_PROFILE_BEGIN(store_frame);
   Slot* slot = acquire_slot();
-  ipc::ByteWriter writer(slot->scratch);
-  encode(writer);
+  {
+    DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(SERIALIZATION));
+    ipc::ByteWriter writer(slot->scratch);
+    encode(writer);
+  }
   const bool pushed = push(slot, kind, full_wait_ns_);
   release_slot(slot);
+  DFTRACER_PROFILE_END(store_frame, DFTRACER_PROFILE_PHASE(STORE), true);
   if (!pushed) spill_until_ns = ipc::monotonic_ns() + DFT_SHM_SPILL_RETRY_NS;
   return pushed;
 }
@@ -429,6 +437,7 @@ void ServiceBufferManager::log_data_event(
     TraceEventType type, TimeResolution start_time, TimeResolution duration,
     dftracer::Metadata* metadata, ProcessID process_id, ThreadID tid) {
   if (!is_ready()) return;
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(BUFFER));
   // The service has no event-type registry: tell it per event.
   const uint8_t flags = static_cast<uint8_t>(
       event_flags_ |
@@ -453,6 +462,7 @@ void ServiceBufferManager::log_counter_event(
     TraceEventType type, TimeResolution start_time, ProcessID process_id,
     ThreadID thread_id, dftracer::Metadata* metadata) {
   if (!is_ready()) return;
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(BUFFER));
   if (emit(SHM_KIND_COUNTER, [&](ipc::ByteWriter& w) {
         ipc::encode_event(w, index, name, category, type, start_time, 0,
                           metadata, process_id, thread_id, event_flags_);
@@ -472,6 +482,7 @@ void ServiceBufferManager::log_record(ConstEventNameType record_name,
                                       TraceEventType type, ProcessID process_id,
                                       ThreadID tid) {
   if (!is_ready()) return;
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(BUFFER));
   if (emit(SHM_KIND_RECORD, [&](ipc::ByteWriter& w) {
         ipc::encode_record(w, record_name, fields, type, process_id, tid);
       }))
@@ -488,6 +499,7 @@ void ServiceBufferManager::log_metadata_event(ConstEventNameType name,
                                               ProcessID process_id,
                                               ThreadID tid, bool is_string) {
   if (!is_ready()) return;
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(BUFFER));
   if (emit(SHM_KIND_METADATA, [&](ipc::ByteWriter& w) {
         ipc::encode_metadata_event(w, name, value, record_name, type,
                                    process_id, tid, is_string);

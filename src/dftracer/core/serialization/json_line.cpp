@@ -1,6 +1,7 @@
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/logging.h>
+#include <dftracer/core/common/profiler.h>
 #include <dftracer/core/common/singleton.h>
 #include <dftracer/core/serialization/json_line.h>
 #include <dftracer/core/serialization/metadata_json.h>
@@ -41,6 +42,7 @@ size_t JsonLines::data(char* buffer, int index, ConstEventNameType event_name,
                        TimeResolution start_time, TimeResolution duration,
                        dftracer::Metadata* metadata, ProcessID process_id,
                        ThreadID thread_id) {
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(SERIALIZATION));
   size_t written_size = 0;
   int n = 0;
   // The relations arg (DFT_RELATIONS_ARG) is an event's semantic content,
@@ -120,6 +122,7 @@ size_t JsonLines::series(char* buffer, int index, ConstEventNameType event_name,
                          TracePhaseType phase, TimeResolution start_time,
                          ProcessID process_id, ThreadID thread_id,
                          dftracer::Metadata* metadata) {
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(SERIALIZATION));
   size_t written_size = 0;
   int n = 0;
   if (metadata != nullptr && !metadata->empty()) {
@@ -167,6 +170,7 @@ size_t JsonLines::series(char* buffer, int index, ConstEventNameType event_name,
 size_t JsonLines::record(char* buffer, ConstEventNameType record_name,
                          const char* fields, TraceEventType type,
                          ProcessID process_id, ThreadID thread_id) {
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(SERIALIZATION));
   int n = dftracer_logging_real_snprintf()(
       buffer, DFTRACER_SERIALIZATION_EVENT_MAX,
       R"({"name":"%s","cat":"dftracer","type":%u,"pid":%d,"tid":%lu,"ph":%u,"args":{"hhash":"%s",%s}})",
@@ -193,6 +197,7 @@ size_t JsonLines::record(char* buffer, ConstEventNameType record_name,
 size_t JsonLines::record(char* buffer, ConstEventNameType record_name,
                          const Metadata* fields, TraceEventType type,
                          ProcessID process_id, ThreadID thread_id) {
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(SERIALIZATION));
   packed_json::Line line(buffer);
   line.raw("{\"name\":\"");
   line.raw(record_name == nullptr ? "" : record_name);
@@ -217,6 +222,7 @@ size_t JsonLines::metadata(char* buffer, ConstEventNameType name,
                            ConstEventNameType record_name, TraceEventType type,
                            ProcessID process_id, ThreadID thread_id,
                            bool is_string) {
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(SERIALIZATION));
   size_t written_size = 0;
   int n = 0;
   if (is_string) {
@@ -275,6 +281,8 @@ size_t JsonLines::aggregated(char* buffer, int index, ProcessID process_id,
 
 void JsonLines::aggregated(RowSink& rows, int index, ProcessID process_id,
                            dftracer::AggregatedDataType& data) {
+  // Building each row's Metadata from its bucket; series() counts the rows.
+  DFTRACER_PROFILE_SCOPE_UNCOUNTED(DFTRACER_PROFILE_PHASE(SERIALIZATION));
   DFTRACER_LOG_INFO("Writing %d intervals", data.size());
   for (const auto& interval_entry : data) {
     const TimeResolution& interval = interval_entry.first;

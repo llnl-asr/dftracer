@@ -21,7 +21,7 @@
 #ifdef BRAHMA_MPIIO_MPICH_4_2_COMPAT
 
 static ConstEventNameType CATEGORY = "MPIIO";
-static TraceEventType TRACE_TYPE = TraceEventType::TRACE_TYPE_MPI;
+static constexpr TraceEventType TRACE_TYPE = TraceEventType::TRACE_TYPE_MPI;
 
 std::shared_ptr<brahma::MPIIO_MPICH_4_2_COMPAT_DFTracer>
     brahma::MPIIO_MPICH_4_2_COMPAT_DFTracer::instance = nullptr;
