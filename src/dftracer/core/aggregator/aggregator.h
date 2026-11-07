@@ -12,8 +12,10 @@
 #include <dftracer/core/utils/utils.h>
 
 #include <any>
+#include <atomic>
 #include <map>
 #include <mutex>
+#include <new>
 #include <shared_mutex>
 #include <unordered_map>
 
@@ -33,13 +35,21 @@ class Aggregator {
     }
   }
 
-  AggregatedDataType aggregated_data_;
+  // A bucket key holds the thread id, so one thread's buckets all live in one
+  // shard and threads in different shards never wait for each other.
+  static constexpr size_t SHARDS = 64;
+  struct alignas(64) Shard {
+    std::mutex mtx;
+    AggregatedDataType data;
+  };
+  Shard shards_[SHARDS];
+  Shard& shard_for(ThreadID tid) { return shards_[tid % SHARDS]; }
+
   std::shared_ptr<dftracer::ConfigurationManager> config;
-  TimeResolution last_interval;
+  std::atomic<TimeResolution> last_interval;
   TimeResolution cached_interval;  // trace_interval_ms, cached in the
                                    // configured time_metric unit
-  bool is_first;
-  std::shared_mutex mtx;
+  std::atomic<bool> is_first;
   Rules inclusion_rules;
   Rules exclusion_rules;
   bool always_aggregate;
@@ -61,10 +71,11 @@ class Aggregator {
   // Folds one value into the bucket of `aggregated_key`: its category, name,
   // type, interval and thread, and the values of its MT_KEY fields, so events
   // that differ in an MT_KEY field are aggregated apart.
-  inline void insert_value(TimeResolution& time_interval,
+  inline void insert_value(AggregatedDataType& data,
+                           TimeResolution& time_interval,
                            AggregatedKey& aggregated_key,
                            const std::string& key, BaseAggregatedValue* value) {
-    auto& events = aggregated_data_[time_interval];
+    auto& events = data[time_interval];
     auto iter = events.find(aggregated_key);
     if (iter != events.end()) {
       iter->second->update(key, typeid(TimeResolution), value);
@@ -79,18 +90,20 @@ class Aggregator {
   }
 
   template <typename T>
-  inline void insert_number_value(TimeResolution& time_interval,
+  inline void insert_number_value(AggregatedDataType& data,
+                                  TimeResolution& time_interval,
                                   AggregatedKey& aggregated_key,
                                   const std::string& key, T value) {
-    insert_value(time_interval, aggregated_key, key,
+    insert_value(data, time_interval, aggregated_key, key,
                  new NumberAggregationValue<T>(value));
   }
 
   template <typename T>
-  inline void insert_general_value(TimeResolution& time_interval,
+  inline void insert_general_value(AggregatedDataType& data,
+                                   TimeResolution& time_interval,
                                    AggregatedKey& aggregated_key,
                                    const std::string& key, T value) {
-    insert_value(time_interval, aggregated_key, key,
+    insert_value(data, time_interval, aggregated_key, key,
                  new AggregatedValue<T>(value));
   }
 
@@ -116,8 +129,8 @@ class Aggregator {
         config->aggregation_exclusion_rules.size() > 0) {
       always_aggregate = false;
     }
-    last_interval = 0;
-    is_first = true;
+    last_interval.store(0, std::memory_order_relaxed);
+    is_first.store(true, std::memory_order_relaxed);
     // Cache trace_interval_ms (a wall-clock millisecond value) scaled into
     // whatever unit get_time()/config->time_metric is currently using, so
     // interval bucketing below stays correct regardless of TIME_METRIC.
@@ -135,11 +148,20 @@ class Aggregator {
   }
   ~Aggregator() {}
   void finalize() {
-    std::unique_lock<std::shared_mutex> lock(mtx);
-    for (auto& interval_map : aggregated_data_) {
-      cleanup_aggregated_values(interval_map.second);
+    for (auto& shard : shards_) {
+      std::lock_guard<std::mutex> lock(shard.mtx);
+      release_aggregated_data(shard.data);
     }
-    aggregated_data_.clear();
+  }
+  /** pthread_atfork handlers: no shard lock may be held across fork. */
+  void lock_for_fork() {
+    for (auto& shard : shards_) shard.mtx.lock();
+  }
+  void unlock_in_parent() {
+    for (auto& shard : shards_) shard.mtx.unlock();
+  }
+  void reset_in_child() {
+    for (auto& shard : shards_) new (&shard.mtx) std::mutex();
   }
   bool aggregate(AggregatedKey& aggregated_key);
   int get_previous_aggregations(AggregatedDataType& data, bool all = false);

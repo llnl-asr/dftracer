@@ -299,7 +299,7 @@ df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/${test_name} ${CMAKE_CURRENT_BI
 set_common_properties(${test_name})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
-df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*
+df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}-*
     "stat|__xstat=${_calls}" open=${_opens} write=${_files} pread=${_calls} close=${_opens}
     fopen=${_calls} fread=${_calls} fclose=${_calls}
     opendir=${_calls} readdir=${_calls} closedir=${_calls})
@@ -341,6 +341,45 @@ if(TARGET ${PROJECT_NAME}_service)
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/pc/spill_aggregation_data)
     set_tests_properties(${test_name} PROPERTIES LABELS pc TIMEOUT 180)
 endif()
+# A 4 KiB write buffer makes the threads swap and flush it all the time.
+set(test_name test_threaded_io_small_buffer)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_threaded_io ${CMAKE_CURRENT_BINARY_DIR}/data_small_buffer)
+set_common_properties(${test_name})
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_WRITE_BUFFER_SIZE=4096)
+df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*
+    "stat|__xstat=${_calls}" open=${_opens} write=${_files} pread=${_calls} close=${_opens}
+    fopen=${_calls} fread=${_calls} fclose=${_calls}
+    opendir=${_calls} readdir=${_calls} closedir=${_calls})
+set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
+
+set(test_name test_threaded_io_aggregated)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_threaded_io ${CMAKE_CURRENT_BINARY_DIR}/data_aggregated)
+set_common_properties(${test_name})
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_WRITE_BUFFER_SIZE=4096)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_ENABLE_AGGREGATION=1)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_TRACE_INTERVAL_MS=1)
+df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_aggregated_counts.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*
+    "stat|__xstat=${_calls}" open=${_opens} write=${_files} pread=${_calls} close=${_opens}
+    fopen=${_calls} fread=${_calls} fclose=${_calls}
+    opendir=${_calls} readdir=${_calls} closedir=${_calls})
+set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
+
+add_executable(test_fork_flush c/test_fork_flush.c)
+target_link_libraries(test_fork_flush pthread)
+add_dependencies(test_fork_flush ${PROJECT_NAME}_preload_dbg)
+set(test_name test_fork_flush)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/${test_name} ${CMAKE_CURRENT_BINARY_DIR}/data_fork_flush)
+set_common_properties(${test_name})
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_WRITE_BUFFER_SIZE=4096)
+set_tests_properties(${test_name} PROPERTIES TIMEOUT 300)
+# Its event count depends on timing, so its twin checks only that it finishes.
+set_property(GLOBAL APPEND PROPERTY DFTRACER_PC_TWIN_NO_COMPARE ${test_name})
 
 # DFTRACER_MIN_DURATION_NS: regions shorter than it are not traced; the
 # default (0) traces everything. dftracer's own events (start, end) are kept.
@@ -364,6 +403,18 @@ foreach(_variant on off)
         "${CMAKE_CURRENT_BINARY_DIR}/${test_name}-*.pfw.gz" ${_expect} start=1 end=1)
     set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
 endforeach()
+
+# The writer thread holds aggregator shard locks at fork.
+set(test_name test_fork_flush_aggregated)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_fork_flush ${CMAKE_CURRENT_BINARY_DIR}/data_fork_flush_aggregated)
+set_common_properties(${test_name})
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_WRITE_BUFFER_SIZE=4096)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_ENABLE_AGGREGATION=1)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_TRACE_INTERVAL_MS=1)
+set_tests_properties(${test_name} PROPERTIES TIMEOUT 300)
+set_property(GLOBAL APPEND PROPERTY DFTRACER_PC_TWIN_NO_COMPARE ${test_name})
 
 add_executable(test_relative_path c/test_relative_path.c)
 add_dependencies(test_relative_path ${PROJECT_NAME}_preload_dbg)
@@ -1409,6 +1460,7 @@ option(DFTRACER_TEST_PC_MODE "Run every trace test in producer/consumer mode too
 if(DFTRACER_TEST_PC_MODE AND TARGET ${PROJECT_NAME}_service)
     find_program(DFTRACER_PC_CHECK_PYTHON NAMES python3 python)
     get_property(_pc_tests GLOBAL PROPERTY DFTRACER_TEST_NAMES)
+    get_property(_no_compare GLOBAL PROPERTY DFTRACER_PC_TWIN_NO_COMPARE)
     foreach(_test IN LISTS _pc_tests)
         get_test_property(${_test} ENVIRONMENT _env)
         if(NOT _env MATCHES "DFTRACER_LOG_FILE=")
@@ -1434,6 +1486,10 @@ if(DFTRACER_TEST_PC_MODE AND TARGET ${PROJECT_NAME}_service)
             DFTRACER_TWIN_DATA_DIR=${_data})
         set_property(TEST ${_twin} APPEND PROPERTY ENVIRONMENT
             LLVM_PROFILE_FILE=${_twin}.profraw)
+        if(_test IN_LIST _no_compare)
+            set_property(TEST ${_twin} APPEND PROPERTY ENVIRONMENT
+                DFTRACER_TWIN_SKIP_COMPARE=1)
+        endif()
         # After the original, which may set up files the test reads.
         set_property(TEST ${_twin} APPEND PROPERTY DEPENDS ${_test})
         get_test_property(${_test} TIMEOUT _timeout)
