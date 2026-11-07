@@ -149,3 +149,14 @@
    fun:free_res
    fun:__libc_freeres
 }
+
+# test_fork_flush: the child inherits the event the writer thread had in
+# flight at fork, but not the thread that owns it.
+{
+   fork_flush_writer_event_in_child
+   Memcheck:Leak
+   match-leak-kinds: definite
+   ...
+   fun:writer
+   fun:start_thread
+}

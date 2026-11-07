@@ -215,8 +215,19 @@ class DFTLogger {
     }
     this->buffer_manager = dftracer::BufferManagerFactory::get_instance();
     this->is_init = true;
+    fork_owner_.store(this, std::memory_order_release);
   }
-  ~DFTLogger() { clear_hash_cache(); }
+  ~DFTLogger() {
+    DFTLogger* self = this;
+    fork_owner_.compare_exchange_strong(self, nullptr);
+    clear_hash_cache();
+  }
+
+  /** pthread_atfork handlers: no lock may be held across fork. */
+  void lock_for_fork();
+  void unlock_in_parent();
+  void reset_in_child();
+  static std::atomic<DFTLogger*> fork_owner_;
 
   void reinitialize() {
     DFTRACER_LOG_DEBUG("DFTLogger.reinitialize");
@@ -294,8 +305,11 @@ class DFTLogger {
     HashType exec_hash;
     char hostname[256];
     gethostname(hostname, 256);
-    hostname_hash = get_hash(hostname);
-    insert_hash(hostname, hostname_hash);
+    hostname_hash = has_hash(hostname);
+    if (hostname_hash == NO_HASH_DEFAULT) {
+      hostname_hash = get_hash(hostname);
+      insert_hash(hostname, hostname_hash);
+    }
     if (this->buffer_manager != nullptr) {
       this->buffer_manager->initialize(log_file.c_str(), hostname_hash);
       char hostname_event[256];

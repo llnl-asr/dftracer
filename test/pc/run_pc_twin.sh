@@ -110,5 +110,11 @@ fi
 for f in "$LOG"_*.pfw.gz; do
   python3 "$HERE/check_gzip_members.py" "$f" || exit 1
 done
-python3 "$HERE/compare_traces.py" --node "$LOG"_*.pfw.gz \
-  --spill "$LOG"-*-spill.pfw.gz -- "$WORK"/local/app*
+# DFTRACER_TWIN_SKIP_COMPARE=1: a test whose events depend on timing checks
+# only that producer/consumer mode ran it to the end. An if, not "&& exit":
+# bash leaks the parsed list when it exits inside one, which the valgrind
+# gate reports.
+if [ "${DFTRACER_TWIN_SKIP_COMPARE:-0}" != 1 ]; then
+  python3 "$HERE/compare_traces.py" --node "$LOG"_*.pfw.gz \
+    --spill "$LOG"-*-spill.pfw.gz -- "$WORK"/local/app*
+fi

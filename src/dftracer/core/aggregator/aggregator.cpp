@@ -15,25 +15,26 @@ bool dftracer::Singleton<dftracer::Aggregator>::stop_creating_instances = false;
                              std::any_cast<TYPE>(value.second));
 namespace dftracer {
 bool Aggregator::aggregate(AggregatedKey& aggregated_key) {
-  bool is_first_local = is_first;
-  is_first = false;
-  std::unique_lock<std::shared_mutex> lock(mtx);
+  const bool first = is_first.exchange(false, std::memory_order_relaxed);
   // Use cached_interval (in the configured time_metric unit) to avoid
   // division per event
   aggregated_key.time_interval =
       (aggregated_key.time_interval / cached_interval) * cached_interval;
-  auto time_iter = aggregated_data_.find(aggregated_key.time_interval);
-  if (time_iter == aggregated_data_.end()) {
-    aggregated_data_.insert_or_assign(
-        aggregated_key.time_interval,
-        std::unordered_map<AggregatedKey, AggregatedValues*>());
-  }
-  auto last_interval_ = last_interval;
-  if (aggregated_key.time_interval > last_interval) {
-    last_interval = aggregated_key.time_interval;
+  TimeResolution& interval = aggregated_key.time_interval;
+  TimeResolution previous = last_interval.load(std::memory_order_relaxed);
+  bool advanced = false;
+  while (interval > previous) {
+    if (last_interval.compare_exchange_weak(previous, interval,
+                                            std::memory_order_relaxed)) {
+      advanced = true;
+      break;
+    }
   }
 
-  insert_number_value(aggregated_key.time_interval, aggregated_key, "dur",
+  Shard& shard = shard_for(aggregated_key.thread_id);
+  std::lock_guard<std::mutex> lock(shard.mtx);
+  AggregatedDataType& data = shard.data;
+  insert_number_value(data, interval, aggregated_key, "dur",
                       aggregated_key.duration);
 
   // Fast path: skip metadata iteration if empty
@@ -44,34 +45,37 @@ bool Aggregator::aggregate(AggregatedKey& aggregated_key) {
       if (std::get<0>(value) == MetadataType::MT_VALUE) {
         DFTRACER_FOR_EACH_NUMERIC_TYPE(
             DFTRACER_ANY_CAST_MACRO, std::get<1>(value), {
-              insert_number_value(aggregated_key.time_interval, aggregated_key,
-                                  key, res.value());
+              insert_number_value(data, interval, aggregated_key, key,
+                                  res.value());
               continue;
             })
         DFTRACER_FOR_EACH_STRING_TYPE(
             DFTRACER_ANY_CAST_MACRO, std::get<1>(value), {
-              insert_general_value(aggregated_key.time_interval, aggregated_key,
-                                   key, res.value());
+              insert_general_value(data, interval, aggregated_key, key,
+                                   res.value());
               continue;
             })
       }
     }
   }
 
-  return !is_first_local && last_interval_ != last_interval;
+  return !first && advanced;
 }
 int Aggregator::get_previous_aggregations(AggregatedDataType& data, bool all) {
-  std::unique_lock<std::shared_mutex> lock(mtx);
-  DFTRACER_LOG_INFO("Getting %d timestamps all: %d", aggregated_data_.size(),
-                    all);
+  const TimeResolution last = last_interval.load(std::memory_order_relaxed);
   int moved = 0;
-  for (auto it = aggregated_data_.begin(); it != aggregated_data_.end();) {
-    if (all || it->first < last_interval) {
-      data[it->first] = std::move(it->second);
-      it = aggregated_data_.erase(it);
-      ++moved;
-    } else {
-      ++it;
+  for (auto& shard : shards_) {
+    std::lock_guard<std::mutex> lock(shard.mtx);
+    for (auto it = shard.data.begin(); it != shard.data.end();) {
+      if (all || it->first < last) {
+        auto& events = data[it->first];
+        if (events.empty()) ++moved;
+        // Keys differ across shards, so merge moves every entry.
+        events.merge(it->second);
+        it = shard.data.erase(it);
+      } else {
+        ++it;
+      }
     }
   }
   return moved;

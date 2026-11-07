@@ -95,8 +95,19 @@ class LocalBufferManager : public BufferManager {
    */
   void log_packed_event(const ipc::DecodedEvent& event, bool counter);
 
+  /** pthread_atfork handlers: no lock may be held across fork. */
+  void lock_for_fork();
+  void unlock_in_parent();
+  void reset_in_child();
+
  private:
   void compress_and_write_if_needed(size_t size, bool force = false);
+  // Serializes outside the lock, then appends under it. A full buffer is
+  // swapped with the spare and compressed after the lock is released.
+  template <class Serialize>
+  void log_line(Serialize serialize);
+  void append(const char* line, size_t size);
+  void write_block(char* block, size_t size);
   // Writes the complete packed intervals (or all) into the chunk.
   void drain_packed(bool all, ProcessID process_id);
   // Writes the rows of `data` into the buffer one at a time, flushing it as it
@@ -106,6 +117,10 @@ class LocalBufferManager : public BufferManager {
   char* buffer;
   size_t buffer_pos;
   std::shared_mutex mtx;
+  // Held while a block is compressed and written. Taken only with mtx held,
+  // so blocks reach the file in the order they were swapped out.
+  std::mutex write_mtx;
+  char* spare = nullptr;
 
   std::shared_ptr<dftracer::ConfigurationManager> config;
   std::shared_ptr<dftracer::JsonLines> serializer;

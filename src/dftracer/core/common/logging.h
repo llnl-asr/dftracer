@@ -10,10 +10,12 @@
 /* External Headers */
 #include <dlfcn.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <chrono>
 #include <cstdio>
+#include <ctime>
 #include <string>
 
 // dftracer's own internal logging (this file) calls sprintf/snprintf/fprintf
@@ -55,19 +57,45 @@ inline dftracer_logging_sprintf_fn dftracer_logging_real_sprintf() {
   return fn;
 }
 
+// localtime() takes a glibc lock that a forked child can inherit held, so the
+// UTC offset is read once and the date is computed by hand.
+inline long dftracer_macro_utc_offset() {
+  static const long offset = [] {
+    time_t t = std::time(nullptr);
+    struct tm local{};
+    localtime_r(&t, &local);
+    return local.tm_gmtoff;
+  }();
+  return offset;
+}
+
 inline std::string dftracer_macro_get_time() {
-  auto dftracer_ts_millis =
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count() %
-      1000;
-  auto dftracer_ts_t = std::time(0);
-  auto now = std::localtime(&dftracer_ts_t);
+  struct timespec ts{};
+  clock_gettime(CLOCK_REALTIME, &ts);
+  long long seconds = ts.tv_sec + dftracer_macro_utc_offset();
+  long long days = seconds / 86400;
+  long long of_day = seconds % 86400;
+  if (of_day < 0) {
+    of_day += 86400;
+    --days;
+  }
+  // civil_from_days from Howard Hinnant, "chrono-Compatible Low-Level Date
+  // Algorithms", public domain:
+  // https://howardhinnant.github.io/date_algorithms.html
+  days += 719468;
+  const long long era = (days >= 0 ? days : days - 146096) / 146097;
+  const unsigned doe = static_cast<unsigned>(days - era * 146097);
+  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const unsigned mp = (5 * doy + 2) / 153;
+  const unsigned day = doy - (153 * mp + 2) / 5 + 1;
+  const unsigned month = mp < 10 ? mp + 3 : mp - 9;
+  const long long year = yoe + era * 400 + (month <= 2 ? 1 : 0);
   char dftracer_ts_time_str[256];
   dftracer_logging_real_sprintf()(
-      dftracer_ts_time_str, "%04d-%02d-%02d %02d:%02d:%02d.%ld",
-      now->tm_year + 1900, now->tm_mon + 1, now->tm_mday, now->tm_hour,
-      now->tm_min, now->tm_sec, dftracer_ts_millis);
+      dftracer_ts_time_str, "%04lld-%02u-%02u %02lld:%02lld:%02lld.%ld", year,
+      month, day, of_day / 3600, of_day / 60 % 60, of_day % 60,
+      ts.tv_nsec / 1000000);
   return dftracer_ts_time_str;
 }
 
