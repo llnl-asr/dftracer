@@ -2,6 +2,7 @@
 #define DFTRACER_SERIALIZATION_METADATA_JSON_H
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/macros.h>
+#include <dftracer/core/common/type_match.h>
 
 #include <any>
 #include <charconv>
@@ -106,30 +107,36 @@ inline void list(W& w, const ArgList& l) {
 /** A value; false, writing nothing, for a type it does not know. */
 template <typename W>
 inline bool value(W& w, const std::any& v) {
-  if (v.type() == typeid(RawJson)) {
+  // std::any::type() is an indirect call into the value's manager: ask once,
+  // not once per candidate type.
+  const std::type_info& id = v.type();
+  if (dftracer::same_type(id, typeid(RawJson))) {
     w.raw(std::any_cast<const RawJson&>(v).value);
     return true;
   }
-  if (v.type() == typeid(ArgList)) {
+  if (dftracer::same_type(id, typeid(ArgList))) {
     list(w, std::any_cast<const ArgList&>(v));
     return true;
   }
-  DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_ANY_CAST_MACRO, v, {
-    using V = std::decay_t<decltype(res.value())>;
-    if constexpr (std::is_floating_point<V>::value)
-      w.f64(static_cast<double>(res.value()));
-    else if constexpr (std::is_signed<V>::value)
-      w.i64(static_cast<int64_t>(res.value()));
-    else
-      w.u64(static_cast<uint64_t>(res.value()));
-    return true;
-  });
+#define DFTRACER_JSON_NUMBER(TYPE, VALUE, BLOCK)       \
+  if (dftracer::same_type(id, typeid(TYPE))) {         \
+    const TYPE n = *std::any_cast<TYPE>(&VALUE);       \
+    if constexpr (std::is_floating_point<TYPE>::value) \
+      w.f64(static_cast<double>(n));                   \
+    else if constexpr (std::is_signed<TYPE>::value)    \
+      w.i64(static_cast<int64_t>(n));                  \
+    else                                               \
+      w.u64(static_cast<uint64_t>(n));                 \
+    return true;                                       \
+  }
+  DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_JSON_NUMBER, v, {})
+#undef DFTRACER_JSON_NUMBER
   const char* s = nullptr;
-  if (v.type() == typeid(std::string))
+  if (dftracer::same_type(id, typeid(std::string)))
     s = std::any_cast<const std::string&>(v).c_str();
-  else if (v.type() == typeid(const char*))
+  else if (dftracer::same_type(id, typeid(const char*)))
     s = std::any_cast<const char*>(v);
-  else if (v.type() == typeid(HashType))
+  else if (dftracer::same_type(id, typeid(HashType)))
     s = std::any_cast<HashType>(v);
   else
     return false;
@@ -142,9 +149,11 @@ inline bool value(W& w, const std::any& v) {
 /** Whether value() knows the type. */
 inline bool known(const std::any& v) {
   const std::type_info& id = v.type();
-  if (id == typeid(RawJson) || id == typeid(ArgList) ||
-      id == typeid(std::string) || id == typeid(const char*) ||
-      id == typeid(HashType))
+  if (dftracer::same_type(id, typeid(RawJson)) ||
+      dftracer::same_type(id, typeid(ArgList)) ||
+      dftracer::same_type(id, typeid(std::string)) ||
+      dftracer::same_type(id, typeid(const char*)) ||
+      dftracer::same_type(id, typeid(HashType)))
     return true;
   DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_ANY_ID_MACRO, v, { return true; });
   return false;

@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <typeindex>
@@ -61,11 +62,41 @@ struct ArgList {
 };
 
 class Metadata {
+ public:
+  using Value = std::tuple<MetadataType, std::any, std::size_t>;
+  using Entry = std::pair<std::string, Value>;
+
  private:
-  typedef std::unordered_map<std::string,
-                             std::tuple<MetadataType, std::any, std::size_t>>
-      DataMap;
+  /**
+   * Entries in insertion order, in one vector. An event has a handful of
+   * keys, so a linear scan finds one faster than hashing it would, and the
+   * vector holds them without a heap node each: with the per-thread map of
+   * acquire()/release(), whose clear() keeps the vector's capacity, an event
+   * whose keys fit std::string's inline buffer and whose values fit
+   * std::any's allocates nothing.
+   */
+  using DataMap = std::vector<Entry>;
   DataMap data;
+  // Producer/consumer mode (see defer_key_hashes): whether the MT_KEY hashes
+  // of this map's entries are computed. Fixed when the map is created.
+  bool hashed_ = !defer_.load(std::memory_order_relaxed);
+  inline static std::atomic<bool> defer_{false};
+  // The thread's cached map (acquire/release). Plain pointer and flag so they
+  // stay readable after the guard has run at thread exit: a thread's exit
+  // handlers may still log.
+  inline static thread_local Metadata* tl_cached_ = nullptr;
+  inline static thread_local bool tl_exited_ = false;
+  struct CacheGuard {
+    ~CacheGuard() {
+      tl_exited_ = true;
+      delete tl_cached_;
+      tl_cached_ = nullptr;
+    }
+  };
+  inline static thread_local CacheGuard tl_guard_;
+  std::size_t key_hash(const std::any& value, const MetadataType& type) const {
+    return hashed_ ? get_hash(value, type) : 0;
+  }
   std::size_t get_hash(const std::any& value, const MetadataType& type) const {
     if (type != MetadataType::MT_KEY) {
       return 0;
@@ -81,28 +112,106 @@ class Metadata {
   }
 
  public:
-  Metadata() {}
+  using iterator = DataMap::iterator;
+  using const_iterator = DataMap::const_iterator;
+
+  Metadata() { data.reserve(8); }
   ~Metadata() {}
-  std::pair<DataMap::iterator, bool> insert_or_assign(const std::string& key,
-                                                      const std::any& value) {
-    auto ret = data.insert_or_assign(
-        key, std::make_tuple(MetadataType::MT_KEY, value,
-                             get_hash(value, MetadataType::MT_KEY)));
-    return ret;
+  /**
+   * Every MT_KEY entry carries a hash of its value (the third element), for
+   * the aggregation key -- a std::to_string and std::hash per insert. In
+   * producer/consumer mode the producer does not aggregate (the service does,
+   * from the encoded record), so ServiceBufferManager turns the hash off for
+   * the maps created after it initializes: inserts store 0, and the one
+   * in-process place that aggregates them, the spill file's
+   * LocalBufferManager, computes them first with ensure_key_hashes().
+   */
+  static void defer_key_hashes(bool defer) {
+    defer_.store(defer, std::memory_order_relaxed);
   }
-  std::pair<DataMap::iterator, bool> insert_or_assign(
-      const std::string& key, const std::any& value, const MetadataType& type) {
-    auto ret = data.insert_or_assign(
-        key, std::make_tuple(type, value, get_hash(value, type)));
-    return ret;
+  /**
+   * An event's Metadata from the calling thread's cache, or a new one. An
+   * event's map lives from its interceptor (or API region) to the buffer
+   * manager that writes it, on one thread, so each thread keeps the last one
+   * it released and reuses it: clear() keeps the entry vector's capacity, so
+   * its allocation is paid once per thread instead of once per event. A map
+   * from acquire() is an ordinary heap object: deleting it instead of
+   * releasing it is fine.
+   */
+  static Metadata* acquire() {
+    Metadata* m = tl_cached_;
+    if (m == nullptr) return new Metadata();
+    tl_cached_ = nullptr;
+    m->hashed_ = !defer_.load(std::memory_order_relaxed);
+    return m;
   }
-  bool contains(const std::string& key) const {
-    return data.find(key) != data.end();
+  /** Gives an event's map back (see acquire()); deletes it when the thread
+   * already holds one or is exiting. Null is ignored. */
+  static void release(Metadata* m) {
+    if (m == nullptr) return;
+    if (tl_cached_ != nullptr || tl_exited_) {
+      delete m;
+      return;
+    }
+    (void)&tl_guard_;  // frees the cached map at thread exit
+    m->data.clear();
+    tl_cached_ = m;
   }
 
-  size_t erase(const std::string& key) { return data.erase(key); }
+  // Computes the MT_KEY hashes of a map created with them deferred.
+  void ensure_key_hashes() {
+    if (hashed_) return;
+    for (auto& entry : data)
+      std::get<2>(entry.second) =
+          get_hash(std::get<1>(entry.second), std::get<0>(entry.second));
+    hashed_ = true;
+  }
+  iterator find(std::string_view key) {
+    for (auto it = data.begin(); it != data.end(); ++it)
+      if (it->first == key) return it;
+    return data.end();
+  }
+  const_iterator find(std::string_view key) const {
+    for (auto it = data.begin(); it != data.end(); ++it)
+      if (it->first == key) return it;
+    return data.end();
+  }
 
-  DataMap::iterator erase(DataMap::const_iterator it) { return data.erase(it); }
+  std::pair<iterator, bool> insert_or_assign(
+      std::string_view key, std::any value,
+      const MetadataType& type = MetadataType::MT_KEY) {
+    const std::size_t hash = key_hash(value, type);
+    auto it = find(key);
+    if (it != data.end()) {
+      it->second = Value(type, std::move(value), hash);
+      return {it, false};
+    }
+    data.emplace_back(std::piecewise_construct, std::forward_as_tuple(key),
+                      std::forward_as_tuple(type, std::move(value), hash));
+    return {data.end() - 1, true};
+  }
+
+  std::pair<iterator, bool> insert(
+      std::string_view key, std::any value,
+      const MetadataType& type = MetadataType::MT_KEY) {
+    auto it = find(key);
+    if (it != data.end()) return {it, false};
+    const std::size_t hash = key_hash(value, type);
+    data.emplace_back(std::piecewise_construct, std::forward_as_tuple(key),
+                      std::forward_as_tuple(type, std::move(value), hash));
+    return {data.end() - 1, true};
+  }
+
+  bool contains(std::string_view key) const { return find(key) != data.end(); }
+
+  size_t erase(std::string_view key) {
+    auto it = find(key);
+    if (it == data.end()) return 0;
+    data.erase(it);
+    return 1;
+  }
+
+  iterator erase(const_iterator it) { return data.erase(it); }
 
   size_t size() const { return data.size(); }
 
@@ -110,42 +219,27 @@ class Metadata {
 
   void clear() { data.clear(); }
 
-  std::pair<DataMap::iterator, bool> insert(const std::string& key,
-                                            const std::any& value) {
-    return data.insert(
-        {key, std::make_tuple(MetadataType::MT_KEY, value,
-                              get_hash(value, MetadataType::MT_KEY))});
-  }
-  std::pair<DataMap::iterator, bool> insert(const std::string& key,
-                                            const std::any& value,
-                                            const MetadataType& type) {
-    return data.insert(
-        {key, std::make_tuple(type, value, get_hash(value, type))});
+  Value& operator[](std::string_view key) {
+    auto it = find(key);
+    if (it != data.end()) return it->second;
+    data.emplace_back(std::piecewise_construct, std::forward_as_tuple(key),
+                      std::forward_as_tuple());
+    return data.back().second;
   }
 
-  DataMap::iterator find(const std::string& key) { return data.find(key); }
-
-  DataMap::const_iterator find(const std::string& key) const {
-    return data.find(key);
+  const Value& at(std::string_view key) const {
+    auto it = find(key);
+    if (it == data.end()) throw std::out_of_range("Metadata::at");
+    return it->second;
   }
 
-  std::tuple<MetadataType, std::any, std::size_t>& operator[](
-      const std::string& key) {
-    return data[key];
-  }
+  iterator begin() { return data.begin(); }
 
-  const std::tuple<MetadataType, std::any, std::size_t>& at(
-      const std::string& key) const {
-    return data.at(key);
-  }
+  const_iterator begin() const { return data.begin(); }
 
-  DataMap::iterator begin() { return data.begin(); }
+  iterator end() { return data.end(); }
 
-  DataMap::const_iterator begin() const { return data.begin(); }
-
-  DataMap::iterator end() { return data.end(); }
-
-  DataMap::const_iterator end() const { return data.end(); }
+  const_iterator end() const { return data.end(); }
 
   std::string getTagValue(const std::string& tagKey) const;
 };
@@ -709,6 +803,13 @@ struct DecodedValue {
 };
 
 /** A decoded DATA or COUNTER record; views point into the record. */
+/** The service's side of SHM_EVENT_INTERNED: the strings of one block, by
+ * id, as views into the block. Cleared before each block. */
+struct InternTable {
+  std::vector<std::string_view> strings;
+  void clear() { strings.clear(); }
+};
+
 struct DecodedEvent {
   EventHead head;
   std::string_view name;
@@ -742,11 +843,90 @@ class RingProducer;
 }  // namespace ipc
 
 /** One producer thread's state in ServiceBufferManager. */
+namespace ipc {
+/**
+ * A producer thread's table of the strings already in its current ring
+ * block (SHM_EVENT_INTERNED). Keyed by the string's address -- names and
+ * categories are mostly literals, and the keys of the thread's reused
+ * Metadata sit at the same address event after event -- and every hit is
+ * checked against the copy in the block, so a reused address never yields
+ * a wrong reference. The service rebuilds the same ids from the block
+ * (InternTable): every inline string of an interned record is the next id.
+ */
+class Interner {
+ public:
+  /** Before encoding into `block` (RingProducer::block_serial()). */
+  void begin(uint64_t block) {
+    if (block != block_) {
+      block_ = block;
+      next_ = 0;
+      ++epoch_;
+    }
+    pending_n_ = 0;
+  }
+  /** The reference to `s`, or 0 when it is not in the block yet. */
+  uint16_t find(const char* s, size_t n) const {
+    const Entry& e = slot(s, n);
+    if (e.epoch == epoch_ && e.src == s && e.len == n &&
+        std::memcmp(e.bytes, s, n) == 0)
+      return static_cast<uint16_t>(DFT_SHM_INTERN_REF | e.id);
+    return 0;
+  }
+  /** `s` was just written inline at `bytes` in the block: the next id. */
+  void define(const char* s, size_t n, const uint8_t* bytes) {
+    if (next_ >= DFT_SHM_INTERN_MAX) return;  // stays inline, no id
+    Entry& e = slot(s, n);
+    e = Entry{s, bytes, static_cast<uint16_t>(n), next_++, epoch_};
+    if (pending_n_ < kPending) pending_[pending_n_] = &e;
+    ++pending_n_;
+  }
+  /** The record encoded since begin() was not committed: forget its ids. */
+  void rollback(uint16_t mark) {
+    if (pending_n_ <= kPending) {
+      for (uint32_t i = 0; i < pending_n_; ++i) pending_[i]->epoch = 0;
+    } else {
+      ++epoch_;  // too many to undo one by one: forget every entry
+    }
+    next_ = mark;
+    pending_n_ = 0;
+  }
+  uint16_t mark() const { return next_; }
+
+ private:
+  struct Entry {
+    const char* src = nullptr;
+    const uint8_t* bytes = nullptr;
+    uint16_t len = 0;
+    uint16_t id = 0;
+    uint32_t epoch = 0;  // valid only in the table's current epoch
+  };
+  static constexpr uint32_t kSlots = 256;
+  static constexpr uint32_t kPending = 32;
+  static uint32_t index(const char* s, size_t n) {
+    auto bits = reinterpret_cast<uintptr_t>(s);
+    return static_cast<uint32_t>(((bits >> 3) ^ (bits >> 11) ^ n) &
+                                 (kSlots - 1));
+  }
+  Entry& slot(const char* s, size_t n) { return entries_[index(s, n)]; }
+  const Entry& slot(const char* s, size_t n) const {
+    return entries_[index(s, n)];
+  }
+
+  Entry entries_[kSlots];
+  Entry* pending_[kPending] = {};
+  uint32_t pending_n_ = 0;
+  uint64_t block_ = ~0ULL;
+  uint32_t epoch_ = 1;
+  uint16_t next_ = 0;
+};
+}  // namespace ipc
+
 struct alignas(DFT_SHM_CACHE_LINE) ServiceSlot {
   std::atomic<uint32_t> state{SHM_SLOT_IDLE};  // ShmSlotState
   uint64_t generation = 0;
   std::unique_ptr<ipc::RingProducer> producer;
   std::vector<uint8_t> scratch;
+  ipc::Interner intern;  // strings already in the producer's block
   // Written only by the slot's thread (load + store, no read-modify-write),
   // so counting costs nothing shared; read by pushed(). Drops are rare and
   // counted per process (ServiceBufferManager::count_drop).

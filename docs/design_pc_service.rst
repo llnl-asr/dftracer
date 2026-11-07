@@ -537,6 +537,21 @@ written and aggregated straight from the decoded record
 (`Metadata in the service`_). A faster producer-side layout is deferred
 (`Deferred: faster record encoding`_).
 
+**Interned strings.** A DATA or COUNTER record that the producer encodes
+straight into its block sets ``SHM_EVENT_INTERNED``. Then each u16 length of
+its name, category and metadata keys either refers to a string already in the
+same block (``DFT_SHM_INTERN_REF`` set, the id in the low 15 bits, no bytes
+follow) or is an inline string that also becomes the block's next id. The
+producer and the service count ids the same way, so no id is ever written.
+Ids are scoped to one block, because a block is replayed in order by one
+drain thread and blocks may be replayed in any order. A block that is taken
+over is still consistent: its only uncommitted record can be the last one.
+The producer (``ipc::Interner``, one per thread) keys its table by the
+string's address and checks every hit against the copy in the block. A
+record written from the scratch buffer (the ring was full, or the record did
+not fit what the block had left) is written plain, and a record that did not
+fit gives back the ids it took. String values are never interned.
+
 A record larger than a block, such as a huge ``RawJson`` or metadata blob, is
 rejected and counted. ``block_size`` defaults to 1 MiB, well above any normal
 event.

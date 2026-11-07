@@ -5,6 +5,7 @@
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/utils/posix_bypass.h>
 #include <dlfcn.h>
+#include <pthread.h>
 #include <sys/syscall.h>
 #include <syscall.h>
 
@@ -83,7 +84,25 @@ int POSIXBypass::dirfd(DIR* dir) { return real_dirfd_(dir); }
 }  // namespace dftracer
 
 // getpid/gettid intentionally stay as raw syscalls -- see the comment in
-// posix_bypass.h for why.
-ThreadID df_gettid() { return syscall(SYS_gettid); }
+// posix_bypass.h for why. A thread's id never changes, so gettid is asked
+// once per thread and kept; only fork() gives the (one) surviving thread a
+// new id, so the child forgets it. The default TLS model, not initial-exec:
+// initial-exec would put this library's whole TLS block in the static TLS
+// reserve, which a library loaded with dlopen (Python's import dftracer)
+// cannot get: "cannot allocate memory in static TLS block".
+namespace {
+thread_local ThreadID tl_tid = 0;
+void forget_tid_in_child() { tl_tid = 0; }
+const int tid_fork_hook = pthread_atfork(nullptr, nullptr, forget_tid_in_child);
+}  // namespace
+
+ThreadID df_gettid() {
+  ThreadID tid = tl_tid;
+  if (__builtin_expect(tid == 0, 0)) {
+    tid = static_cast<ThreadID>(syscall(SYS_gettid));
+    tl_tid = tid;
+  }
+  return tid;
+}
 
 ProcessID df_getpid() { return syscall(SYS_getpid); }

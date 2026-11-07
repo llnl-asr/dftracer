@@ -326,7 +326,13 @@ enum ShmEventFlags : uint8_t {
   SHM_EVENT_HAS_METADATA = 2,
   // The event's type is not aggregatable (dftracer::event_type_aggregatable):
   // it is always traced in full.
-  SHM_EVENT_NO_AGGREGATE = 4
+  SHM_EVENT_NO_AGGREGATE = 4,
+  // The record's name, category and metadata keys are interned within its
+  // ring block (ipc::Interner, docs/design_pc_service.rst "Records"): each
+  // of their u16 length fields is either a reference to an earlier string of
+  // the block (DFT_SHM_INTERN_REF set, the id in the low bits, no bytes) or
+  // an inline string that also becomes the block's next id.
+  SHM_EVENT_INTERNED = 8
 };
 // Result of reserving room for a record in the ring (RingProducer).
 enum class ShmReserveResult {

@@ -94,6 +94,15 @@ static const uint64_t DFT_SHM_DEFAULT_FULL_WAIT_US = 0;
 // After a thread found the ring full, it spills straight away (without
 // encoding for the ring) for this long, then tries the ring again.
 static const uint64_t DFT_SHM_SPILL_RETRY_NS = 1000000ULL;
+// An event is encoded straight into the room its producer's block has left;
+// a block with less than this left is published and a new one claimed first.
+static const size_t DFT_SHM_DIRECT_MIN_BYTES = 512;
+// Interned strings (SHM_EVENT_INTERNED): the length field of a reference has
+// this bit set; inline strings are at most DFT_SHM_INTERN_MAX bytes, and a
+// block holds at most DFT_SHM_INTERN_MAX ids (strings after that stay inline
+// without one).
+static const uint16_t DFT_SHM_INTERN_REF = 0x8000;
+static const uint16_t DFT_SHM_INTERN_MAX = 0x7fff;
 // How long finalize waits for a thread that is inside a log call to leave
 // it; past that, its block is left for the service to take over.
 static const uint64_t DFT_SHM_FINALIZE_WAIT_NS = 100000000ULL;

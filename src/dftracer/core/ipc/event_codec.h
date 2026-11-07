@@ -3,9 +3,11 @@
 
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
+#include <dftracer/core/common/type_match.h>
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/serialization/metadata_json.h>
 
+#include <algorithm>
 #include <any>
 #include <charconv>
 #include <cstddef>
@@ -45,15 +47,48 @@ namespace ipc {
  * core/common/datastructure.h.
  */
 
-/** Appends to a reusable byte vector; one per producer thread. */
+/**
+ * Appends to a reusable byte vector; one per producer thread.
+ *
+ * ByteWriter(out) leaves `out` holding exactly the bytes written, resizing
+ * it per field. ByteWriter(out, Buffer{}) is the producer's per-event form:
+ * it writes through a plain pointer into the vector's existing size, so a
+ * field is one bounds check and a memcpy; the vector grows only when a
+ * record outgrows it, and size() -- not out.size() -- is the record's length.
+ */
 class ByteWriter {
  public:
-  explicit ByteWriter(std::vector<uint8_t>& out) : out_(out) { out_.clear(); }
+  struct Buffer {};
+  explicit ByteWriter(std::vector<uint8_t>& out) : out_(out), exact_(true) {
+    out_.clear();
+  }
+  ByteWriter(std::vector<uint8_t>& out, Buffer) : out_(out), exact_(false) {
+    base_ = p_ = out_.data();
+    end_ = base_ + out_.size();
+  }
+  /**
+   * Writes into `capacity` bytes at `direct` (a ring reservation). A record
+   * that does not fit moves, as written so far, into `fallback` and is
+   * finished there (moved() says so); data() and size() follow it.
+   */
+  ByteWriter(uint8_t* direct, size_t capacity, std::vector<uint8_t>& fallback,
+             Interner* intern = nullptr)
+      : out_(fallback), exact_(false), direct_(true), intern_(intern) {
+    base_ = p_ = direct;
+    end_ = direct + capacity;
+  }
+  bool moved() const { return moved_; }
+  /** The block's string table when the record is interned
+   * (SHM_EVENT_INTERNED): only a record written straight into its block. */
+  Interner* interner() const { return intern_; }
 
   uint8_t* grow(size_t n) {
-    const size_t at = out_.size();
-    out_.resize(at + n);
-    return out_.data() + at;
+    if (__builtin_expect(static_cast<size_t>(end_ - p_) >= n, 1)) {
+      uint8_t* at = p_;
+      p_ += n;
+      return at;
+    }
+    return grow_slow(n);
   }
   template <typename T>
   void put(const T& value) {
@@ -63,11 +98,41 @@ class ByteWriter {
   void put_bytes(const void* data, size_t n) {
     if (n != 0) std::memcpy(grow(n), data, n);
   }
-  size_t size() const { return out_.size(); }
-  uint8_t* data() { return out_.data(); }
+  size_t size() const { return static_cast<size_t>(p_ - base_); }
+  uint8_t* data() { return base_; }
 
  private:
+  uint8_t* grow_slow(size_t n) {
+    const size_t at = size();
+    if (direct_ && !moved_) {
+      moved_ = true;
+      if (out_.size() < at + n) out_.resize(std::max(at + n, out_.size() * 2));
+      std::memcpy(out_.data(), base_, at);
+      base_ = out_.data();
+      p_ = base_ + at + n;
+      end_ = base_ + out_.size();
+      return base_ + at;
+    }
+    if (exact_) {
+      out_.resize(at + n);
+    } else {
+      out_.resize(std::max(at + n, out_.size() * 2 + 256));
+    }
+    base_ = out_.data();
+    p_ = base_ + at + n;
+    // Exact: every field resizes, so out_ always holds what was written.
+    end_ = exact_ ? p_ : base_ + out_.size();
+    return base_ + at;
+  }
+
   std::vector<uint8_t>& out_;
+  bool exact_;
+  bool direct_ = false;  // writing into a ring reservation
+  Interner* intern_ = nullptr;
+  bool moved_ = false;  // ... and moved into out_ (did not fit)
+  uint8_t* base_ = nullptr;
+  uint8_t* p_ = nullptr;
+  uint8_t* end_ = nullptr;
 };
 
 inline uint16_t short_len(const char* s, size_t* n) {
@@ -96,6 +161,31 @@ inline void put_key(ByteWriter& w, uint8_t tag, uint8_t mtype,
       static_cast<uint16_t>(key.size() > 0xffff ? 0xffff : key.size());
   w.put(len);
   w.put_bytes(key.data(), len);
+}
+/**
+ * A string of an interned record: the u16 length field, then its bytes when
+ * it is not in the block yet (it then becomes the block's next id). Returns
+ * the field.
+ */
+inline uint16_t interned_field(Interner& in, const char* s, size_t n) {
+  if (n > DFT_SHM_INTERN_MAX) n = DFT_SHM_INTERN_MAX;
+  const uint16_t ref = in.find(s, n);
+  return ref != 0 ? ref : static_cast<uint16_t>(n);
+}
+inline void interned_bytes(ByteWriter& w, Interner& in, uint16_t field,
+                           const char* s) {
+  if ((field & DFT_SHM_INTERN_REF) != 0) return;
+  uint8_t* at = w.grow(field);
+  if (field != 0) std::memcpy(at, s, field);
+  in.define(s, field, at);
+}
+inline void put_key_interned(ByteWriter& w, Interner& in, uint8_t tag,
+                             uint8_t mtype, const std::string& key) {
+  w.put(tag);
+  w.put(mtype);
+  const uint16_t field = interned_field(in, key.data(), key.size());
+  w.put(field);
+  interned_bytes(w, in, field, key.data());
 }
 inline void put_long_string(ByteWriter& w, const char* s, size_t n) {
   w.put(static_cast<uint32_t>(n));
@@ -145,47 +235,62 @@ inline void put_json(ByteWriter& w, Write&& write) {
  */
 inline uint16_t encode_metadata(ByteWriter& w, const Metadata* metadata) {
   if (metadata == nullptr) return 0;
+  Interner* in = w.interner();
+  // Interned records (SHM_EVENT_INTERNED) refer to keys already in the block.
+  const auto put_key = [in](ByteWriter& out, uint8_t tag, uint8_t mtype,
+                            const std::string& key) {
+    if (in != nullptr)
+      detail::put_key_interned(out, *in, tag, mtype, key);
+    else
+      detail::put_key(out, tag, mtype, key);
+  };
   uint16_t count = 0;
   for (const auto& item : *metadata) {
     if (count == 0xffff) break;
     const std::string& key = item.first;
     const uint8_t mtype = static_cast<uint8_t>(std::get<0>(item.second));
     const std::any& value = std::get<1>(item.second);
+    // std::any::type() is an indirect call into the value's manager: ask
+    // once, not once per candidate type below.
+    const std::type_info& id = value.type();
     ++count;
-    if (value.type() == typeid(RawJson)) {
+    if (dftracer::same_type(id, typeid(RawJson))) {
       const auto& raw = std::any_cast<const RawJson&>(value);
-      detail::put_key(w, SHM_VALUE_RAW_JSON, mtype, key);
+      put_key(w, SHM_VALUE_RAW_JSON, mtype, key);
       detail::put_long_string(w, raw.value.data(), raw.value.size());
       continue;
     }
-    if (value.type() == typeid(ArgList)) {
+    if (dftracer::same_type(id, typeid(ArgList))) {
       const auto& list = std::any_cast<const ArgList&>(value);
-      detail::put_key(w, SHM_VALUE_RAW_JSON, mtype, key);
+      put_key(w, SHM_VALUE_RAW_JSON, mtype, key);
       put_json(w, [&](JsonWriter& json) { metadata_json::list(json, list); });
       continue;
     }
-    DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_ANY_CAST_MACRO, value, {
-      using V = std::decay_t<decltype(res.value())>;
-      uint8_t tag = std::is_floating_point<V>::value ? SHM_VALUE_DOUBLE
-                    : std::is_signed<V>::value       ? SHM_VALUE_INT
-                                                     : SHM_VALUE_UINT;
-      detail::put_key(w, tag, mtype, key);
-      detail::put_number_value(w, res.value());
-      continue;
-    });
-    if (value.type() == typeid(std::string)) {
+#define DFTRACER_ENCODE_NUMBER(TYPE, VALUE, BLOCK)                    \
+  if (dftracer::same_type(id, typeid(TYPE))) {                        \
+    using V = TYPE;                                                   \
+    uint8_t tag = std::is_floating_point<V>::value ? SHM_VALUE_DOUBLE \
+                  : std::is_signed<V>::value       ? SHM_VALUE_INT    \
+                                                   : SHM_VALUE_UINT;        \
+    put_key(w, tag, mtype, key);                                      \
+    detail::put_number_value(w, *std::any_cast<V>(&VALUE));           \
+    continue;                                                         \
+  }
+    DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_ENCODE_NUMBER, value, {})
+#undef DFTRACER_ENCODE_NUMBER
+    if (dftracer::same_type(id, typeid(std::string))) {
       const auto& str = std::any_cast<const std::string&>(value);
-      detail::put_key(w, SHM_VALUE_STRING, mtype, key);
+      put_key(w, SHM_VALUE_STRING, mtype, key);
       detail::put_long_string(w, str.data(), str.size());
       continue;
     }
     const char* cstr = nullptr;
-    if (value.type() == typeid(const char*)) {
+    if (dftracer::same_type(id, typeid(const char*))) {
       cstr = std::any_cast<const char*>(value);
-    } else if (value.type() == typeid(HashType)) {
+    } else if (dftracer::same_type(id, typeid(HashType))) {
       cstr = std::any_cast<HashType>(value);
     }
-    detail::put_key(w, SHM_VALUE_STRING, mtype, key);
+    put_key(w, SHM_VALUE_STRING, mtype, key);
     detail::put_long_string(w, cstr == nullptr ? "" : cstr,
                             cstr == nullptr ? 0 : std::strlen(cstr));
   }
@@ -208,11 +313,24 @@ inline void encode_event(ByteWriter& w, int index, ConstEventNameType name,
   head.type = static_cast<uint8_t>(type);
   head.flags = static_cast<uint8_t>(
       flags | (metadata != nullptr ? SHM_EVENT_HAS_METADATA : 0));
-  head.name_len = short_len(name, &name_n);
-  head.category_len = short_len(category, &category_n);
-  w.put(head);
-  w.put_bytes(name, name_n);
-  w.put_bytes(category, category_n);
+  if (Interner* in = w.interner()) {
+    // Name and category refer to the block's copy once it has one.
+    if (name == nullptr) name = "";
+    if (category == nullptr) category = "";
+    head.flags |= SHM_EVENT_INTERNED;
+    head.name_len = detail::interned_field(*in, name, std::strlen(name));
+    head.category_len =
+        detail::interned_field(*in, category, std::strlen(category));
+    w.put(head);
+    detail::interned_bytes(w, *in, head.name_len, name);
+    detail::interned_bytes(w, *in, head.category_len, category);
+  } else {
+    head.name_len = short_len(name, &name_n);
+    head.category_len = short_len(category, &category_n);
+    w.put(head);
+    w.put_bytes(name, name_n);
+    w.put_bytes(category, category_n);
+  }
   const uint16_t count = encode_metadata(w, metadata);
   std::memcpy(w.data() + offsetof(EventHead, meta_count), &count,
               sizeof(count));
@@ -315,11 +433,28 @@ class ByteReader {
  * slack after the last entry. Returns false on a truncated or malformed
  * record.
  */
-inline bool decode_event(const uint8_t* data, size_t size, DecodedEvent& out) {
+inline bool decode_event(const uint8_t* data, size_t size, DecodedEvent& out,
+                         InternTable* table = nullptr) {
   ByteReader r(data, size);
   if (!r.get(out.head)) return false;
-  if (!r.view(out.head.name_len, out.name)) return false;
-  if (!r.view(out.head.category_len, out.category)) return false;
+  const bool interned = (out.head.flags & SHM_EVENT_INTERNED) != 0;
+  if (interned && table == nullptr) return false;
+  // A string field: plain, or (interned) a reference or a new inline string.
+  const auto string = [&](uint16_t field, std::string_view& view) {
+    if (!interned) return r.view(field, view);
+    if ((field & DFT_SHM_INTERN_REF) != 0) {
+      const uint16_t id = field & DFT_SHM_INTERN_MAX;
+      if (id >= table->strings.size()) return false;
+      view = table->strings[id];
+      return true;
+    }
+    if (!r.view(field, view)) return false;
+    if (table->strings.size() < DFT_SHM_INTERN_MAX)
+      table->strings.push_back(view);
+    return true;
+  };
+  if (!string(out.head.name_len, out.name)) return false;
+  if (!string(out.head.category_len, out.category)) return false;
   out.values.clear();
   out.values.reserve(out.head.meta_count);
   for (uint16_t i = 0; i < out.head.meta_count; ++i) {
@@ -327,7 +462,7 @@ inline bool decode_event(const uint8_t* data, size_t size, DecodedEvent& out) {
     uint8_t tag, mtype;
     uint16_t key_len;
     if (!r.get(tag) || !r.get(mtype) || !r.get(key_len)) return false;
-    if (!r.view(key_len, v.key)) return false;
+    if (!string(key_len, v.key)) return false;
     v.tag = static_cast<ShmValueTag>(tag);
     v.mtype = static_cast<MetadataType>(mtype);
     switch (v.tag) {

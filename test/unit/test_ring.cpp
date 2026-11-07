@@ -271,6 +271,70 @@ void test_full_ring() {
   DFT_CHECK(ring.header()->head.load() == 3);
 }
 
+// As produce(), the way the PC producer writes events: reserve what the
+// block has left (try_reserve_upto), write, and commit what was written. A
+// record that does not fit is cancelled and reserved again at its size, and
+// some reservations are cancelled unwritten. The consumer must see exactly
+// the committed records, each at its exact length.
+void produce_upto(const RingView& ring, uint32_t producer, uint64_t count,
+                  uint32_t max_bytes, uint32_t seed) {
+  RingProducer writer(ring, producer + 1);
+  std::mt19937 rng(seed);
+  std::uniform_int_distribution<uint32_t> size(sizeof(TestPayload), max_bytes);
+  std::uniform_int_distribution<uint32_t> coin(0, 9);
+  for (uint64_t seq = 0; seq < count; ++seq) {
+    const uint32_t bytes = size(rng);
+    Reservation r;
+    size_t cap = 0;
+    RingProducer::Result result;
+    // A reservation given back unwritten leaves nothing behind.
+    if (coin(rng) == 0) {
+      while ((result = writer.try_reserve_upto(64, max_bytes, SHM_KIND_RAW, r,
+                                               cap)) ==
+             RingProducer::Result::FULL)
+        cpu_relax();
+      DFT_CHECK(result == RingProducer::Result::OK);
+      writer.cancel(r);
+    }
+    while ((result =
+                writer.try_reserve_upto(64, max_bytes, SHM_KIND_RAW, r, cap)) ==
+           RingProducer::Result::FULL)
+      cpu_relax();
+    DFT_CHECK(result == RingProducer::Result::OK);
+    if (cap < bytes) {
+      // Did not fit what the block had left: as the producer's fallback.
+      writer.cancel(r);
+      while ((result = writer.try_reserve(bytes, SHM_KIND_RAW, r)) ==
+             RingProducer::Result::FULL)
+        cpu_relax();
+      DFT_CHECK(result == RingProducer::Result::OK);
+    }
+    TestPayload p{producer, bytes, seq};
+    std::memcpy(r.payload, &p, sizeof(p));
+    for (size_t i = sizeof(p); i < bytes; ++i)
+      r.payload[i] = fill_byte(producer, seq, i);
+    if (cap >= bytes)
+      writer.commit(r, bytes);
+    else
+      writer.commit(r);
+  }
+}
+
+void test_many_threads_upto() {
+  auto region = ShmRegion::create(segment_name("threads-upto"), 16, 4096);
+  const RingView& ring = region->ring();
+  const uint32_t producers = 8;
+  const uint64_t count = 20000;
+  std::vector<std::thread> threads;
+  // Records up to 1500 bytes in 4 KB blocks: many do not fit what is left.
+  for (uint32_t p = 0; p < producers; ++p)
+    threads.emplace_back(produce_upto, ring, p, count, 1500, 4321 + p);
+  DFT_CHECK(consume_and_verify(ring, producers, count) == producers * count);
+  for (auto& t : threads) t.join();
+  std::cout << "✓ " << producers << " threads of try_reserve_upto/commit/cancel"
+            << std::endl;
+}
+
 void test_many_threads() {
   auto region = ShmRegion::create(segment_name("threads"), 16, 4096);
   const RingView& ring = region->ring();
@@ -552,6 +616,69 @@ void test_fit_geometry() {
   DFT_CHECK(RingView::valid_geometry(count, size));
 }
 
+// try_reserve_upto + commit(r, written) / cancel: the PC producer encodes a
+// record straight into the room left in its block.
+void test_reserve_upto() {
+  auto region = ShmRegion::create(segment_name("upto"), 4, 4096);
+  const RingView& ring = region->ring();
+  RingProducer writer(ring, 7);
+  BlockTracker tracker(ring, /*verify=*/true);
+  Reservation r;
+  size_t cap = 0;
+
+  // An empty block: all of it, less the record header.
+  DFT_CHECK(writer.try_reserve_upto(512, 1 << 20, SHM_KIND_RAW, r, cap) ==
+            RingProducer::Result::OK);
+  DFT_CHECK(cap == 4096 - sizeof(RecordHeader));
+  std::memcpy(r.payload, "first", 5);
+  writer.commit(r, 5);
+  DFT_CHECK(r.length == 32);  // shrunk to what was written
+
+  // The next one starts right after it, and max_payload caps it.
+  DFT_CHECK(writer.try_reserve_upto(16, 100, SHM_KIND_RAW, r, cap) ==
+            RingProducer::Result::OK);
+  DFT_CHECK(cap == 112 - sizeof(RecordHeader));  // align_down(16 + 100)
+  // Given back: the next record takes the same place.
+  writer.cancel(r);
+  DFT_CHECK(writer.try_reserve_upto(16, 1 << 20, SHM_KIND_RAW, r, cap) ==
+            RingProducer::Result::OK);
+  DFT_CHECK(cap == 4096 - 32 - sizeof(RecordHeader));
+  std::memcpy(r.payload, "second", 6);
+  writer.commit(r, 6);
+
+  // Less than min_payload left: the block is published and a new one taken.
+  DFT_CHECK(writer.try_reserve(4096 - 64 - 2 * sizeof(RecordHeader) - 200,
+                               SHM_KIND_RAW, r) == RingProducer::Result::OK);
+  std::memset(r.payload, 'x', 4096 - 64 - 2 * sizeof(RecordHeader) - 200);
+  writer.commit(r);
+  DFT_CHECK(ring.header()->head.load() == 1);
+  DFT_CHECK(writer.try_reserve_upto(512, 1 << 20, SHM_KIND_RAW, r, cap) ==
+            RingProducer::Result::OK);
+  DFT_CHECK(ring.header()->head.load() == 2);
+  DFT_CHECK(cap == 4096 - sizeof(RecordHeader));
+  std::memcpy(r.payload, "third", 5);
+  writer.commit(r, 5);
+  writer.flush();
+
+  // Block 0: first, second and the filler; block 1: third. Nothing of the
+  // cancelled reservation.
+  std::vector<std::string> got;
+  uint64_t seq;
+  while (tracker.poll(seq)) {
+    for_each_record(
+        ring, seq, [&](const RecordHeader&, const uint8_t* p, uint32_t n) {
+          got.emplace_back(reinterpret_cast<const char*>(p), n < 6 ? n : 6);
+        });
+    tracker.release(seq);
+  }
+  DFT_CHECK(got.size() == 4);
+  DFT_CHECK(got[0].compare(0, 5, "first") == 0);
+  DFT_CHECK(got[1] == "second");
+  DFT_CHECK(got[2] == "xxxxxx");
+  DFT_CHECK(got[3].compare(0, 5, "third") == 0);
+  std::cout << "✓ try_reserve_upto, shrinking commit and cancel" << std::endl;
+}
+
 int main() {
   test_layout_and_open();
   test_single_record_and_flush();
@@ -562,6 +689,8 @@ int main() {
   test_consumer_scaler();
   test_take_over();
   test_fit_geometry();
+  test_reserve_upto();
+  test_many_threads_upto();
 #if !defined(__SANITIZE_THREAD__)
   // ThreadSanitizer does not see synchronization that goes through another
   // process (here: producer commit -> consumer release -> producer reuse), so

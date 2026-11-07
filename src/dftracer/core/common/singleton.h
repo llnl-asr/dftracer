@@ -45,6 +45,21 @@ class Singleton {
   }
 
   /**
+   * The instance as a plain pointer, for hot paths: get_instance() returns
+   * a shared_ptr copy, an atomic increment and decrement on a reference
+   * count every thread shares. Safe because the instance is created once and
+   * its storage (instance_ref) is never freed or reassigned.
+   */
+  template <typename... Args>
+  static T* get_instance_ptr(Args... args) {
+    if (stop_flag()) return nullptr;
+    auto& instance = instance_ref();
+    if (__builtin_expect(instance == nullptr, 0))
+      return get_instance(std::forward<Args>(args)...).get();
+    return instance.get();
+  }
+
+  /**
    * Operators
    */
   Singleton& operator=(const Singleton) = delete; /* deleting = operatos*/

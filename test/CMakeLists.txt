@@ -305,6 +305,43 @@ df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR
     opendir=${_calls} readdir=${_calls} closedir=${_calls})
 set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
 
+# Adversarial load for the producer-path optimizations (long names, records
+# larger than a block's room, many and fresh keys, more strings than a block
+# has interning ids, a reused name buffer, long paths, 4 threads, regions left
+# open and finalized twice). Its pc_ twin checks that producer/consumer mode
+# traces exactly the same.
+add_executable(test_pc_stress cpp/test_pc_stress.cpp)
+target_link_libraries(test_pc_stress ${PROJECT_NAME}_core_dbg pthread)
+add_dependencies(test_pc_stress ${PROJECT_NAME}_core_dbg)
+set(test_name test_pc_stress)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/${test_name} ${CMAKE_CURRENT_BINARY_DIR}/data 1)
+set_common_properties(${test_name})
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
+# About 10 s normally: a regression that slows events down (a map that keeps
+# growing, say) fails fast instead of hanging; the pc_ twin gets 2x + 60 s.
+set_tests_properties(${test_name} PROPERTIES TIMEOUT 120)
+if(DFTRACER_TRACE_CHECK_PYTHON)
+    df_add_test(check_${test_name} ${DFTRACER_TRACE_CHECK_PYTHON}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_pc_stress.py
+        "${CMAKE_CURRENT_BINARY_DIR}/${test_name}-*.pfw*" 1)
+    set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
+endif()
+if(TARGET ${PROJECT_NAME}_service)
+    # Everything spills (no service) and is aggregated there: the same
+    # aggregated rows as in-process (deferred metadata hashes).
+    set(test_name pc_test_spill_aggregation)
+    df_add_test(${test_name} ${BASH_PROGRAM}
+        ${CMAKE_CURRENT_SOURCE_DIR}/pc/run_pc_spill_aggregation.sh
+        ${CMAKE_CURRENT_BINARY_DIR}/pc/spill_aggregation
+        ${CMAKE_BINARY_DIR}/bin/test_pc_stress ${CMAKE_CURRENT_BINARY_DIR}/pc/spill_aggregation_data 1)
+    set_common_linker_properties(${test_name})
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_CURRENT_BINARY_DIR}/pc/spill_aggregation_data)
+    file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/pc/spill_aggregation_data)
+    set_tests_properties(${test_name} PROPERTIES LABELS pc TIMEOUT 180)
+endif()
+
 add_executable(test_relative_path c/test_relative_path.c)
 add_dependencies(test_relative_path ${PROJECT_NAME}_preload_dbg)
 df_add_test(test_relative_path ${CMAKE_BINARY_DIR}/bin/test_relative_path ${CMAKE_CURRENT_BINARY_DIR}/data)
@@ -1389,6 +1426,11 @@ if(DFTRACER_TEST_PC_MODE AND TARGET ${PROJECT_NAME}_service)
         endif()
     endforeach()
 endif()
+
+# libdftracer_core is loaded with dlopen by Python and the wheel: it must not
+# need static TLS (see check_no_static_tls.sh).
+df_add_test(check_core_no_static_tls bash ${CMAKE_CURRENT_SOURCE_DIR}/check_no_static_tls.sh
+    $<TARGET_FILE:${PROJECT_NAME}_core> $<TARGET_FILE:${PROJECT_NAME}_core_dbg>)
 
 # Relative RPATH entries resolve against the caller's working directory; see check_rpath.sh.
 if(TARGET ${PROJECT_NAME}_service)

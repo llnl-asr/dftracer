@@ -6,6 +6,7 @@
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/common/typedef.h>
+#include <dftracer/core/serialization/line_format.h>
 #include <dftracer/core/utils/configuration_manager.h>
 
 #include <any>
@@ -16,9 +17,6 @@
 #include <typeinfo>
 #include <unordered_map>
 
-// The longest line any serializer writes, newline included.
-static constexpr size_t DFTRACER_SERIALIZATION_EVENT_MAX = 16 * 1024;
-
 namespace dftracer {
 class JsonLines {
   bool include_metadata;
@@ -28,7 +26,7 @@ class JsonLines {
   // (convert_metadata() frees a non-empty map, series() an empty one).
   size_t series(char* buffer, int index, ConstEventNameType event_name,
                 ConstEventNameType category, TraceEventType type,
-                TracePhaseType phase, TimeResolution start_time,
+                TracePhaseType phase_type, TimeResolution start_time,
                 ProcessID process_id, ThreadID thread_id,
                 dftracer::Metadata* metadata);
 

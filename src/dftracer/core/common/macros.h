@@ -1,5 +1,6 @@
 #ifndef DFTRACER_CORE_MACRO
 #define DFTRACER_CORE_MACRO
+#include <dftracer/core/common/type_match.h>
 
 #define DFTRACER_ANY_CAST_MACRO(TYPE, VALUE, BLOCK) \
   if (auto res = any_cast_and_apply<TYPE>(VALUE)) { \
@@ -7,12 +8,12 @@
   }
 
 #define DFTRACER_ANY_ID_MACRO(TYPE, VALUE, BLOCK) \
-  if (id == typeid(TYPE)) {                       \
+  if (dftracer::same_type(id, typeid(TYPE))) {    \
     BLOCK;                                        \
   }
 
 #define DFTRACER_ANY_NUM_AGGREGATE_MACRO(TYPE, VALUE, BLOCK)           \
-  if (id == typeid(TYPE)) {                                            \
+  if (dftracer::same_type(id, typeid(TYPE))) {                         \
     auto num_value =                                                   \
         dynamic_cast<dftracer::NumberAggregationValue<TYPE>*>(VALUE);  \
     if (num_value) {                                                   \
@@ -32,14 +33,14 @@
   }
 
 #define DFTRACER_ANY_GENERAL_AGGREGATE_MACRO(TYPE, VALUE, BLOCK)            \
-  if (id == typeid(TYPE)) {                                                 \
+  if (dftracer::same_type(id, typeid(TYPE))) {                              \
     auto num_value = dynamic_cast<dftracer::AggregatedValue<TYPE>*>(VALUE); \
     (void)num_value; /* dft_cnt comes from dur, which is numeric */         \
     BLOCK;                                                                  \
   }
 
 #define DFTRACER_ANY_NUM_AGGREGATE_UPDATE_MACRO(TYPE, VALUE, BLOCK)   \
-  if (id == typeid(TYPE)) {                                           \
+  if (dftracer::same_type(id, typeid(TYPE))) {                        \
     auto this_casted =                                                \
         dynamic_cast<dftracer::NumberAggregationValue<TYPE>*>(this);  \
     auto value_casted =                                               \
@@ -51,7 +52,7 @@
   }
 
 #define DFTRACER_ANY_GENERAL_AGGREGATE_UPDATE_MACRO(TYPE, VALUE, BLOCK)        \
-  if (id == typeid(TYPE)) {                                                    \
+  if (dftracer::same_type(id, typeid(TYPE))) {                                 \
     auto this_casted = dynamic_cast<dftracer::AggregatedValue<TYPE>*>(this);   \
     auto value_casted = dynamic_cast<dftracer::AggregatedValue<TYPE>*>(VALUE); \
     if (this_casted && value_casted) {                                         \
@@ -61,7 +62,7 @@
   }
 
 #define DFTRACER_COMPARE_TYPE(TYPE, VALUE, BLOCK)            \
-  if (a.type() == typeid(TYPE)) {                            \
+  if (dftracer::same_type(a.type(), typeid(TYPE))) {         \
     return std::any_cast<TYPE>(a) == std::any_cast<TYPE>(b); \
   }
 

@@ -29,8 +29,23 @@ struct RegionDebugEntry {
   void* profiler;
 };
 
-std::mutex g_region_lock;
-std::unordered_set<DFTracerData*> g_live_regions;
+// Live C regions (see release_all_live_regions), sharded by address so that
+// threads opening and closing regions do not all take one lock. The debug
+// map is only filled with DFTRACER_DEBUG_REGION_TRACK and has a lock of its
+// own.
+struct alignas(64) RegionShard {
+  std::mutex lock;
+  std::unordered_set<DFTracerData*> live;
+};
+constexpr size_t kRegionShards = 64;
+RegionShard g_region_shards[kRegionShards];
+RegionShard& region_shard(const DFTracerData* data) {
+  // Heap blocks are 16-byte aligned; mix the bits above that.
+  auto bits = reinterpret_cast<uintptr_t>(data) >> 4;
+  bits ^= bits >> 17;
+  return g_region_shards[(bits * 0x9E3779B97F4A7C15ull) >> 58];
+}
+std::mutex g_region_lock;  // guards g_region_debug_map
 std::unordered_map<DFTracerData*, RegionDebugEntry> g_region_debug_map;
 std::once_flag g_region_atexit_once;
 std::atomic<std::size_t> g_region_id{1};
@@ -69,14 +84,14 @@ void release_region_nolock(DFTracerData* data) {
 
 void release_all_live_regions() {
   std::vector<DFTracerData*> pending;
+  for (auto& shard : g_region_shards) {
+    std::lock_guard<std::mutex> lock(shard.lock);
+    pending.insert(pending.end(), shard.live.begin(), shard.live.end());
+    shard.live.clear();
+  }
   {
     std::lock_guard<std::mutex> lock(g_region_lock);
-    pending.reserve(g_live_regions.size());
-    for (auto* data : g_live_regions) {
-      pending.push_back(data);
-      g_region_debug_map.erase(data);
-    }
-    g_live_regions.clear();
+    for (auto* data : pending) g_region_debug_map.erase(data);
   }
 
   for (auto* data : pending) {
@@ -95,8 +110,8 @@ DFTracer::DFTracer(ConstEventNameType _name, ConstEventNameType _cat,
       metadata(nullptr) {
   DFTRACER_LOG_DEBUG("DFTracer::DFTracer event %s cat %s ", _name, _cat);
   DFTRACER_PROFILE_SCOPE_DYNAMIC(DFTRACER_PROFILE_CAPTURE(_type), false);
-  auto dftracer_core = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
-                                               ProfileType::PROFILER_CPP_APP);
+  auto dftracer_core = DFTRACER_MAIN_SINGLETON_PTR(
+      ProfilerStage::PROFILER_OTHER, ProfileType::PROFILER_CPP_APP);
   if (dftracer_core != nullptr) {
     if (event_type == DF_DATA_EVENT) {
       start_time = dftracer_core->get_time();
@@ -128,11 +143,11 @@ static void update_value([[maybe_unused]] TraceEventType layer, int event_type,
                          const T& value, MetadataType type) {
   if (key == nullptr) return;
   DFTRACER_PROFILE_SCOPE_DYNAMIC(DFTRACER_PROFILE_CAPTURE(layer), false);
-  auto dftracer_core = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
-                                               ProfileType::PROFILER_CPP_APP);
+  auto dftracer_core = DFTRACER_MAIN_SINGLETON_PTR(
+      ProfilerStage::PROFILER_OTHER, ProfileType::PROFILER_CPP_APP);
   if (dftracer_core != nullptr && dftracer_core->is_active() &&
       (event_type == DF_METADATA_EVENT || dftracer_core->include_metadata)) {
-    if (metadata == nullptr) metadata = new dftracer::Metadata();
+    if (metadata == nullptr) metadata = dftracer::Metadata::acquire();
     metadata->insert_or_assign(key, value, type);
   }
 }
@@ -172,7 +187,7 @@ static void append_value([[maybe_unused]] TraceEventType layer,
                          const char* sub, dftracer::ArgList::Value value) {
   if (key == nullptr) return;
   DFTRACER_PROFILE_SCOPE_DYNAMIC(DFTRACER_PROFILE_CAPTURE(layer), false);
-  if (metadata == nullptr) metadata = new dftracer::Metadata();
+  if (metadata == nullptr) metadata = dftracer::Metadata::acquire();
   auto it = metadata->find(key);
   if (it == metadata->end())
     it = metadata->insert_or_assign(key, dftracer::ArgList{sub != nullptr, {}})
@@ -218,8 +233,8 @@ void DFTracer::finalize() {
   DFTRACER_LOG_DEBUG("DFTracer::finalize event %s cat %s", name, cat);
   // One API event: counted here, the region's other slices are not.
   DFTRACER_PROFILE_SCOPE_DYNAMIC(DFTRACER_PROFILE_CAPTURE(type), true);
-  auto dftracer_core = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
-                                               ProfileType::PROFILER_CPP_APP);
+  auto dftracer_core = DFTRACER_MAIN_SINGLETON_PTR(
+      ProfilerStage::PROFILER_OTHER, ProfileType::PROFILER_CPP_APP);
   if (dftracer_core != nullptr && dftracer_core->is_active()) {
     if (event_type == DF_DATA_EVENT) {
       TimeResolution end_time = dftracer_core->get_time();
@@ -242,7 +257,7 @@ void DFTracer::finalize() {
     dftracer_core->exit_event();
   }
   if (metadata != nullptr) {
-    delete metadata;
+    dftracer::Metadata::release(metadata);
     metadata = nullptr;
   }
   initialized = false;
@@ -284,9 +299,13 @@ static struct DFTracerData* new_region(ConstEventNameType name,
   data->profiler = profiler;
 
   {
+    RegionShard& shard = region_shard(data);
+    std::lock_guard<std::mutex> lock(shard.lock);
+    shard.live.insert(data);
+  }
+  if (region_debug_enabled()) {
     std::lock_guard<std::mutex> lock(g_region_lock);
-    g_live_regions.insert(data);
-    if (region_debug_enabled()) {
+    {
       RegionDebugEntry entry{g_region_id.fetch_add(1), name ? name : "",
                              cat ? cat : "", event_type, data->profiler};
       g_region_debug_map.insert_or_assign(data, std::move(entry));
@@ -336,12 +355,14 @@ void finalize_region(struct DFTracerData* data) {
       DFTRACER_PROFILE_CAPTURE(TraceEventType::TRACE_TYPE_C_APP));
 
   {
+    RegionShard& shard = region_shard(data);
+    std::lock_guard<std::mutex> lock(shard.lock);
+    // Not a live region (finalized already, or not one of ours).
+    if (shard.live.erase(data) == 0) return;
+  }
+  if (region_debug_enabled()) {
     std::lock_guard<std::mutex> lock(g_region_lock);
-    auto iter = g_live_regions.find(data);
-    if (iter == g_live_regions.end()) {
-      return;
-    }
-    if (region_debug_enabled()) {
+    {
       auto dbg = g_region_debug_map.find(data);
       if (dbg != g_region_debug_map.end()) {
         dftracer_logging_real_fprintf()(
@@ -354,7 +375,6 @@ void finalize_region(struct DFTracerData* data) {
         g_region_debug_map.erase(dbg);
       }
     }
-    g_live_regions.erase(iter);
   }
 
   release_region_nolock(data);
@@ -444,8 +464,8 @@ void update_metadata_append_id(struct DFTracerData* data, const char* key,
 
 TimeResolution get_time() {
   DFTRACER_LOG_DEBUG("dftracer.cpp.get_time");
-  auto dftracer = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
-                                          ProfileType::PROFILER_C_APP);
+  auto dftracer = DFTRACER_MAIN_SINGLETON_PTR(ProfilerStage::PROFILER_OTHER,
+                                              ProfileType::PROFILER_C_APP);
   if (dftracer != nullptr)
     return dftracer->get_time();
   else
@@ -456,8 +476,8 @@ TimeResolution get_time() {
 void log_event(ConstEventNameType name, ConstEventNameType cat,
                TimeResolution start_time, TimeResolution duration) {
   DFTRACER_LOG_DEBUG("dftracer.cpp.log_event");
-  auto dftracer = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
-                                          ProfileType::PROFILER_C_APP);
+  auto dftracer = DFTRACER_MAIN_SINGLETON_PTR(ProfilerStage::PROFILER_OTHER,
+                                              ProfileType::PROFILER_C_APP);
   if (dftracer != nullptr)
     dftracer->log(name, cat, TraceEventType::TRACE_TYPE_C_APP, start_time,
                   duration, nullptr);
@@ -467,8 +487,8 @@ void log_event(ConstEventNameType name, ConstEventNameType cat,
 
 extern "C" void set_app_metadata_int(const char* key, int value) {
   DFTRACER_LOG_DEBUG("dftracer.cpp.set_app_metadata_int");
-  auto dftracer = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
-                                          ProfileType::PROFILER_ANY);
+  auto dftracer = DFTRACER_MAIN_SINGLETON_PTR(ProfilerStage::PROFILER_OTHER,
+                                              ProfileType::PROFILER_ANY);
   if (dftracer != nullptr)
     dftracer->set_app_metadata(key, (int64_t)value);
   else
@@ -478,8 +498,8 @@ extern "C" void set_app_metadata_int(const char* key, int value) {
 
 extern "C" void set_app_metadata_string(const char* key, const char* value) {
   DFTRACER_LOG_DEBUG("dftracer.cpp.set_app_metadata_string");
-  auto dftracer = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
-                                          ProfileType::PROFILER_ANY);
+  auto dftracer = DFTRACER_MAIN_SINGLETON_PTR(ProfilerStage::PROFILER_OTHER,
+                                              ProfileType::PROFILER_ANY);
   if (dftracer != nullptr)
     dftracer->set_app_metadata(key, value);
   else
@@ -489,8 +509,8 @@ extern "C" void set_app_metadata_string(const char* key, const char* value) {
 
 extern "C" void mark_used(const char* name) {
   DFTRACER_LOG_DEBUG("dftracer.cpp.mark_used");
-  auto dftracer = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
-                                          ProfileType::PROFILER_ANY);
+  auto dftracer = DFTRACER_MAIN_SINGLETON_PTR(ProfilerStage::PROFILER_OTHER,
+                                              ProfileType::PROFILER_ANY);
   if (dftracer != nullptr)
     dftracer->mark_used(name);
   else

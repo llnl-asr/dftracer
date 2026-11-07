@@ -19,7 +19,7 @@ void BaseAggregatedValue::update(BaseAggregatedValue* value) {
 
 BaseAggregatedValue* BaseAggregatedValue::get_value() { return _child; }
 std::string Metadata::getTagValue(const std::string& tagKey) const {
-  auto it = data.find(tagKey);
+  auto it = find(tagKey);
   if (it != data.end()) {
     DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_ANY_CAST_MACRO,
                                    std::get<1>(it->second),
