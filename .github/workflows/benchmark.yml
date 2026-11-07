@@ -130,7 +130,10 @@ jobs:
           cd ior
           git checkout tags/$IOR_VERSION -b $IOR_VERSION
           ./bootstrap
-          ./configure
+          # IOR 4.0.0 calls `void (*fp)()` with an argument (src/option.c).
+          # GCC 15 compiles C as C23 by default, where `()` means no
+          # parameters, so that is an error: build it as GNU C17.
+          ./configure CFLAGS="-std=gnu17 -O2"
           make -j
           cd ..
 
