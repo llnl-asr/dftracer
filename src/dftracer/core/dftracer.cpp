@@ -7,6 +7,7 @@
 #include <dftracer/core/common/dftracer_main.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/common/event_types.h>
+#include <dftracer/core/common/profiler.h>
 #include <dftracer/core/utils/utils.h>
 #include <dftracer/dftracer.h>
 
@@ -93,6 +94,7 @@ DFTracer::DFTracer(ConstEventNameType _name, ConstEventNameType _cat,
       type(_type),
       metadata(nullptr) {
   DFTRACER_LOG_DEBUG("DFTracer::DFTracer event %s cat %s ", _name, _cat);
+  DFTRACER_PROFILE_SCOPE_DYNAMIC(DFTRACER_PROFILE_CAPTURE(_type), false);
   auto dftracer_core = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
                                                ProfileType::PROFILER_CPP_APP);
   if (dftracer_core != nullptr) {
@@ -121,9 +123,11 @@ DFTracer::DFTracer(ConstEventNameType _name, const DFTracerEventType& def)
 // A value for an event's args, or a metadata record's fields; kept only when
 // tracing is active.
 template <typename T>
-static void update_value(int event_type, dftracer::Metadata*& metadata,
-                         const char* key, const T& value, MetadataType type) {
+static void update_value([[maybe_unused]] TraceEventType layer, int event_type,
+                         dftracer::Metadata*& metadata, const char* key,
+                         const T& value, MetadataType type) {
   if (key == nullptr) return;
+  DFTRACER_PROFILE_SCOPE_DYNAMIC(DFTRACER_PROFILE_CAPTURE(layer), false);
   auto dftracer_core = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
                                                ProfileType::PROFILER_CPP_APP);
   if (dftracer_core != nullptr && dftracer_core->is_active() &&
@@ -136,36 +140,38 @@ static void update_value(int event_type, dftracer::Metadata*& metadata,
 void DFTracer::update(const char* key, int value, MetadataType type) {
   DFTRACER_LOG_DEBUG("DFTracer::update event %s cat %s  key %s value %d ", name,
                      cat, key, value);
-  update_value(event_type, metadata, key, value, type);
+  update_value(this->type, event_type, metadata, key, value, type);
 }
 
 void DFTracer::update(const char* key, const char* value, MetadataType type) {
   DFTRACER_LOG_DEBUG("DFTracer::update event %s cat %s  key %s value %s ", name,
                      cat, key, value);
   // Kept by pointer: the string must outlive the region.
-  update_value(event_type, metadata, key, value, type);
+  update_value(this->type, event_type, metadata, key, value, type);
 }
 
 void DFTracer::update_number(const char* key, int64_t value,
                              MetadataType type) {
-  update_value(event_type, metadata, key, value, type);
+  update_value(this->type, event_type, metadata, key, value, type);
 }
 
 void DFTracer::update_number(const char* key, uint64_t value,
                              MetadataType type) {
-  update_value(event_type, metadata, key, value, type);
+  update_value(this->type, event_type, metadata, key, value, type);
 }
 
 void DFTracer::update_number(const char* key, double value, MetadataType type) {
-  update_value(event_type, metadata, key, value, type);
+  update_value(this->type, event_type, metadata, key, value, type);
 }
 
 // A list arg (dftracer::ArgList) in the event's Metadata under its key. The
 // first append decides whether the key holds a list or an object of lists;
 // appends of the other form, or to a key holding another value, are ignored.
-static void append_value(dftracer::Metadata*& metadata, const char* key,
+static void append_value([[maybe_unused]] TraceEventType layer,
+                         dftracer::Metadata*& metadata, const char* key,
                          const char* sub, dftracer::ArgList::Value value) {
   if (key == nullptr) return;
+  DFTRACER_PROFILE_SCOPE_DYNAMIC(DFTRACER_PROFILE_CAPTURE(layer), false);
   if (metadata == nullptr) metadata = new dftracer::Metadata();
   auto it = metadata->find(key);
   if (it == metadata->end())
@@ -193,23 +199,25 @@ void DFTracer::append(const char* key, int64_t value) {
 void DFTracer::append(const char* key, const char* sub, const char* value) {
   dftracer::ArgList::Value v{dftracer::ArgList::Value::STRING, {}};
   v.s = value;
-  if (initialized) append_value(metadata, key, sub, v);
+  if (initialized) append_value(this->type, metadata, key, sub, v);
 }
 
 void DFTracer::append(const char* key, const char* sub, int64_t value) {
   dftracer::ArgList::Value v{dftracer::ArgList::Value::INT, {}};
   v.i = value;
-  if (initialized) append_value(metadata, key, sub, v);
+  if (initialized) append_value(this->type, metadata, key, sub, v);
 }
 
 void DFTracer::append_id(const char* key, const char* sub, uint64_t id) {
   dftracer::ArgList::Value v{dftracer::ArgList::Value::ID, {}};
   v.u = id;
-  if (initialized) append_value(metadata, key, sub, v);
+  if (initialized) append_value(this->type, metadata, key, sub, v);
 }
 
 void DFTracer::finalize() {
   DFTRACER_LOG_DEBUG("DFTracer::finalize event %s cat %s", name, cat);
+  // One API event: counted here, the region's other slices are not.
+  DFTRACER_PROFILE_SCOPE_DYNAMIC(DFTRACER_PROFILE_CAPTURE(type), true);
   auto dftracer_core = DFTRACER_MAIN_SINGLETON(ProfilerStage::PROFILER_OTHER,
                                                ProfileType::PROFILER_CPP_APP);
   if (dftracer_core != nullptr && dftracer_core->is_active()) {
@@ -297,6 +305,8 @@ static struct DFTracerData* new_region(ConstEventNameType name,
 struct DFTracerData* initialize_region(ConstEventNameType name,
                                        ConstEventNameType cat, int event_type) {
   DFTRACER_LOG_DEBUG("dftracer.initialize_region event %s cat %s", name, cat);
+  DFTRACER_PROFILE_SCOPE_UNCOUNTED(
+      DFTRACER_PROFILE_CAPTURE(TraceEventType::TRACE_TYPE_C_APP));
   return new_region(
       name, cat, event_type,
       new DFTracer(name, cat, event_type, TraceEventType::TRACE_TYPE_C_APP));
@@ -304,6 +314,11 @@ struct DFTracerData* initialize_region(ConstEventNameType name,
 
 struct DFTracerData* initialize_typed_region(
     ConstEventNameType name, const struct DFTracerEventType* type) {
+  DFTRACER_PROFILE_SCOPE_DYNAMIC(
+      DFTRACER_PROFILE_CAPTURE(type == nullptr
+                                   ? TraceEventType::TRACE_TYPE_C_APP
+                                   : static_cast<TraceEventType>(type->layer)),
+      false);
   if (type == nullptr)
     return initialize_region(name, C_LOG_CATEGORY, DF_DATA_EVENT);
   DFTRACER_LOG_DEBUG("dftracer.initialize_typed_region event %s cat %s", name,
@@ -315,6 +330,10 @@ struct DFTracerData* initialize_typed_region(
 void finalize_region(struct DFTracerData* data) {
   DFTRACER_LOG_DEBUG("dftracer.finalize_region");
   if (data == nullptr) return;
+  // Region bookkeeping of the C API (typed regions are timed as C_APP here;
+  // their DFTracer::finalize is timed under their own layer).
+  DFTRACER_PROFILE_SCOPE_UNCOUNTED(
+      DFTRACER_PROFILE_CAPTURE(TraceEventType::TRACE_TYPE_C_APP));
 
   {
     std::lock_guard<std::mutex> lock(g_region_lock);

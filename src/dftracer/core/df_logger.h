@@ -11,6 +11,7 @@
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/common/logging.h>
+#include <dftracer/core/common/profiler.h>
 #include <dftracer/core/common/singleton.h>
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/utils/configuration_manager.h>
@@ -743,6 +744,8 @@ class DFTLogger {
           this->get_time(), 0, meta, this->process_id, tid);
       this->exit_event();
       this->buffer_manager->finalize(index.load(), this->process_id);
+      // After the last compress and write, so they are in the totals.
+      DFTRACER_PROFILE_REPORT(config->pc_mode ? "pc" : "local");
       DFTRACER_LOG_INFO("Released Logger");
       this->buffer_manager.reset();
       this->is_init = false;
@@ -791,7 +794,11 @@ class DFTLogger {
   }
 #endif
 
+// With DFTRACER_ENABLE_PROFILING, the two halves of an interceptor are timed
+// as its layer's capture phase (the real call between them is not), and the
+// end half counts the event; an untraced call is timed as "filtered".
 #define DFT_LOGGER_START(entity)                             \
+  DFTRACER_PROFILE_BEGIN(dft_profile_start);                 \
   HashType fhash = is_traced(entity, __FUNCTION__);          \
   bool trace = fhash != NO_HASH_DEFAULT;                     \
   if (trace) {                                               \
@@ -806,8 +813,11 @@ class DFTLogger {
     }                                                        \
     this->logger->enter_event();                             \
     start_time = this->logger->get_time();                   \
-  }
+  }                                                          \
+  DFTRACER_PROFILE_END_TRACED(dft_profile_start, trace,      \
+                              DFTRACER_PROFILE_CAPTURE(TRACE_TYPE))
 #define DFT_LOGGER_START_ALWAYS()                                 \
+  DFTRACER_PROFILE_BEGIN(dft_profile_start);                      \
   DFTRACER_LOG_DEBUG("Calling function %s", __FUNCTION__);        \
   bool trace = this->logger->is_active(); /* skip if finalized */ \
   TimeResolution start_time = 0;                                  \
@@ -818,13 +828,18 @@ class DFTLogger {
     }                                                             \
     this->logger->enter_event();                                  \
     start_time = this->logger->get_time();                        \
-  }
+  }                                                               \
+  DFTRACER_PROFILE_END(dft_profile_start,                         \
+                       DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), false);
 #define DFT_LOGGER_END_AS(name)                                        \
   if (trace) {                                                         \
+    DFTRACER_PROFILE_BEGIN(dft_profile_end);                           \
     TimeResolution end_time = this->logger->get_time();                \
     this->logger->log((char*)(name), CATEGORY, TRACE_TYPE, start_time, \
                       end_time - start_time, metadata);                \
     this->logger->exit_event();                                        \
+    DFTRACER_PROFILE_END(dft_profile_end,                              \
+                         DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), true);  \
   }
 #define DFT_LOGGER_END() DFT_LOGGER_END_AS(__FUNCTION__)
 

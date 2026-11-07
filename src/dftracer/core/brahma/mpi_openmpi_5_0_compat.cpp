@@ -20,7 +20,7 @@
 #include <dftracer/core/brahma/mpi_openmpi_5_0_compat.h>
 #ifdef BRAHMA_MPI_OPENMPI_5_0_COMPAT
 
-static TraceEventType TRACE_TYPE = TraceEventType::TRACE_TYPE_MPI;
+static constexpr TraceEventType TRACE_TYPE = TraceEventType::TRACE_TYPE_MPI;
 
 std::shared_ptr<brahma::MPI_OPENMPI_5_0_COMPAT_DFTracer>
     brahma::MPI_OPENMPI_5_0_COMPAT_DFTracer::instance = nullptr;

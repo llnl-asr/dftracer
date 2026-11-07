@@ -8,7 +8,7 @@
 #include <dftracer/core/brahma/hdf5.h>
 #ifdef BRAHMA_ENABLE_HDF5
 
-static TraceEventType TRACE_TYPE = TraceEventType::TRACE_TYPE_HDF5;
+static constexpr TraceEventType TRACE_TYPE = TraceEventType::TRACE_TYPE_HDF5;
 
 std::shared_ptr<brahma::HDF5DFTracer> brahma::HDF5DFTracer::instance = nullptr;
 bool brahma::HDF5DFTracer::stop_trace = false;

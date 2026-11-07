@@ -20,7 +20,7 @@
 #include <dftracer/core/brahma/mpi_craympich_8_1_compat.h>
 #ifdef BRAHMA_MPI_CRAYMPICH_8_1_COMPAT
 
-static TraceEventType TRACE_TYPE = TraceEventType::TRACE_TYPE_MPI;
+static constexpr TraceEventType TRACE_TYPE = TraceEventType::TRACE_TYPE_MPI;
 
 std::shared_ptr<brahma::MPI_CRAYMPICH_8_1_COMPAT_DFTracer>
     brahma::MPI_CRAYMPICH_8_1_COMPAT_DFTracer::instance = nullptr;

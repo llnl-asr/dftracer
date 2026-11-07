@@ -103,6 +103,10 @@ Any other value turns it off, where a default of 1 applies.
                                             Setting ``DFTRACER_ENABLE_AGGREGATION=1`` without a type selects FULL.
                                             If SELECTIVE has no DFTRACER_AGGREGATION_FILE, the rule ``dur < 100`` is used.
    DFTRACER_AGGREGATION_FILE        STRING  PATH to the aggregation rules file (default: empty).
+   DFTRACER_PROFILE_FILE            STRING  Only in a build with ``-DDFTRACER_ENABLE_PROFILING=ON``: append the per-phase
+                                            profile printed at finalize to this file as CSV
+                                            (``pid,mode,phase,layer,count,total_ns,avg_ns,ns_per_event``); see
+                                            :ref:`pipeline-profiling` (default unset: stderr only).
    ================================ ======  ===========================================================================
 
 ----------------------------------------

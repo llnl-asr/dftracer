@@ -148,6 +148,16 @@ else()
         set(DFTRACER_FUNCTION_FLAGS)
 endif()
 
+# Self-profiling of dftracer's pipeline (capture, aggregation, serialization,
+# compression, store): per-phase time and count, reported at finalize. Off by
+# default; when off the probes are compiled out entirely.
+option(DFTRACER_ENABLE_PROFILING "Profile dftracer's own pipeline phases" OFF)
+
+if(DFTRACER_ENABLE_PROFILING)
+        set(DFTRACER_PROFILING_ENABLE 1)
+        message(STATUS "[${PROJECT_NAME}] Self-profiling of the tracing pipeline enabled")
+endif()
+
 option(DFTRACER_BUILD_PYTHON_BINDINGS "Build python bindings." ON)
 set(DFTRACER_PYTHON_EXE "python3" CACHE STRING "Python executable to use for building.")
 set(DFTRACER_PYTHON_SITE $ENV{DFTRACER_PYTHON_SITE} CACHE STRING "Python site packages to use for building.")

@@ -155,6 +155,7 @@ passed to CMake. See `Build Variables`_ for the full list and `MPI and HDF5 Scen
    DFTRACER_ENABLE_PAPI_TRACING       PAPI hardware counter sampling; needs libpapi-dev (default OFF).
    DFTRACER_ENABLE_VARIORUM           Node-level power counters via variorum; fetched and built if not installed (default OFF).
    DFTRACER_ENABLE_FTRACING           Function tracing via ``-finstrument-functions`` (default OFF).
+   DFTRACER_ENABLE_PROFILING          Time each phase of dftracer's own pipeline, reported at finalize; compiled out when OFF (default OFF).
    DFTRACER_ENABLE_DYNAMIC_DETECTION  Detect HWLOC, MPI, HIP, CUDA, PAPI and Variorum at run time rather than link time (default OFF).
    DFTRACER_DISABLE_HWLOC             HWLOC support; ``ON`` (disabled) by default.
    DFTRACER_MPI_IMPL                  Override MPI implementation detection (default: auto-detect).
@@ -315,6 +316,9 @@ variables marked CMake only.
    * - ``DFTRACER_ENABLE_FTRACING``
      - BOOL
      - Function tracing (default OFF).
+   * - ``DFTRACER_ENABLE_PROFILING``
+     - BOOL
+     - Self-profiling of the tracing pipeline (default OFF); see :ref:`pipeline-profiling`. CMake only.
    * - ``DFTRACER_ENABLE_MPI``
      - BOOL
      - MPI rank and MPI/MPI-IO interception (default OFF). A loaded MPI is not used unless this is ON.

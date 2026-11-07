@@ -8,7 +8,7 @@
 #include <vector>
 
 static ConstEventNameType CATEGORY = "POSIX";
-static TraceEventType TRACE_TYPE = TraceEventType::TRACE_TYPE_LIBC_IO;
+static constexpr TraceEventType TRACE_TYPE = TraceEventType::TRACE_TYPE_LIBC_IO;
 
 std::shared_ptr<brahma::POSIXDFTracer> brahma::POSIXDFTracer::instance =
     nullptr;
