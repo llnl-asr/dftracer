@@ -42,6 +42,7 @@
 #define DFT_YAML_FEATURES_METADATA "metadata"
 #define DFT_YAML_FEATURES_CORE_AFFINITY "core_affinity"
 #define DFT_YAML_FEATURES_FS_METADATA "fs_metadata"
+#define DFT_YAML_FEATURES_MIN_DURATION "min_duration_ns"
 #define DFT_YAML_FEATURES_IO "io"
 #define DFT_YAML_FEATURES_IO_ENABLE "enable"
 #define DFT_YAML_FEATURES_IO_POSIX "posix"
@@ -150,6 +151,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
       write_buffer_size(16 * 1024 * 1024),
       trace_interval_ms(10),
       trace_interval_explicit(false),
+      min_duration_ns(0),
       libuv_thread_count(1),
       papi_tracing(false),
       papi_multiplex(false),
@@ -298,6 +300,13 @@ dftracer::ConfigurationManager::ConfigurationManager()
       }
       DFTRACER_LOG_DEBUG("YAML ConfigurationManager.trace_interval_ms %d",
                          this->trace_interval_ms);
+      if (config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_MIN_DURATION]) {
+        this->min_duration_ns =
+            config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_MIN_DURATION]
+                .as<uint64_t>();
+      }
+      DFTRACER_LOG_DEBUG("YAML ConfigurationManager.min_duration_ns %llu",
+                         (unsigned long long)this->min_duration_ns);
       if (config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_IO] &&
           config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_IO_ENABLE]) {
         this->io = config[DFT_YAML_FEATURES][DFT_YAML_FEATURES_IO]
@@ -440,6 +449,12 @@ dftracer::ConfigurationManager::ConfigurationManager()
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.trace_interval_ms %d",
                        this->trace_interval_ms);
+    const char* env_min_duration = getenv(DFTRACER_MIN_DURATION_NS);
+    if (env_min_duration != nullptr) {
+      this->min_duration_ns = strtoull(env_min_duration, nullptr, 10);
+    }
+    DFTRACER_LOG_DEBUG("ENV ConfigurationManager.min_duration_ns %llu",
+                       (unsigned long long)this->min_duration_ns);
     const char* env_libuv_threads = getenv(DFTRACER_LIBUV_THREADS);
     if (env_libuv_threads != nullptr) {
       this->libuv_thread_count = atoi(env_libuv_threads);
@@ -873,6 +888,7 @@ void dftracer::ConfigurationManager::populate_metadata(
       << "\"bind_signals\":" << (int)this->bind_signals << ","
       << "\"write_buffer_size\":" << this->write_buffer_size << ","
       << "\"trace_interval_ms\":" << this->trace_interval_ms << ","
+      << "\"min_duration_ns\":" << this->min_duration_ns << ","
       << "\"libuv_thread_count\":" << this->libuv_thread_count << ","
       << "\"variorum_power\":" << (int)this->variorum_power << ","
       << "\"aggregation_enable\":" << (int)this->aggregation_enable << ","

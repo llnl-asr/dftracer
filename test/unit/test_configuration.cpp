@@ -1,6 +1,8 @@
+#include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/utils/configuration_manager.h>
 #include <dftracer/core/utils/posix_bypass.h>
+#include <unistd.h>
 
 #include <filesystem>
 #include <fstream>
@@ -493,6 +495,45 @@ void test_papi_yaml_configuration() {
   std::cout << "✓ PAPI YAML configuration tests passed" << std::endl;
 }
 
+// DFTRACER_MIN_DURATION_NS / features.min_duration_ns: events shorter than
+// it are skipped (DFTLogger::log). Off (0) by default; ENV overrides YAML.
+void test_min_duration() {
+  std::cout << "Testing min_duration_ns..." << std::endl;
+  unsetenv("DFTRACER_MIN_DURATION_NS");
+  unsetenv("DFTRACER_CONFIGURATION");
+  setenv("DFTRACER_ENABLE", "1", 1);
+  auto config_default = std::make_shared<ConfigurationManager>();
+  DFT_CHECK(config_default->min_duration_ns == 0);
+
+  std::string yaml_path =
+      "/tmp/test_min_duration_" + std::to_string(getpid()) + ".yaml";
+  {
+    std::ofstream yaml_file(yaml_path);
+    yaml_file << "enable: True\n";
+    yaml_file << "features:\n";
+    yaml_file << "  min_duration_ns: 2500\n";
+  }
+  setenv("DFTRACER_CONFIGURATION", yaml_path.c_str(), 1);
+  auto config_yaml = std::make_shared<ConfigurationManager>();
+  DFT_CHECK(config_yaml->min_duration_ns == 2500);
+
+  setenv("DFTRACER_MIN_DURATION_NS", "1000000", 1);
+  auto config_env = std::make_shared<ConfigurationManager>();
+  DFT_CHECK(config_env->min_duration_ns == 1000000);
+
+  // Reported with the rest of the configuration in the end event.
+  Metadata meta;
+  config_env->populate_metadata(&meta, false, "");
+  const auto& cfg = std::any_cast<const RawJson&>(std::get<1>(meta.at("cfg")));
+  DFT_CHECK(cfg.value.find("\"min_duration_ns\":1000000") != std::string::npos);
+
+  unsetenv("DFTRACER_MIN_DURATION_NS");
+  unsetenv("DFTRACER_CONFIGURATION");
+  unsetenv("DFTRACER_ENABLE");
+  std::filesystem::remove(yaml_path);
+  std::cout << "✓ min_duration_ns configuration tests passed" << std::endl;
+}
+
 int main(int argc, char* argv[]) {
   std::cout << "=== Running Configuration Manager Unit Tests ===" << std::endl;
 
@@ -509,6 +550,7 @@ int main(int argc, char* argv[]) {
     test_time_metric();
     test_papi_environment_configuration();
     test_papi_yaml_configuration();
+    test_min_duration();
 
     std::cout << "\n✓ All Configuration Manager tests passed!" << std::endl;
     return 0;

@@ -116,6 +116,10 @@ class DFTLogger {
   hwloc_topology_t topology;
 #endif
   bool enable_core_affinity;
+  // DFTRACER_MIN_DURATION_NS, and the ns in one unit of config->time_metric:
+  // log() skips an event whose duration * ns_per_unit_ < min_duration_ns_.
+  uint64_t min_duration_ns_ = 0;
+  uint64_t ns_per_unit_ = 1000;
   std::shared_ptr<dftracer::BufferManager> buffer_manager;
 
   // Bitmask of TraceEventType values seen by log(), i.e. which instrumentation
@@ -187,6 +191,22 @@ class DFTLogger {
     include_metadata = config->metadata;
     dftracer_tid = config->tids;
     throw_error = config->throw_error;
+    min_duration_ns_ = config->min_duration_ns;
+    switch (config->time_metric) {
+      case TimeMetricType::TIME_METRIC_NS:
+        ns_per_unit_ = 1;
+        break;
+      case TimeMetricType::TIME_METRIC_MS:
+        ns_per_unit_ = 1000000ULL;
+        break;
+      case TimeMetricType::TIME_METRIC_SEC:
+        ns_per_unit_ = 1000000000ULL;
+        break;
+      case TimeMetricType::TIME_METRIC_US:
+      default:
+        ns_per_unit_ = 1000ULL;
+        break;
+    }
     if (enable_core_affinity) {
 #ifdef DFTRACER_HWLOC_ENABLE
       hwloc_topology_init(&topology);  // initialization
@@ -524,6 +544,16 @@ class DFTLogger {
                   TraceEventType type, TimeResolution start_time,
                   TimeResolution duration, dftracer::Metadata* metadata) {
     DFTRACER_LOG_DEBUG("DFTLogger.log");
+    // DFTRACER_MIN_DURATION_NS: an event shorter than it is dropped here,
+    // before it takes an index or reaches the buffer manager, so it costs
+    // nothing downstream in either mode. dftracer's own events always stay.
+    if (min_duration_ns_ != 0 && type != TraceEventType::TRACE_TYPE_DFTRACER &&
+        static_cast<uint64_t>(duration) * ns_per_unit_ < min_duration_ns_) {
+      dftracer::Metadata::release(metadata);
+      // The rank is still recorded, even if every event is this short.
+      handle_mpi(dftracer_tid ? df_gettid() : 0);
+      return;
+    }
 
     // Get thread id and process id from metadata if it exists
     ThreadID tid = 0;

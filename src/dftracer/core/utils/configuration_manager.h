@@ -66,6 +66,9 @@ class ConfigurationManager {
   size_t write_buffer_size;
   size_t trace_interval_ms;
   bool trace_interval_explicit;
+  // Events shorter than this many ns are not traced (DFTLogger::log); 0
+  // traces every event. dftracer's own events are always kept.
+  uint64_t min_duration_ns;
   size_t libuv_thread_count;
   bool papi_tracing;
   bool papi_multiplex;

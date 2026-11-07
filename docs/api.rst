@@ -48,6 +48,7 @@ YAML configuration supported. WE need to set DFTRACER_CONFIGURATION ENV variable
         posix: True     # Enable automatic binding of POSIX I/O calls (default True).
         stdio: True     # Enable automatic binding of STDIO I/O calls (default True).
       tid: True         # Enable tracing of thread ids (default True).
+      min_duration_ns: 0 # Skip events shorter than this many ns; 0 traces every event (default 0).
 
 ENV Variables supported
 
@@ -97,6 +98,13 @@ Any other value turns it off, where a default of 1 applies.
                                             this won't work for AI workloads which uses ``fork`` and ``spawn`` without a clear ``exit``.
                                             Also, it does not work for workloads which uses ``exec`` and rewrite process buffer state.
    DFTRACER_TRACE_INTERVAL_MS       INT     Setup the interval for trace collection (default 10).
+   DFTRACER_MIN_DURATION_NS         INT     Skip events shorter than this many ns, before they are serialized or aggregated:
+                                            a skipped event is in neither the trace nor any aggregated row. The duration is
+                                            compared after converting it from ``time_metric`` to ns, so with the default
+                                            ``US`` a threshold below 1000 skips only events that measured 0 us. dftracer's
+                                            own events are always kept. Overrides ``features.min_duration_ns`` in the YAML;
+                                            reported as ``cfg.min_duration_ns`` in the ``end`` event. 0 traces every event
+                                            (default 0).
    DFTRACER_LIBUV_THREADS           INT     Number of libuv worker threads for ``dftracer_service`` (default 1).
    DFTRACER_ENABLE_AGGREGATION      INT     Enable aggregation of events (default 1).
    DFTRACER_AGGREGATION_TYPE        STRING  set aggregation type FULL or SELECTIVE (default: SELECTIVE).
