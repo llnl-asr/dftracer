@@ -4,6 +4,7 @@
 #include <dftracer/core/ipc/shm_layout.h>
 #include <sched.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -102,6 +103,67 @@ class RingProducer {
     return Result::OK;
   }
 
+  /**
+   * Reserve what is left of the current block, at most `max_payload` bytes:
+   * for a record whose size is known only once it is written, so it can be
+   * encoded straight into the ring. A block with less than `min_payload` left
+   * is published and a new one claimed. On OK, `capacity` is the payload
+   * room; commit(r, written) then shrinks the record to what was written, or
+   * cancel(r) gives the room back. Same rules otherwise as try_reserve.
+   */
+  Result try_reserve_upto(size_t min_payload, size_t max_payload,
+                          ShmRecordKind kind, Reservation& out,
+                          size_t& capacity) {
+    const uint32_t block_size = ring_.block_size();
+    const uint32_t min_length =
+        align_record(sizeof(RecordHeader) + min_payload);
+    if (min_length > block_size) return Result::TOO_LARGE;
+    for (;;) {
+      if (data_ == nullptr || used_ + min_length > block_size) {
+        publish();
+        if (!claim()) return Result::FULL;
+      }
+      if (begin_write()) break;
+      drop();
+    }
+    // Record lengths are multiples of the alignment, so the room left is
+    // too; cap it to the largest record and to `max_payload`.
+    size_t length = block_size - used_;
+    const size_t cap =
+        std::min<size_t>(DFT_SHM_MAX_RECORD_LENGTH,
+                         align_down(sizeof(RecordHeader) + max_payload));
+    if (length > cap) length = cap;
+    auto* hdr = reinterpret_cast<RecordHeader*>(data_ + used_);
+    hdr->pid = pid_;
+    hdr->kind = kind;
+    hdr->flags = 0;
+    hdr->word.store(
+        pack_record_word(epoch_, static_cast<uint32_t>(length), SHM_RECORD_PAD),
+        std::memory_order_relaxed);
+    out.header = hdr;
+    out.payload = data_ + used_ + sizeof(RecordHeader);
+    out.epoch = epoch_;
+    out.length = static_cast<uint32_t>(length);
+    used_ += static_cast<uint32_t>(length);
+    capacity = length - sizeof(RecordHeader);
+    return Result::OK;
+  }
+
+  /** Commit a try_reserve_upto reservation holding `payload_bytes`. It is the
+   * last one in the block, so the room it does not use is handed back. */
+  void commit(Reservation& r, size_t payload_bytes) {
+    const uint32_t length = align_record(sizeof(RecordHeader) + payload_bytes);
+    used_ -= r.length - length;
+    r.length = length;
+    commit(r);
+  }
+
+  /** Give a try_reserve_upto reservation back unwritten. */
+  void cancel(const Reservation& r) {
+    used_ -= r.length;
+    end_write();
+  }
+
   /** Mark a reservation complete. The payload must be fully written. */
   void commit(const Reservation& r) {
     r.header->word.store(
@@ -145,6 +207,9 @@ class RingProducer {
     return true;
   }
 
+  /** Changes every time this producer starts filling another block. */
+  uint64_t block_serial() const { return claims_; }
+
   /** True while this producer holds a claimed, unpublished block. */
   bool holding() const { return data_ != nullptr; }
 
@@ -152,6 +217,10 @@ class RingProducer {
   uint64_t taken_blocks() const { return taken_; }
 
  private:
+  static size_t align_down(size_t bytes) {
+    return bytes & ~static_cast<size_t>(DFT_SHM_RECORD_ALIGN - 1);
+  }
+
   /**
    * Claim the block `head` names. Returns false if it is not free for this lap
    * yet and `head` has not moved meanwhile, i.e. the ring is full.
@@ -175,6 +244,7 @@ class RingProducer {
                                              std::memory_order_acq_rel,
                                              std::memory_order_acquire)) {
         claim_ns_ = monotonic_ns();
+        ++claims_;
         epoch_ = ring_.epoch(seq);
         block.claim_ns.store(claim_ns_, std::memory_order_relaxed);
         block.owner_pid.store(pid_, std::memory_order_relaxed);
@@ -255,6 +325,7 @@ class RingProducer {
   uint32_t used_ = 0;
   uint64_t claim_ns_ = 0;
   bool writing_ = false;  // the block is WRITING: a reservation is open
+  uint64_t claims_ = 0;   // blocks claimed so far (block_serial)
   uint64_t taken_ = 0;
 };
 

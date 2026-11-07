@@ -120,9 +120,9 @@ class ServiceBufferManager : public BufferManager {
   // A slot added to slots_, not tied to any thread.
   std::shared_ptr<Slot> create_slot();
   void release_slot(Slot* slot);
-  // Copies the encoded bytes in slot->scratch into the ring as one record,
+  // Copies the first `bytes` of slot->scratch into the ring as one record,
   // waiting up to wait_ns for room. False if the ring had none in time.
-  bool push(Slot* slot, ShmRecordKind kind, uint64_t wait_ns);
+  bool push(Slot* slot, ShmRecordKind kind, size_t bytes, uint64_t wait_ns);
   // Encode with `encode(ByteWriter&)` and push, on the calling thread's slot.
   // False if the record is not in the ring.
   template <typename Encode>

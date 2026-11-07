@@ -7,6 +7,7 @@
 
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/singleton.h>
+#include <dftracer/core/common/type_match.h>
 #include <dftracer/core/utils/posix_bypass.h>
 #include <execinfo.h>
 #include <limits.h>
@@ -365,7 +366,7 @@ inline const char* is_traced_common(const char* filename, const char* func) {
 
 template <typename T>
 auto any_cast_and_apply(const std::any& value) -> std::optional<T> {
-  if (value.type() == typeid(T)) {
+  if (dftracer::same_type(value.type(), typeid(T))) {
     return std::any_cast<T>(value);
   }
   return std::nullopt;

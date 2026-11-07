@@ -34,6 +34,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -68,6 +69,7 @@ class DFTLogger {
     std::unique_lock<std::shared_mutex> lock(map_mtx);
     for (auto& hash : computed_hash) {
       if (hash.second.hash) free(hash.second.hash);
+      free(const_cast<char*>(hash.first.data()));
     }
     computed_hash.clear();
 #ifdef DFTRACER_MPI_ENABLE
@@ -82,11 +84,14 @@ class DFTLogger {
   // Every string hashed this run, keyed by the string as traced. `file` marks
   // the FH (file) ones, which get "FS" records at finalize (emit_fs_records);
   // that walk is the only cost, so tracing pays nothing per operation.
+  // Keyed by string_view over a copy of the string the table owns (freed in
+  // clear_hash_cache), so a lookup -- once per path-based call -- takes the
+  // caller's pointer as it is and allocates nothing.
   struct HashEntry {
     HashType hash;
     bool file;
   };
-  std::unordered_map<std::string, HashEntry> computed_hash;
+  std::unordered_map<std::string_view, HashEntry> computed_hash;
   std::atomic_int index;
   [[maybe_unused]] bool is_aggregated;
   // Every logging thread sets it.
@@ -241,14 +246,17 @@ class DFTLogger {
   inline bool is_active() const { return is_init; }
   inline ProcessID get_process_id() const { return process_id; }
 
+  // Every other byte of the MD5, as 16 hex digits.
   inline HashType get_hash(char* name) {
+    static constexpr char digits[] = "0123456789abcdef";
     uint8_t result[HASH_OUTPUT];
     md5String(name, result);
     char* hash_str = (char*)malloc(HASH_OUTPUT * 2 + 1);
     for (int i = 0; i < HASH_OUTPUT; i += 2) {
-      dftracer_logging_real_sprintf()(hash_str + i, "%02x", result[i]);
+      hash_str[i] = digits[result[i] >> 4];
+      hash_str[i + 1] = digits[result[i] & 0xf];
     }
-    hash_str[HASH_OUTPUT * 2] = '\0';
+    hash_str[HASH_OUTPUT] = '\0';
     return hash_str;
   }
 
@@ -376,17 +384,27 @@ class DFTLogger {
     return ++index;
   }
 
-  inline HashType has_hash(ConstEventNameType key) {
+  inline HashType has_hash(std::string_view key) {
     std::shared_lock<std::shared_mutex> lock(map_mtx);
     auto iter = computed_hash.find(key);
     if (iter != computed_hash.end()) return iter->second.hash;
     return NO_HASH_DEFAULT;
   }
 
-  inline void insert_hash(ConstEventNameType key, HashType hash,
+  inline void insert_hash(std::string_view key, HashType hash,
                           bool file = false) {
     std::unique_lock<std::shared_mutex> lock(map_mtx);
-    computed_hash.insert_or_assign(key, HashEntry{hash, file});
+    auto iter = computed_hash.find(key);
+    if (iter != computed_hash.end()) {
+      iter->second = HashEntry{hash, file};
+      return;
+    }
+    char* owned = static_cast<char*>(malloc(key.size() + 1));
+    if (owned == nullptr) return;
+    std::memcpy(owned, key.data(), key.size());
+    owned[key.size()] = '\0';
+    computed_hash.emplace(std::string_view(owned, key.size()),
+                          HashEntry{hash, file});
   }
 
 #ifdef DFTRACER_MPI_ENABLE
@@ -555,11 +573,7 @@ class DFTLogger {
   }
 
   inline HashType hash_and_store(char* filename, ConstEventNameType name) {
-    if (filename == NULL) return NO_HASH_DEFAULT;
-    char file[PATH_MAX];
-    strcpy(file, filename);
-    file[PATH_MAX - 1] = '\0';
-    return hash_and_store_str(file, name);
+    return hash_and_store(static_cast<const char*>(filename), name);
   }
 
   bool ignore_chars(char c) {
@@ -620,12 +634,21 @@ class DFTLogger {
     delete fields;
   }
 
+  // The common case, a string hashed already, is one lookup on the caller's
+  // string: no copy, no allocation. Only a new one is copied (bounded to
+  // PATH_MAX, as it is keyed) to hash it and to make its record line-safe.
   inline HashType hash_and_store(const char* filename,
                                  ConstEventNameType name) {
     if (filename == NULL) return NO_HASH_DEFAULT;
+    const size_t len = strnlen(filename, PATH_MAX);
+    if (len < PATH_MAX) {
+      HashType hash = has_hash(std::string_view(filename, len));
+      if (hash != NO_HASH_DEFAULT) return hash;
+    }
     char file[PATH_MAX];
-    strcpy(file, filename);
-    file[PATH_MAX - 1] = '\0';
+    const size_t n = len < PATH_MAX ? len : PATH_MAX - 1;
+    std::memcpy(file, filename, n);
+    file[n] = '\0';
     return hash_and_store_str(file, name);
   }
 
@@ -709,7 +732,7 @@ class DFTLogger {
       std::shared_lock<std::shared_mutex> lock(map_mtx);
       for (const auto& entry : computed_hash)
         if (entry.second.file && entry.second.hash != NO_HASH_DEFAULT)
-          files.emplace_back(entry.first, entry.second.hash);
+          files.emplace_back(std::string(entry.first), entry.second.hash);
     }
     if (files.empty()) return;
     dftracer::FsRecordWriter writer(
@@ -808,7 +831,7 @@ class DFTLogger {
   dftracer::Metadata* metadata = nullptr;                    \
   if (trace) {                                               \
     if (this->logger->include_metadata) {                    \
-      metadata = new dftracer::Metadata();                   \
+      metadata = dftracer::Metadata::acquire();              \
       DFT_LOGGER_UPDATE(fhash);                              \
     }                                                        \
     this->logger->enter_event();                             \
@@ -824,7 +847,7 @@ class DFTLogger {
   dftracer::Metadata* metadata = nullptr;                         \
   if (trace) {                                                    \
     if (this->logger->include_metadata) {                         \
-      metadata = new dftracer::Metadata();                        \
+      metadata = dftracer::Metadata::acquire();                   \
     }                                                             \
     this->logger->enter_event();                                  \
     start_time = this->logger->get_time();                        \

@@ -85,7 +85,8 @@ class POSIXBypass {
 // POSIXDFTracer at all (no GOTCHA corruption risk either way), and these
 // are called on the hot logging path (once per trace event in
 // df_logger.h), where a raw syscall is cheaper than an indirect call
-// through a dlsym-resolved pointer.
+// through a dlsym-resolved pointer. df_gettid makes the syscall once per
+// thread and returns the kept id after that (reset in a fork child).
 ThreadID df_gettid();
 
 ProcessID df_getpid();

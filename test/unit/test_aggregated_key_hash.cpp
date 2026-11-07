@@ -1,6 +1,7 @@
 #include <dftracer/core/common/datastructure.h>
 
 #include <iostream>
+#include <thread>
 #include <unordered_map>
 
 #include "check.h"
@@ -171,6 +172,89 @@ void test_type_distinguishes_keys() {
   std::cout << "✓ type distinguishes aggregation keys" << std::endl;
 }
 
+// Producer/consumer mode defers the MT_KEY hashes (Metadata::
+// defer_key_hashes); a map aggregated in-process afterwards (the spill file)
+// computes them with ensure_key_hashes(), and must then key exactly as a map
+// that hashed on insert.
+void test_deferred_key_hashes() {
+  std::cout << "=== Test: Deferred MT_KEY hashes ===\n" << std::endl;
+
+  Metadata eager;
+  eager.insert_or_assign("rank", static_cast<int>(5));
+  eager.insert_or_assign("fname", std::string("/a/b"));
+  eager.insert_or_assign("size", static_cast<uint64_t>(9),
+                         MetadataType::MT_VALUE);
+
+  Metadata::defer_key_hashes(true);
+  Metadata deferred;
+  deferred.insert_or_assign("rank", static_cast<int>(5));
+  deferred.insert_or_assign("fname", std::string("/a/b"));
+  deferred.insert_or_assign("size", static_cast<uint64_t>(9),
+                            MetadataType::MT_VALUE);
+  Metadata::defer_key_hashes(false);
+
+  DFT_CHECK(std::get<2>(deferred.at("rank")) == 0);
+  DFT_CHECK(std::get<2>(deferred.at("fname")) == 0);
+  deferred.ensure_key_hashes();
+  for (const auto& entry : eager)
+    DFT_CHECK(std::get<2>(entry.second) ==
+              std::get<2>(deferred.at(entry.first)));
+  DFT_CHECK(std::get<2>(eager.at("rank")) != 0);
+
+  AggregatedKey a("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO, 100, 50,
+                  2, &eager, "app1", nullptr);
+  AggregatedKey b("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO, 100, 50,
+                  2, &deferred, "app1", nullptr);
+  DFT_CHECK(a == b);
+  DFT_CHECK(std::hash<AggregatedKey>()(a) == std::hash<AggregatedKey>()(b));
+
+  // Maps created after the switch back hash on insert again.
+  Metadata after;
+  after.insert_or_assign("rank", static_cast<int>(5));
+  DFT_CHECK(std::get<2>(after.at("rank")) == std::get<2>(eager.at("rank")));
+  std::cout << "✓ Deferred key hashes test passed\n" << std::endl;
+}
+
+// Metadata::acquire/release keep one cleared map per thread.
+void test_metadata_cache() {
+  std::cout << "=== Test: per-thread Metadata cache ===\n" << std::endl;
+  Metadata* a = Metadata::acquire();
+  a->insert_or_assign("rank", static_cast<int>(1));
+  Metadata::release(a);
+  Metadata* b = Metadata::acquire();
+  DFT_CHECK(b == a);  // the thread's map, reused
+  DFT_CHECK(b->empty());
+  // A second map while the thread holds one is just deleted on release.
+  Metadata* c = Metadata::acquire();
+  DFT_CHECK(c != b);
+  Metadata::release(b);
+  Metadata::release(c);
+  Metadata::release(nullptr);
+
+  // The reused map follows the current hash setting.
+  Metadata::defer_key_hashes(true);
+  Metadata* d = Metadata::acquire();
+  d->insert_or_assign("rank", static_cast<int>(5));
+  DFT_CHECK(std::get<2>(d->at("rank")) == 0);
+  Metadata::release(d);
+  Metadata::defer_key_hashes(false);
+  Metadata* e = Metadata::acquire();
+  e->insert_or_assign("rank", static_cast<int>(5));
+  DFT_CHECK(std::get<2>(e->at("rank")) != 0);
+
+  // Another thread has its own.
+  Metadata* other = nullptr;
+  std::thread t([&]() {
+    Metadata* m = Metadata::acquire();
+    other = m;
+    Metadata::release(m);
+  });
+  t.join();
+  DFT_CHECK(other != e);
+  Metadata::release(e);
+  std::cout << "✓ Metadata cache test passed\n" << std::endl;
+}
+
 int main() {
   try {
     test_hash_equality_basic();
@@ -180,6 +264,8 @@ int main() {
     test_hash_in_unordered_map();
     test_hash_contract();
     test_type_distinguishes_keys();
+    test_deferred_key_hashes();
+    test_metadata_cache();
 
     std::cout << "\n✓✓✓ All AggregatedKey hash tests passed! ✓✓✓\n"
               << std::endl;

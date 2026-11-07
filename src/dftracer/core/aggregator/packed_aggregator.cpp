@@ -279,9 +279,7 @@ void PackedAggregator::write_row(char* out, size_t& size,
   packed_json::series_head(w, names_.at(b.name), names_.at(b.category), b.type,
                            TracePhaseType::TRACE_PHASE_AGGREGATED, ts,
                            process_id, b.thread_id);
-  w.raw(",\"args\":{\"hhash\":\"");
-  w.raw(hostname_hash);
-  w.raw("\"");
+  line_format::append<packed_json::ArgsHead>(w, hostname_hash);
   for (uint32_t i = 0; i < b.keys_count; ++i) {
     const KeyField& f = interval.keys[b.keys_at + i];
     w.raw(",\"");
@@ -319,7 +317,7 @@ void PackedAggregator::write_row(char* out, size_t& size,
     }
   }
   w.raw("}}");
-  size = w.finish("aggregated", 0);
+  size = w.finish("packed_json.aggregated", 0);
 }
 
 }  // namespace dftracer

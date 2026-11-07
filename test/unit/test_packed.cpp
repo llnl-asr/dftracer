@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <any>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -245,6 +246,70 @@ static void check_aggregation() {
             << " rows)" << std::endl;
 }
 
+// SHM_EVENT_INTERNED: records written into one block refer to the strings
+// the block already has, and decode back to the same strings.
+static void check_interning() {
+  std::vector<uint8_t> block(1 << 16), fallback(4096);
+  size_t used = 0;
+  ipc::Interner intern;
+  ipc::InternTable table;
+  // One record into the "block" at `used`, as the producer writes it.
+  auto put = [&](const char* name, Metadata* m, bool keep = true) {
+    const uint16_t mark = intern.mark();
+    ipc::ByteWriter w(block.data() + used, block.size() - used, fallback,
+                      &intern);
+    ipc::encode_event(w, 1, name, "POSIX", TraceEventType::TRACE_TYPE_LIBC_IO,
+                      10, 2, m, 7, 8, SHM_EVENT_INC_METADATA);
+    DFT_CHECK(!w.moved());
+    const size_t at = used, n = w.size();
+    if (keep)
+      used += n;
+    else
+      intern.rollback(mark);
+    return std::make_pair(at, n);
+  };
+  auto get = [&](std::pair<size_t, size_t> rec, ipc::DecodedEvent& e) {
+    return ipc::decode_event(block.data() + rec.first, rec.second, e, &table);
+  };
+
+  intern.begin(1);
+  Metadata m;
+  m.insert_or_assign("fhash", std::string("abc"));
+  auto first = put("read", &m);
+  auto second = put("read", &m);
+  DFT_CHECK(second.second < first.second);  // name, category, key by id
+  char name[8] = "write";  // the same address with other text later
+  auto third = put(name, nullptr);
+  std::snprintf(name, sizeof(name), "%s", "close");
+  auto fourth = put(name, nullptr);
+  // A record that is not kept gives its ids back.
+  auto dropped = put("open", nullptr, false);
+  (void)dropped;
+  auto fifth = put("stat", nullptr);
+
+  ipc::DecodedEvent e;
+  DFT_CHECK(get(first, e) && e.name == "read" && e.category == "POSIX");
+  DFT_CHECK(e.values.size() == 1 && e.values[0].key == "fhash" &&
+            e.values[0].s == "abc");
+  DFT_CHECK((e.head.flags & SHM_EVENT_INTERNED) != 0);
+  DFT_CHECK(get(second, e) && e.name == "read" && e.category == "POSIX" &&
+            e.values.size() == 1 && e.values[0].key == "fhash");
+  DFT_CHECK(get(third, e) && e.name == "write");
+  DFT_CHECK(get(fourth, e) && e.name == "close");
+  DFT_CHECK(get(fifth, e) && e.name == "stat" && e.category == "POSIX");
+
+  // A new block starts afresh: everything inline again.
+  intern.begin(2);
+  table.clear();
+  used = 0;
+  auto again = put("read", &m);
+  DFT_CHECK(again.second == first.second);
+  DFT_CHECK(get(again, e) && e.name == "read" && e.values[0].key == "fhash");
+  // Without the block's table an interned record cannot be read.
+  DFT_CHECK(!ipc::decode_event(block.data() + again.first, again.second, e));
+  std::cout << "✓ interned records decode to their strings" << std::endl;
+}
+
 int main() {
   setenv("DFTRACER_ENABLE", "1", 1);
   setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
@@ -252,5 +317,6 @@ int main() {
   setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
   check_data();
   check_aggregation();
+  check_interning();
   return 0;
 }

@@ -125,4 +125,8 @@ class DFTracerCore {
 
 #define DFTRACER_MAIN_SINGLETON(stage, type) \
   dftracer::Singleton<dftracer::DFTracerCore>::get_instance(stage, type)
+// The same as a plain pointer, without a shared_ptr copy: for the per-event
+// paths of the C/C++ API.
+#define DFTRACER_MAIN_SINGLETON_PTR(stage, type) \
+  dftracer::Singleton<dftracer::DFTracerCore>::get_instance_ptr(stage, type)
 #endif  // DFTRACER_DFTRACER_MAIN_H

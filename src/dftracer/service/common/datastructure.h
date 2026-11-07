@@ -189,6 +189,8 @@ struct DrainScratch {
   ipc::DecodedMetadata metadata;
   ipc::DecodedRecord record;
   ipc::DecodedHello hello;
+  // The interned strings of the block being replayed (SHM_EVENT_INTERNED).
+  ipc::InternTable intern;
   // NUL-terminated copies of the METADATA and RECORD strings the serializer
   // takes as char*. DATA and COUNTER records need none (log_packed_event).
   std::string name, value, record_name;

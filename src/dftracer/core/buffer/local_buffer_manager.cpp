@@ -183,6 +183,8 @@ void LocalBufferManager::log_data_event(
     // finished interval out (serialization, compression, store) nests in it.
     DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(AGGREGATION));
     enable_tracing = false;
+    // A spilled producer/consumer event comes with its key hashes deferred.
+    if (metadata != nullptr) metadata->ensure_key_hashes();
     auto aggregated_key =
         AggregatedKey{category, event_name,     type, start_time, duration, tid,
                       metadata, get_app_name(), &rank};
@@ -197,7 +199,7 @@ void LocalBufferManager::log_data_event(
       // aggregated buckets; it never stores or frees the original metadata,
       // so we must release it here (the non-aggregated path below frees its
       // copy inside serializer->data()).
-      delete metadata;
+      Metadata::release(metadata);
       // Serialize aggregated data when moving to new time interval
       if (interval_changed) {
         auto data = dftracer::AggregatedDataType();

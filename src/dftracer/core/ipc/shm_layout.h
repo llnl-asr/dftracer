@@ -78,6 +78,20 @@ inline uint64_t monotonic_ns() {
          static_cast<uint64_t>(ts.tv_nsec);
 }
 
+/** CLOCK_MONOTONIC at tick (about millisecond) resolution, for checks that
+ * run on every event but only care about intervals of many milliseconds.
+ * Never ahead of monotonic_ns(). */
+inline uint64_t monotonic_coarse_ns() {
+  struct timespec ts;
+#ifdef CLOCK_MONOTONIC_COARSE
+  clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+#else
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
+  return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL +
+         static_cast<uint64_t>(ts.tv_nsec);
+}
+
 /**
  * Typed view over a mapped segment. Cheap to copy; holds no ownership. Both
  * sides build one from the base address of their own mapping.

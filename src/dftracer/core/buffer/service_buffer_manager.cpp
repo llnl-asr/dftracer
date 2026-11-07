@@ -71,7 +71,9 @@ ServiceBufferManager::create_slot() {
   slot->producer = std::make_unique<ipc::RingProducer>(
       region_->ring(), static_cast<uint32_t>(owner_pid_),
       static_cast<uint32_t>(syscall(SYS_gettid)));
-  slot->scratch.reserve(4096);
+  // Encoded into as a buffer (ByteWriter::Buffer): sized once, grown only
+  // for a record larger than it.
+  slot->scratch.resize(4096);
   std::lock_guard<std::mutex> lock(slots_mtx_);
   slots_.push_back(slot);
   return slot;
@@ -122,10 +124,9 @@ void ServiceBufferManager::release_slot(Slot* slot) {
   if (tl_exited) orphan_mtx_.unlock();
 }
 
-bool ServiceBufferManager::push(Slot* slot, ShmRecordKind kind,
+bool ServiceBufferManager::push(Slot* slot, ShmRecordKind kind, size_t bytes,
                                 uint64_t wait_ns) {
   ipc::RingProducer& producer = *slot->producer;
-  const size_t bytes = slot->scratch.size();
   ipc::Reservation r;
   auto result = producer.try_reserve(bytes, kind, r);
   if (result == ipc::RingProducer::Result::FULL && wait_ns != 0) {
@@ -141,7 +142,10 @@ bool ServiceBufferManager::push(Slot* slot, ShmRecordKind kind,
 
 bool ServiceBufferManager::service_alive() {
   if (service_gone_.load(std::memory_order_relaxed)) return false;
-  const uint64_t now = ipc::monotonic_ns();
+  // Asked on every event, to look every DFT_SHM_LIVENESS_CHECK_NS (100 ms):
+  // the coarse clock (a read of the vDSO page, millisecond resolution) is
+  // plenty for that and much cheaper than CLOCK_MONOTONIC.
+  const uint64_t now = ipc::monotonic_coarse_ns();
   uint64_t last = liveness_checked_ns_.load(std::memory_order_relaxed);
   if (now - last < DFT_SHM_LIVENESS_CHECK_NS) return true;
   // One thread checks; the others carry on until it has.
@@ -174,16 +178,59 @@ bool ServiceBufferManager::emit(ShmRecordKind kind, Encode&& encode) {
     if (ipc::monotonic_ns() < spill_until_ns) return false;
     spill_until_ns = 0;
   }
-  // Profiled as: store = getting the slot, the copy into the ring and
-  // publishing it; serialization = the binary encoding in between.
+  // Profiled as: store = getting the slot, reserving and publishing the
+  // record; serialization = the binary encoding in between.
   DFTRACER_PROFILE_BEGIN(store_frame);
   Slot* slot = acquire_slot();
-  {
-    DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(SERIALIZATION));
-    ipc::ByteWriter writer(slot->scratch);
-    encode(writer);
+  bool pushed = false;
+  // Straight into the ring: reserve what the block has left, encode into it,
+  // and commit what the record took. A record that does not fit there ends
+  // up in the scratch buffer and is pushed from it, as when the ring is full.
+  ipc::Reservation r;
+  size_t capacity = 0;
+  if (slot->producer->try_reserve_upto(
+          DFT_SHM_DIRECT_MIN_BYTES, DFT_SHM_MAX_RECORD_LENGTH, kind, r,
+          capacity) == ipc::RingProducer::Result::OK) {
+    // Interned against the strings already in this block. A record that does
+    // not fit gives its ids back and is written again, plain, from scratch:
+    // push() may put it in another block.
+    slot->intern.begin(slot->producer->block_serial());
+    const uint16_t mark = slot->intern.mark();
+    size_t bytes = 0;
+    bool moved = false;
+    {
+      DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(SERIALIZATION));
+      ipc::ByteWriter writer(r.payload, capacity, slot->scratch, &slot->intern);
+      encode(writer);
+      bytes = writer.size();
+      moved = writer.moved();
+    }
+    if (!moved) {
+      slot->producer->commit(r, bytes);
+      slot->pushed.store(slot->pushed.load(std::memory_order_relaxed) + 1,
+                         std::memory_order_relaxed);
+      pushed = true;
+    } else {
+      slot->producer->cancel(r);
+      slot->intern.rollback(mark);
+      {
+        DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(SERIALIZATION));
+        ipc::ByteWriter writer(slot->scratch, ipc::ByteWriter::Buffer{});
+        encode(writer);
+        bytes = writer.size();
+      }
+      pushed = push(slot, kind, bytes, full_wait_ns_);
+    }
+  } else {
+    size_t bytes = 0;
+    {
+      DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(SERIALIZATION));
+      ipc::ByteWriter writer(slot->scratch, ipc::ByteWriter::Buffer{});
+      encode(writer);
+      bytes = writer.size();
+    }
+    pushed = push(slot, kind, bytes, full_wait_ns_);
   }
-  const bool pushed = push(slot, kind, full_wait_ns_);
   release_slot(slot);
   DFTRACER_PROFILE_END(store_frame, DFTRACER_PROFILE_PHASE(STORE), true);
   if (!pushed) spill_until_ns = ipc::monotonic_ns() + DFT_SHM_SPILL_RETRY_NS;
@@ -195,10 +242,10 @@ void ServiceBufferManager::emit_control(ShmRecordKind kind, Encode&& encode) {
   // No service, or none left: nothing to tell it.
   if (region_ == nullptr || !service_alive()) return;
   Slot* slot = acquire_slot();
-  ipc::ByteWriter writer(slot->scratch);
+  ipc::ByteWriter writer(slot->scratch, ipc::ByteWriter::Buffer{});
   encode(writer);
-  const bool pushed =
-      push(slot, kind, std::max(full_wait_ns_, DFT_SHM_CONTROL_WAIT_NS));
+  const bool pushed = push(slot, kind, writer.size(),
+                           std::max(full_wait_ns_, DFT_SHM_CONTROL_WAIT_NS));
   release_slot(slot);
   if (!pushed) control_dropped_.fetch_add(1, std::memory_order_relaxed);
 }
@@ -305,6 +352,9 @@ int ServiceBufferManager::initialize(const char* filename,
   spill_file_ = spill_file_for(log_file_);
   hostname_hash_ = hostname_hash == nullptr ? "" : hostname_hash;
   full_wait_ns_ = config->pc_full_wait_us * 1000ULL;
+  // The producer does not aggregate: skip the per-insert aggregation hash
+  // (the spill file's manager computes it if it aggregates an event).
+  Metadata::defer_key_hashes(true);
   event_flags_ = config->metadata ? SHM_EVENT_INC_METADATA : 0;
   if (region_ == nullptr) {
     region_ = ipc::ShmRegion::open(config->service_shm);
@@ -446,7 +496,7 @@ void ServiceBufferManager::log_data_event(
         ipc::encode_event(w, index, event_name, category, type, start_time,
                           duration, metadata, process_id, tid, flags);
       })) {
-    delete metadata;
+    Metadata::release(metadata);
     return;
   }
   // The spill file's manager takes the metadata, as it does in-process.
@@ -454,7 +504,7 @@ void ServiceBufferManager::log_data_event(
         m.log_data_event(index, event_name, category, type, start_time,
                          duration, metadata, process_id, tid);
       }))
-    delete metadata;
+    Metadata::release(metadata);
 }
 
 void ServiceBufferManager::log_counter_event(
@@ -467,14 +517,14 @@ void ServiceBufferManager::log_counter_event(
         ipc::encode_event(w, index, name, category, type, start_time, 0,
                           metadata, process_id, thread_id, event_flags_);
       })) {
-    delete metadata;
+    Metadata::release(metadata);
     return;
   }
   if (!spill([&](LocalBufferManager& m) {
         m.log_counter_event(index, name, category, type, start_time, process_id,
                             thread_id, metadata);
       }))
-    delete metadata;
+    Metadata::release(metadata);
 }
 
 void ServiceBufferManager::log_record(ConstEventNameType record_name,

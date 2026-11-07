@@ -332,6 +332,8 @@ class RingSink {
     // through the acquire that claimed or took the block.
     const uint32_t pid = block.owner_pid.load(std::memory_order_relaxed);
     const uint32_t tid = block.owner_tid.load(std::memory_order_relaxed);
+    // Interned ids are the block's own: start each block afresh.
+    scratch_[id].intern.clear();
     if (clients_ == nullptr) {
       DrainScratch& s = scratch_[id];
       stats.uncommitted += ipc::for_each_record(
@@ -340,7 +342,7 @@ class RingSink {
               uint32_t bytes) {
             if (hdr.kind <= SHM_KIND_GOODBYE) ++stats.records[hdr.kind];
             if ((hdr.kind == SHM_KIND_DATA || hdr.kind == SHM_KIND_COUNTER) &&
-                !ipc::decode_event(payload, bytes, s.event))
+                !ipc::decode_event(payload, bytes, s.event, &s.intern))
               ++stats.malformed;
           },
           salvage);
@@ -380,7 +382,8 @@ class RingSink {
       case SHM_KIND_COUNTER: {
         // Written and aggregated from the decoded record itself: its
         // strings and values stay views into the ring.
-        if (!ipc::decode_event(payload, bytes, s.event)) return false;
+        if (!ipc::decode_event(payload, bytes, s.event, &s.intern))
+          return false;
         buffer.log_packed_event(s.event, kind == SHM_KIND_COUNTER);
         return true;
       }
