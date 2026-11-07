@@ -342,6 +342,29 @@ if(TARGET ${PROJECT_NAME}_service)
     set_tests_properties(${test_name} PROPERTIES LABELS pc TIMEOUT 180)
 endif()
 
+# DFTRACER_MIN_DURATION_NS: regions shorter than it are not traced; the
+# default (0) traces everything. dftracer's own events (start, end) are kept.
+add_executable(test_min_duration c/test_min_duration.c)
+target_link_libraries(test_min_duration ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_min_duration ${PROJECT_NAME}_core_dbg)
+foreach(_variant on off)
+    set(test_name test_min_duration_${_variant})
+    df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_min_duration)
+    set_common_properties(${test_name})
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
+    if(_variant STREQUAL "on")
+        # 1 ms: the 2 ms regions stay, the empty ones go.
+        set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_MIN_DURATION_NS=1000000)
+        set(_expect fast_region=0 slow_region=20)
+    else()
+        set(_expect fast_region=20 slow_region=20)
+    endif()
+    df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh
+        "${CMAKE_CURRENT_BINARY_DIR}/${test_name}-*.pfw.gz" ${_expect} start=1 end=1)
+    set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
+endforeach()
+
 add_executable(test_relative_path c/test_relative_path.c)
 add_dependencies(test_relative_path ${PROJECT_NAME}_preload_dbg)
 df_add_test(test_relative_path ${CMAKE_BINARY_DIR}/bin/test_relative_path ${CMAKE_CURRENT_BINARY_DIR}/data)

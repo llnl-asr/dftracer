@@ -234,7 +234,7 @@ Once, at finalize:
 
 .. code-block:: bash
 
-    {"id":257,"name":"end","cat":"dftracer","type":1,"pid":13916,"tid":13916,"ts":1793772883174841,"dur":0,"ph":1,"args":{"hhash":"2cbe8604f36e21bf","app":{},"used":{"LIBC_IO":1,"MPI":1},"cfg":{"enable":1,"metadata":1,"core_affinity":0,"time_metric":"US","io":1,"posix":1,"stdio":1,"trace_all_files":0,"tids":1,"bind_signals":0,"write_buffer_size":16777216,"trace_interval_ms":10,"libuv_thread_count":1,"variorum_power":1,"aggregation_enable":1,"pc_mode":0,"aggregation_type":"SELECTIVE","bind":1,"log_file":"/work/traces/openmpi-5.0.3/ior-680a7086970519bf-preload.pfw.gz"},"build":{"mpi":1,"hdf5":0,"hip":0,"cuda":0,"finstrument":0,"variorum":0},"num_events":256}}
+    {"id":257,"name":"end","cat":"dftracer","type":1,"pid":13916,"tid":13916,"ts":1793772883174841,"dur":0,"ph":1,"args":{"hhash":"2cbe8604f36e21bf","app":{},"used":{"LIBC_IO":1,"MPI":1},"cfg":{"enable":1,"metadata":1,"core_affinity":0,"time_metric":"US","io":1,"posix":1,"stdio":1,"trace_all_files":0,"tids":1,"bind_signals":0,"write_buffer_size":16777216,"trace_interval_ms":10,"min_duration_ns":0,"libuv_thread_count":1,"variorum_power":1,"aggregation_enable":1,"pc_mode":0,"aggregation_type":"SELECTIVE","bind":1,"log_file":"/work/traces/openmpi-5.0.3/ior-680a7086970519bf-preload.pfw.gz"},"build":{"mpi":1,"hdf5":0,"hip":0,"cuda":0,"finstrument":0,"variorum":0},"num_events":256}}
 
 .. _`Hash Events`:
 
@@ -451,7 +451,8 @@ readability; on disk it is a single line):
           "time_metric": "US", "io": 1, "posix": 1, "stdio": 1,
           "compression": 1, "trace_all_files": 0, "tids": 1,
           "bind_signals": 0, "write_buffer_size": 16777216,
-          "trace_interval_ms": 1000, "libuv_thread_count": 1,
+          "trace_interval_ms": 1000, "min_duration_ns": 0,
+          "libuv_thread_count": 1,
           "aggregation_enable": 0, "aggregation_type": "FULL",
           "bind": 1,
           "log_file": "/tmp/final_check/t-fbd87939335a24cd-app.pfw.gz"
