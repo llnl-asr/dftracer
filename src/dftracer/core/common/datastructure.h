@@ -802,8 +802,8 @@ inline bool compareValues(const Value& lhs, const Value& rhs, RuleOp op) {
   }
   if (lhs.data.index() != rhs.data.index()) return false;
   if (std::holds_alternative<TimeResolution>(lhs.data)) {
-    int l = std::get<TimeResolution>(lhs.data);
-    int r = std::get<TimeResolution>(rhs.data);
+    TimeResolution l = std::get<TimeResolution>(lhs.data);
+    TimeResolution r = std::get<TimeResolution>(rhs.data);
     switch (op) {
       case RuleOp::EQ:
         return l == r;

@@ -65,6 +65,10 @@ void test_rules_evaluation() {
   check("tags.missing == ''", key, true);
   metadata.insert_or_assign("size", 4096);
   check("tags.size LIKE '4096'", key, true);
+  AggregatedKey long_key("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO, 0,
+                         1ULL << 32, 0, nullptr, nullptr, nullptr);
+  check("dur < 100", long_key, false);
+  check("dur > 100", long_key, true);
 
   std::cout << "✓ Rules evaluation test passed\n" << std::endl;
 }
