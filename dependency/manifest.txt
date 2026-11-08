@@ -3,7 +3,7 @@
 # same refs for the CMake source build; scripts/wheel/manifest.py compares them.
 
 gotcha       v1.0.10          https://github.com/LLNL/GOTCHA.git
-cpp-logger   v0.0.8           https://github.com/llnl-asr/cpp-logger.git
+cpp-logger   e2f126e9fe71f7f49ad4c8b69c45e6508e1ad907 https://github.com/llnl-asr/cpp-logger.git
 yaml-cpp     yaml-cpp-0.6.3   https://github.com/jbeder/yaml-cpp.git
 libuv        v1.52.1          https://github.com/libuv/libuv.git
 libdeflate   v1.24            https://github.com/ebiggers/libdeflate.git
