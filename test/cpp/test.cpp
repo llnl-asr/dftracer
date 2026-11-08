@@ -62,7 +62,7 @@ int main(int argc, char* argv[]) {
   chmod(filename, S_ISUID);
   DFT_IGNORE(chown(filename, 0, 0));
   DFT_IGNORE(lchown(filename, 0, 0));
-  struct utimbuf utimbuf1;
+  struct utimbuf utimbuf1 = {};
   utime(filename, &utimbuf1);
   char dir[1024];
   sprintf(dir, "%s", argv[1]);
@@ -92,7 +92,7 @@ int main(int argc, char* argv[]) {
   fd = open(filename, O_RDWR);
   int set_offset = lseek(fd, 1, SEEK_SET);
   (void)set_offset;
-  char buf[1];
+  char buf[1] = {0};
   DFT_IGNORE(pread(fd, buf, 1, 1));
   DFT_IGNORE(pread64(fd, buf, 1, 1));
   DFT_IGNORE(pwrite(fd, buf, 1, 1));

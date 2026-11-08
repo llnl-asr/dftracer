@@ -282,10 +282,11 @@ foreach(variant plain fortify)
 endforeach()
 
 # Every thread does each call once per file per round, and main creates the
-# files first, so each count is exact (issue #396).
+# files first, so each count is exact (issue #396). 8 x 20 x 5 still fails
+# every run against the tables before that fix; more only slows valgrind.
 set(_threads 8)
-set(_files 100)
-set(_rounds 10)
+set(_files 20)
+set(_rounds 5)
 math(EXPR _calls "${_threads} * ${_files} * ${_rounds}")
 math(EXPR _opens "${_calls} + ${_files}")
 add_executable(test_threaded_io c/test_threaded_io.c)

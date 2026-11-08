@@ -18,10 +18,10 @@
 #define NTHREADS 8
 #endif
 #ifndef NFILES
-#define NFILES 100
+#define NFILES 20
 #endif
 #ifndef ROUNDS
-#define ROUNDS 10
+#define ROUNDS 5
 #endif
 
 static char dir[4096];
