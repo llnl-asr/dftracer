@@ -42,7 +42,7 @@ RuleAST Rules::parseRule(const std::string& rule) {
     std::string setStr = trimmed.substr(inPos + 4);
     if (setStr.front() == '{' && setStr.back() == '}') {
       setStr = setStr.substr(1, setStr.size() - 2);
-      std::set<std::string> vals;
+      std::set<std::string, std::less<>> vals;
       size_t start = 0, end;
       while ((end = setStr.find(',', start)) != std::string::npos) {
         vals.insert(fixString(setStr.substr(start, end - start)));
@@ -131,16 +131,16 @@ bool Rules::eval(const RuleAST::Node* node, const AggregatedKey* key) const {
   if (auto inop = dynamic_cast<const RuleAST::InOp*>(node)) {
     auto fieldVal = getFieldValue(key, inop->field);
     if (!fieldVal.has_value()) return false;
-    if (auto vptr = std::get_if<std::string>(&fieldVal->data)) {
-      return inop->values.count(*vptr) > 0;
+    if (auto text = textOf(*fieldVal)) {
+      return inop->values.count(*text) > 0;
     }
     return false;
   }
   if (auto likeop = dynamic_cast<const RuleAST::LikeOp*>(node)) {
     auto fieldVal = getFieldValue(key, likeop->field);
     if (!fieldVal.has_value()) return false;
-    if (auto vptr = std::get_if<std::string>(&fieldVal->data)) {
-      return likeMatch(*vptr, likeop->pattern);
+    if (auto text = textOf(*fieldVal)) {
+      return likeMatch(*text, likeop->pattern);
     }
     return false;
   }

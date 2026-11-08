@@ -179,6 +179,20 @@ struct std::__is_fast_hash<std::hash<dftracer::MetadataKey>> : std::false_type {
 
 namespace dftracer {
 
+/** A rule constant or a field of the key being checked. A string_view field
+ * points into the key or its metadata and lives only while they do. */
+struct Value {
+  std::variant<std::string, std::string_view, TimeResolution, double,
+               std::set<std::string>>
+      data;
+};
+
+inline std::optional<std::string_view> textOf(const Value& v) {
+  if (auto s = std::get_if<std::string>(&v.data)) return *s;
+  if (auto s = std::get_if<std::string_view>(&v.data)) return *s;
+  return std::nullopt;
+}
+
 class Metadata {
  public:
   using Value = std::tuple<MetadataType, MetadataValue, std::size_t>;
@@ -415,7 +429,8 @@ class Metadata {
 
   const_iterator end() const { return data.end(); }
 
-  std::string getTagValue(const std::string& tagKey) const;
+  /** tags.<key> for the rules: an empty text when absent. */
+  dftracer::Value getTagValue(std::string_view tagKey) const;
 };
 
 /** Whether two values are the same alternative with equal contents. Strings
@@ -444,7 +459,7 @@ inline bool metadata_value_equal(const MetadataValue& a,
  * service's packed events (PackedAggregator). Same strings as getTagValue. */
 struct TagSource {
   virtual ~TagSource() = default;
-  virtual std::string tag(const std::string& key) const = 0;
+  virtual Value tag(std::string_view key) const = 0;
 };
 
 struct AggregatedKey {
@@ -471,7 +486,7 @@ struct AggregatedKey {
         rank(nullptr),
         _cached_hash(0) {}
 
-  AggregatedKey(ConstEventNameType category_, ConstEventNameType event_name_,
+  AggregatedKey(std::string_view category_, std::string_view event_name_,
                 TraceEventType type_, TimeResolution time_interval_,
                 TimeResolution duration_, ThreadID thread_id_,
                 Metadata* metadata_, const char* app_name_, const int* rank_)
@@ -691,10 +706,6 @@ class AggregatedValues {
   }
 };
 
-struct Value {
-  std::variant<std::string, TimeResolution, double, std::set<std::string>> data;
-};
-
 struct Field {
   std::vector<std::string>
       path;  // e.g., tags.performance -> ["tags", "performance"]
@@ -731,8 +742,8 @@ struct RuleAST {
 
   struct InOp : Node {
     Field field;
-    std::set<std::string> values;
-    InOp(Field field, std::set<std::string> values)
+    std::set<std::string, std::less<>> values;
+    InOp(Field field, std::set<std::string, std::less<>> values)
         : field(std::move(field)), values(std::move(values)) {}
   };
 
@@ -754,30 +765,41 @@ inline std::optional<Value> getFieldValue(const AggregatedKey* key,
   const std::string& fieldName = field.path[0];
 
   if (fieldName == "cat") {
-    return Value{std::string(key->category)};
+    return Value{key->category};
   } else if (fieldName == "name") {
-    return Value{std::string(key->event_name)};
+    return Value{key->event_name};
   } else if (fieldName == "ts") {
     return Value{key->time_interval};
   } else if (fieldName == "dur") {
     return Value{key->duration};
   } else if (fieldName == "app" && key->app_name != nullptr) {
-    return Value{key->app_name};
+    return Value{std::string_view(key->app_name)};
   } else if (fieldName == "rank" && *key->rank != -1) {
     return Value{(TimeResolution)*key->rank};
   } else if (fieldName.rfind("tags.", 0) == 0 &&
              (key->additional_keys || key->tag_source)) {
     // tags.<tagname>
-    std::string tagKey = fieldName.substr(5);
-    std::string tagValue = key->additional_keys
-                               ? key->additional_keys->getTagValue(tagKey)
-                               : key->tag_source->tag(tagKey);
-    return Value{tagValue};
+    const std::string_view tagKey = std::string_view(fieldName).substr(5);
+    return key->additional_keys ? key->additional_keys->getTagValue(tagKey)
+                                : key->tag_source->tag(tagKey);
   }
   return std::nullopt;
 }
 
 inline bool compareValues(const Value& lhs, const Value& rhs, RuleOp op) {
+  const auto l_text = textOf(lhs);
+  const auto r_text = textOf(rhs);
+  if (l_text || r_text) {
+    if (!l_text || !r_text) return false;
+    switch (op) {
+      case RuleOp::EQ:
+        return *l_text == *r_text;
+      case RuleOp::NEQ:
+        return *l_text != *r_text;
+      default:
+        return false;
+    }
+  }
   if (lhs.data.index() != rhs.data.index()) return false;
   if (std::holds_alternative<TimeResolution>(lhs.data)) {
     int l = std::get<TimeResolution>(lhs.data);
@@ -819,29 +841,17 @@ inline bool compareValues(const Value& lhs, const Value& rhs, RuleOp op) {
         return false;
     }
   }
-  if (std::holds_alternative<std::string>(lhs.data)) {
-    const std::string& l = std::get<std::string>(lhs.data);
-    const std::string& r = std::get<std::string>(rhs.data);
-    switch (op) {
-      case RuleOp::EQ:
-        return l == r;
-      case RuleOp::NEQ:
-        return l != r;
-      default:
-        return false;
-    }
-  }
   return false;
 }
 
-inline bool likeMatch(const std::string& value, const std::string& pattern) {
+inline bool likeMatch(std::string_view value, std::string_view pattern) {
   // Handles patterns: "*stat", "*stat*", "stat*"
   if (pattern == "*") return true;  // matches anything
 
   size_t first_star = pattern.find('*');
   size_t last_star = pattern.rfind('*');
 
-  if (first_star == std::string::npos) {
+  if (first_star == std::string_view::npos) {
     // No wildcard, exact match
     return value == pattern;
   }
@@ -849,13 +859,13 @@ inline bool likeMatch(const std::string& value, const std::string& pattern) {
   if (first_star == 0 && last_star == pattern.size() - 1 &&
       pattern.size() > 1) {
     // Pattern: *stat*
-    std::string inner = pattern.substr(1, pattern.size() - 2);
-    return value.find(inner) != std::string::npos;
+    std::string_view inner = pattern.substr(1, pattern.size() - 2);
+    return value.find(inner) != std::string_view::npos;
   }
 
   if (first_star == 0) {
     // Pattern: *stat
-    std::string suffix = pattern.substr(1);
+    std::string_view suffix = pattern.substr(1);
     return value.size() >= suffix.size() &&
            value.compare(value.size() - suffix.size(), suffix.size(), suffix) ==
                0;
@@ -863,7 +873,7 @@ inline bool likeMatch(const std::string& value, const std::string& pattern) {
 
   if (last_star == pattern.size() - 1) {
     // Pattern: stat*
-    std::string prefix = pattern.substr(0, pattern.size() - 1);
+    std::string_view prefix = pattern.substr(0, pattern.size() - 1);
     return value.size() >= prefix.size() &&
            value.compare(0, prefix.size(), prefix) == 0;
   }
