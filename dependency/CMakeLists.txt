@@ -1,5 +1,5 @@
 include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/modules/dftracer-utils.cmake)
-dftracer_install_external_project(cpp-logger 2.0.0 "CPP_LOGGER" https://github.com/llnl-asr/cpp-logger.git v0.0.8 ${CMAKE_INSTALL_PREFIX} "")
+dftracer_install_external_project(cpp-logger 2.0.0 "CPP_LOGGER" https://github.com/llnl-asr/cpp-logger.git e2f126e9fe71f7f49ad4c8b69c45e6508e1ad907 ${CMAKE_INSTALL_PREFIX} "")
 
 # Build Brahma with MPI and/or HDF5 support based on dftracer options
 # Keep BRAHMA's core targets/install rules enabled in the currently pinned branch.
