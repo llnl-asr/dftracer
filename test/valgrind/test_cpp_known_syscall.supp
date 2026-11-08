@@ -160,3 +160,31 @@
    fun:writer
    fun:start_thread
 }
+
+# libnl-route (pulled in through libibverbs by MPI or hwloc) registers its
+# names with strdup from its load-time constructor and never frees them. Only
+# a forked child's leak check reports them, and the child then exits with
+# valgrind's error code, which the fork tests read as a failed child.
+{
+   libnl_route_constructor_names
+   Memcheck:Leak
+   match-leak-kinds: possible,definite
+   ...
+   fun:__trans_list_add
+   ...
+   fun:_dl_init
+}
+
+# A fork (or, under valgrind, vfork) child gets a copy of the thread that
+# forked, but not the thread itself, so that thread's TLS block looks lost in
+# the child's leak check. unit_test_tid_cache vforks from a std::thread.
+{
+   fork_child_forking_thread_tls
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   ...
+   fun:_dl_allocate_tls
+   fun:allocate_stack
+   fun:pthread_create*
+}

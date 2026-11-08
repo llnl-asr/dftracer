@@ -393,8 +393,8 @@ foreach(_variant on off)
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
     set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
     if(_variant STREQUAL "on")
-        # 1 ms: the 2 ms regions stay, the empty ones go.
-        set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_MIN_DURATION_NS=1000000)
+        # 10 ms: the 20 ms regions stay, the empty ones go.
+        set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_MIN_DURATION_NS=10000000)
         set(_expect fast_region=0 slow_region=20)
     else()
         set(_expect fast_region=20 slow_region=20)
