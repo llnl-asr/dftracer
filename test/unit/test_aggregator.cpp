@@ -48,6 +48,24 @@ void test_rules_evaluation() {
   bool matches2 = inclusion_rules.satisfies(&key2);
   DFT_CHECK(matches2 == false);
 
+  auto check = [&](const char* rule, const AggregatedKey& k, bool expected) {
+    Rules r;
+    r.addRule(rule);
+    DFT_CHECK(r.satisfies(&k) == expected);
+  };
+  check("name != 'read'", key, false);
+  check("name != 'read'", key2, true);
+  check("cat IN {'stdio','posix'}", key, true);
+  check("cat IN {'stdio','mpi'}", key, false);
+  check("name LIKE '*ea*'", key, true);
+  check("name LIKE '*rit'", key2, false);
+  check("cat == 5", key, false);
+  check("tags.test_key == 'test_value'", key, true);
+  check("tags.test_key LIKE 'test*'", key, true);
+  check("tags.missing == ''", key, true);
+  metadata.insert_or_assign("size", 4096);
+  check("tags.size LIKE '4096'", key, true);
+
   std::cout << "✓ Rules evaluation test passed\n" << std::endl;
 }
 

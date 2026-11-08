@@ -56,23 +56,23 @@ namespace {
 /** tags.<key> for the rules, as Metadata::getTagValue gives it. */
 struct EventTags : TagSource {
   explicit EventTags(const ipc::DecodedEvent& e) : event(e) {}
-  std::string tag(const std::string& key) const override {
+  Value tag(std::string_view key) const override {
     for (const ipc::DecodedValue& v : event.values) {
       if (v.key != key) continue;
       switch (v.tag) {
         case SHM_VALUE_INT:
-          return std::to_string(v.i);
+          return Value{std::to_string(v.i)};
         case SHM_VALUE_UINT:
-          return std::to_string(v.u);
+          return Value{std::to_string(v.u)};
         case SHM_VALUE_DOUBLE:
-          return std::to_string(v.d);
+          return Value{std::to_string(v.d)};
         case SHM_VALUE_STRING:
-          return std::string(v.s);
+          return Value{v.s};
         default:
-          return "";
+          return Value{std::string_view()};
       }
     }
-    return "";
+    return Value{std::string_view()};
   }
   const ipc::DecodedEvent& event;
 };
@@ -86,12 +86,10 @@ bool PackedAggregator::should_aggregate(const ipc::DecodedEvent& event,
                                         const char* app_name,
                                         const int* rank) const {
   if (always_aggregate_) return true;
-  const std::string category(event.category), name(event.name);
-  AggregatedKey key(category.c_str(), name.c_str(),
-                    static_cast<TraceEventType>(event.head.type),
-                    event.head.start_time, event.head.duration,
-                    static_cast<ThreadID>(event.head.thread_id), nullptr,
-                    app_name, rank);
+  AggregatedKey key(
+      event.category, event.name, static_cast<TraceEventType>(event.head.type),
+      event.head.start_time, event.head.duration,
+      static_cast<ThreadID>(event.head.thread_id), nullptr, app_name, rank);
   const EventTags tags(event);
   key.tag_source = &tags;
   return inclusion_rules_.satisfies(&key) && !exclusion_rules_.satisfies(&key);
