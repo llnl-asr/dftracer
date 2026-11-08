@@ -172,13 +172,13 @@ void test_type_distinguishes_keys() {
   std::cout << "✓ type distinguishes aggregation keys" << std::endl;
 }
 
-// Producer/consumer mode defers the MT_KEY hashes (Metadata::
-// defer_key_hashes); a map aggregated in-process afterwards (the spill file)
-// computes them with ensure_key_hashes(), and must then key exactly as a map
-// that hashed on insert.
+// MT_KEY hashes are deferred by default (Metadata::defer_key_hashes); a map
+// that is aggregated computes them with ensure_key_hashes(), and must then key
+// exactly as a map that hashed on insert.
 void test_deferred_key_hashes() {
   std::cout << "=== Test: Deferred MT_KEY hashes ===\n" << std::endl;
 
+  Metadata::defer_key_hashes(false);
   Metadata eager;
   eager.insert_or_assign("rank", static_cast<int>(5));
   eager.insert_or_assign("fname", std::string("/a/b"));
@@ -212,6 +212,7 @@ void test_deferred_key_hashes() {
   Metadata after;
   after.insert_or_assign("rank", static_cast<int>(5));
   DFT_CHECK(std::get<2>(after.at("rank")) == std::get<2>(eager.at("rank")));
+  Metadata::defer_key_hashes(true);
   std::cout << "✓ Deferred key hashes test passed\n" << std::endl;
 }
 
@@ -241,6 +242,7 @@ void test_metadata_cache() {
   Metadata* e = Metadata::acquire();
   e->insert_or_assign("rank", static_cast<int>(5));
   DFT_CHECK(std::get<2>(e->at("rank")) != 0);
+  Metadata::defer_key_hashes(true);
 
   // Another thread has its own.
   Metadata* other = nullptr;

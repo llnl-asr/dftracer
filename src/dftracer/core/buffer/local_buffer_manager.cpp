@@ -273,8 +273,6 @@ void LocalBufferManager::log_data_event(
   // Counted once per event that goes through the aggregator; writing a
   // finished interval out (serialization, compression, store) nests in it.
   DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(AGGREGATION));
-  // A spilled producer/consumer event comes with its key hashes deferred.
-  if (metadata != nullptr) metadata->ensure_key_hashes();
   auto aggregated_key =
       AggregatedKey{category, event_name, type,           start_time, duration,
                     tid,      metadata,   get_app_name(), &rank};
