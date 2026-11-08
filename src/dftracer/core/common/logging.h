@@ -161,9 +161,13 @@ inline void dftracer_internal_trace_format(const char* file, int line,
   char user_message[4096];
   dftracer_logging_real_snprintf()(user_message, sizeof(user_message), format,
                                    args...);
-  cpp_logger_clog(logger_level, name, "[%s] %s %s [%s:%d]",
-                  dftracer_macro_get_time().c_str(), function, user_message,
-                  file, line);
+  // cpp_logger_clog formats into a 4096-byte buffer with vsprintf, unbounded
+  // and before its level check, so hand it a line that already fits.
+  char log_line[4096];
+  dftracer_logging_real_snprintf()(
+      log_line, sizeof(log_line), "[%s] %s %s [%s:%d]",
+      dftracer_macro_get_time().c_str(), function, user_message, file, line);
+  cpp_logger_clog(logger_level, name, "%s", log_line);
 }
 
 #define DFTRACER_LOG_PRINT(...)                                            \
