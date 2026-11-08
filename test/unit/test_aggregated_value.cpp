@@ -163,6 +163,34 @@ void test_multiple_types() {
   std::cout << "✓ Multiple types test passed\n" << std::endl;
 }
 
+void test_values_add_in_place() {
+  AggregatedValues values;
+  const MetadataKey size{StaticKey{"size"}};
+  const MetadataKey file{std::string_view("file")};
+  values.add_number<int64_t>(size, 10);
+  values.add_number<int64_t>(size, 4);
+  values.add_number<int64_t>(size, 30);
+  values.add_number<double>(size, 99.0);
+  values.add_general<const char*>(file, "a");
+  values.add_general<const char*>(file, "b");
+  values.add_number<int64_t>(file, 7);
+
+  auto* number =
+      dynamic_cast<NumberAggregationValue<int64_t>*>(values.values.at(size));
+  DFT_CHECK(number != nullptr);
+  DFT_CHECK(number->min == 4);
+  DFT_CHECK(number->max == 30);
+  DFT_CHECK(number->sum == 44);
+  DFT_CHECK(number->count == 3);
+
+  auto* general =
+      dynamic_cast<AggregatedValue<const char*>*>(values.values.at(file));
+  DFT_CHECK(general != nullptr);
+  DFT_CHECK(general->_type == ValueType::VALUE_TYPE_STRING);
+  DFT_CHECK(general->count == 2);
+  for (auto& pair : values.values) delete pair.second;
+}
+
 int main() {
   try {
     test_number_aggregation_creation();
@@ -171,6 +199,7 @@ int main() {
     test_direct_update();
     test_base_update();
     test_multiple_types();
+    test_values_add_in_place();
 
     std::cout << "\n✓✓✓ All AggregatedValue tests passed! ✓✓✓\n" << std::endl;
     return 0;

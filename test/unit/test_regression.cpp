@@ -1,6 +1,7 @@
 // Regression tests for the per-event cost work on the producer path, aimed at
 // what each optimization could break:
 //   * Metadata as a flat vector (insert/overwrite/erase/[]/at/copy, order),
+//     borrowed and owned keys, AggregatedKey names owned by stored keys,
 //     the per-thread map of acquire()/release(), deferred key hashes;
 //   * dftracer::same_type, which must agree with type_info::operator==;
 //   * ByteWriter's three forms (exact, buffer, direct into a reservation),
@@ -45,7 +46,7 @@ void test_metadata_semantics() {
   DFT_CHECK(std::get<std::string>(std::get<1>(m.at("b"))) == "x");
   // Insertion order.
   std::vector<std::string> order;
-  for (const auto& e : m) order.push_back(e.first);
+  for (const auto& e : m) order.push_back(e.first.str());
   DFT_CHECK((order == std::vector<std::string>{"a", "b", "c"}));
   // operator[] adds a default entry once.
   m["d"] = Metadata::Value(MetadataType::MT_KEY, MetadataValue(int64_t{4}), 0);
@@ -61,7 +62,8 @@ void test_metadata_semantics() {
   DFT_CHECK(threw);
   // Erase while iterating, as JsonLines::data filters optional args.
   for (auto it = m.begin(); it != m.end();)
-    it = (it->first == "b" || it->first == "d") ? m.erase(it) : std::next(it);
+    it = (it->first.view() == "b" || it->first.view() == "d") ? m.erase(it)
+                                                              : std::next(it);
   DFT_CHECK(m.size() == 2 && !m.contains("b") && m.contains("c"));
   DFT_CHECK(m.erase("c") == 1 && m.erase("c") == 0);
   // Copies are independent.
@@ -128,6 +130,49 @@ void test_metadata_value_keys() {
   DFT_CHECK(d.size() == 1 && !d.contains("token") && !d.contains("handle"));
   DFT_CHECK(!d.contains("n"));  // assigning a skipped type drops the key
   std::cout << "✓ Metadata value keys" << std::endl;
+}
+
+void test_metadata_key_kinds() {
+  // A StaticKey is borrowed and any other key is copied; lookups match by
+  // content either way, and copies keep each key usable.
+  static const char kLit[] = "fhash";
+  Metadata m;
+  {
+    std::string temp = "owned";
+    m.insert_or_assign(StaticKey{kLit}, 1);
+    m.insert_or_assign(temp, 2);
+    temp.assign("xxxxx");
+  }
+  DFT_CHECK(m.find(kLit)->first.data() == kLit);
+  DFT_CHECK(m.contains(std::string("fhash")) && m.contains("owned"));
+  DFT_CHECK(!m.insert(StaticKey{"owned"}, 3).second);
+  Metadata copy = m;
+  m.clear();
+  DFT_CHECK(std::get<int64_t>(std::get<1>(copy.at("owned"))) == 2);
+  DFT_CHECK(copy.find("fhash")->first.view() == "fhash");
+  Metadata keys;
+  keys[copy.begin()->first] = copy.begin()->second;
+  DFT_CHECK(keys.find("fhash")->first.data() == kLit);
+
+  // A stored copy of an AggregatedKey owns its names: the event's buffers
+  // may be gone by the time the bucket is written.
+  std::string category = "CAT";
+  std::string name = "event";
+  AggregatedKey live(category.c_str(), name.c_str(),
+                     TraceEventType::TRACE_TYPE_LIBC_IO, 1, 1, 1, nullptr,
+                     nullptr, nullptr);
+  AggregatedKey stored(live);
+  stored.own_names();
+  AggregatedKey node(stored);
+  const std::size_t hash = std::hash<AggregatedKey>()(live);
+  category.assign("xxx");
+  name.assign("xxxxx");
+  DFT_CHECK(node.category == "CAT" && node.event_name == "event");
+  DFT_CHECK(node.category.data()[3] == '\0');
+  DFT_CHECK(node.category.data() != stored.category.data());
+  node._cached_hash = 0;
+  DFT_CHECK(std::hash<AggregatedKey>()(node) == hash);
+  std::cout << "✓ Metadata key kinds" << std::endl;
 }
 
 void test_metadata_reuse_threads() {
@@ -412,6 +457,7 @@ void test_interning_matches_plain() {
 int main() {
   test_metadata_semantics();
   test_metadata_value_keys();
+  test_metadata_key_kinds();
   test_metadata_reuse_threads();
   check_same_type(Candidates{});
   test_writer_forms();

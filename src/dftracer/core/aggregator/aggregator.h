@@ -67,43 +67,22 @@ class Aggregator {
     return keys;
   }
 
-  // Folds one value into the bucket of `aggregated_key`: its category, name,
-  // type, interval and thread, and the values of its MT_KEY fields, so events
-  // that differ in an MT_KEY field are aggregated apart.
-  inline void insert_value(AggregatedDataType& data,
-                           TimeResolution& time_interval,
-                           AggregatedKey& aggregated_key,
-                           const std::string& key, BaseAggregatedValue* value) {
+  // The values of the bucket of `aggregated_key`: its category, name, type,
+  // interval and thread, and the values of its MT_KEY fields, so events that
+  // differ in an MT_KEY field are aggregated apart.
+  AggregatedValues* bucket(AggregatedDataType& data,
+                           TimeResolution time_interval,
+                           const AggregatedKey& aggregated_key) {
     auto& events = data[time_interval];
     auto iter = events.find(aggregated_key);
-    if (iter != events.end()) {
-      iter->second->update(key, typeid(TimeResolution), value);
-      return;
-    }
+    if (iter != events.end()) return iter->second;
     AggregatedKey stored(aggregated_key);
+    stored.own_names();
     stored.additional_keys = copy_mt_keys(aggregated_key.additional_keys);
     auto values = new AggregatedValues();
-    values->update(key, typeid(TimeResolution), value);
     events.emplace(stored, values);
     DFTRACER_LOG_INFO("Events in %llu are %d", time_interval, events.size());
-  }
-
-  template <typename T>
-  inline void insert_number_value(AggregatedDataType& data,
-                                  TimeResolution& time_interval,
-                                  AggregatedKey& aggregated_key,
-                                  const std::string& key, T value) {
-    insert_value(data, time_interval, aggregated_key, key,
-                 new NumberAggregationValue<T>(value));
-  }
-
-  template <typename T>
-  inline void insert_general_value(AggregatedDataType& data,
-                                   TimeResolution& time_interval,
-                                   AggregatedKey& aggregated_key,
-                                   const std::string& key, T value) {
-    insert_value(data, time_interval, aggregated_key, key,
-                 new AggregatedValue<T>(value));
+    return values;
   }
 
  public:

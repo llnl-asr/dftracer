@@ -153,7 +153,7 @@ inline void put_number_value(ByteWriter& w, T value) {
   }
 }
 inline void put_key(ByteWriter& w, uint8_t tag, uint8_t mtype,
-                    const std::string& key) {
+                    std::string_view key) {
   w.put(tag);
   w.put(mtype);
   const uint16_t len =
@@ -179,7 +179,7 @@ inline void interned_bytes(ByteWriter& w, Interner& in, uint16_t field,
   in.define(s, field, at);
 }
 inline void put_key_interned(ByteWriter& w, Interner& in, uint8_t tag,
-                             uint8_t mtype, const std::string& key) {
+                             uint8_t mtype, std::string_view key) {
   w.put(tag);
   w.put(mtype);
   const uint16_t field = interned_field(in, key.data(), key.size());
@@ -237,7 +237,7 @@ inline uint16_t encode_metadata(ByteWriter& w, const Metadata* metadata) {
   Interner* in = w.interner();
   // Interned records (SHM_EVENT_INTERNED) refer to keys already in the block.
   const auto put_key = [in](ByteWriter& out, uint8_t tag, uint8_t mtype,
-                            const std::string& key) {
+                            std::string_view key) {
     if (in != nullptr)
       detail::put_key_interned(out, *in, tag, mtype, key);
     else
@@ -246,7 +246,7 @@ inline uint16_t encode_metadata(ByteWriter& w, const Metadata* metadata) {
   uint16_t count = 0;
   for (const auto& item : *metadata) {
     if (count == 0xffff) break;
-    const std::string& key = item.first;
+    const std::string_view key = item.first.view();
     const uint8_t mtype = static_cast<uint8_t>(std::get<0>(item.second));
     const MetadataValue& value = std::get<1>(item.second);
     ++count;
