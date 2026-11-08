@@ -352,9 +352,6 @@ int ServiceBufferManager::initialize(const char* filename,
   spill_file_ = spill_file_for(log_file_);
   hostname_hash_ = hostname_hash == nullptr ? "" : hostname_hash;
   full_wait_ns_ = config->pc_full_wait_us * 1000ULL;
-  // The producer does not aggregate: skip the per-insert aggregation hash
-  // (the spill file's manager computes it if it aggregates an event).
-  Metadata::defer_key_hashes(true);
   event_flags_ = config->metadata ? SHM_EVENT_INC_METADATA : 0;
   if (region_ == nullptr) {
     region_ = ipc::ShmRegion::open(config->service_shm);

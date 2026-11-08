@@ -77,10 +77,10 @@ class Metadata {
    */
   using DataMap = std::vector<Entry>;
   DataMap data;
-  // Producer/consumer mode (see defer_key_hashes): whether the MT_KEY hashes
-  // of this map's entries are computed. Fixed when the map is created.
+  // Whether the MT_KEY hashes of this map's entries are computed (see
+  // defer_key_hashes). Fixed when the map is created.
   bool hashed_ = !defer_.load(std::memory_order_relaxed);
-  inline static std::atomic<bool> defer_{false};
+  inline static std::atomic<bool> defer_{true};
   // The thread's cached map (acquire/release). Plain pointer and flag so they
   // stay readable after the guard has run at thread exit: a thread's exit
   // handlers may still log.
@@ -119,12 +119,10 @@ class Metadata {
   ~Metadata() {}
   /**
    * Every MT_KEY entry carries a hash of its value (the third element), for
-   * the aggregation key -- a std::to_string and std::hash per insert. In
-   * producer/consumer mode the producer does not aggregate (the service does,
-   * from the encoded record), so ServiceBufferManager turns the hash off for
-   * the maps created after it initializes: inserts store 0, and the one
-   * in-process place that aggregates them, the spill file's
-   * LocalBufferManager, computes them first with ensure_key_hashes().
+   * the aggregation key -- a std::to_string and std::hash each. Most events
+   * are never aggregated, so by default inserts store 0 and the AggregatedKey
+   * built from the map computes them (ensure_key_hashes()). false makes the
+   * maps created afterwards hash on insert.
    */
   static void defer_key_hashes(bool defer) {
     defer_.store(defer, std::memory_order_relaxed);
@@ -298,7 +296,9 @@ struct AggregatedKey {
         duration(duration_),
         app_name(app_name_),
         rank(rank_),
-        _cached_hash(0) {}
+        _cached_hash(0) {
+    if (metadata_ != nullptr) metadata_->ensure_key_hashes();
+  }
   AggregatedKey(const AggregatedKey& other)
       : category(other.category),
         event_name(other.event_name),

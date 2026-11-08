@@ -104,59 +104,94 @@ inline void list(W& w, const ArgList& l) {
   w.raw("}");
 }
 
+namespace detail {
+
+// The types value() writes, most common first: an interceptor's hashes and
+// descriptors, then sizes and offsets. A Kind is the 1-based position here.
+#define DFTRACER_JSON_TYPES(X) \
+  X(1, HashType)               \
+  X(2, const char*)            \
+  X(3, int)                    \
+  X(4, long)                   \
+  X(5, unsigned long)          \
+  X(6, unsigned int)           \
+  X(7, long long)              \
+  X(8, unsigned long long)     \
+  X(9, std::string)            \
+  X(10, RawJson)               \
+  X(11, ArgList)               \
+  X(12, double)                \
+  X(13, float)                 \
+  X(14, uint16_t)              \
+  X(15, size_t)                \
+  X(16, ssize_t)               \
+  X(17, off_t)                 \
+  X(18, off64_t)               \
+  X(19, mode_t)
+
+using Kind = int;
+constexpr Kind kUnknown = 0;
+
+inline Kind kind_of(const std::type_info& id) {
+#define DFTRACER_JSON_KIND(K, TYPE) \
+  if (dftracer::same_type(id, typeid(TYPE))) return K;
+  DFTRACER_JSON_TYPES(DFTRACER_JSON_KIND)
+#undef DFTRACER_JSON_KIND
+  return kUnknown;
+}
+
+template <typename T, typename W>
+inline void put_as(W& w, const std::any& v) {
+  const T& x = *std::any_cast<T>(&v);
+  if constexpr (std::is_same_v<T, RawJson>) {
+    w.raw(x.value);
+  } else if constexpr (std::is_same_v<T, ArgList>) {
+    list(w, x);
+  } else if constexpr (std::is_same_v<T, std::string>) {
+    w.raw("\"");
+    w.raw(x);
+    w.raw("\"");
+  } else if constexpr (std::is_pointer_v<T>) {
+    w.raw("\"");
+    if (x != nullptr) w.raw(std::string_view(x));
+    w.raw("\"");
+  } else if constexpr (std::is_floating_point_v<T>) {
+    w.f64(static_cast<double>(x));
+  } else if constexpr (std::is_signed_v<T>) {
+    w.i64(static_cast<int64_t>(x));
+  } else {
+    w.u64(static_cast<uint64_t>(x));
+  }
+}
+
+template <typename W>
+inline void put(W& w, Kind kind, const std::any& v) {
+  switch (kind) {
+#define DFTRACER_JSON_PUT(K, TYPE) \
+  case K:                          \
+    put_as<TYPE>(w, v);            \
+    return;
+    DFTRACER_JSON_TYPES(DFTRACER_JSON_PUT)
+#undef DFTRACER_JSON_PUT
+  }
+}
+
+#undef DFTRACER_JSON_TYPES
+
+}  // namespace detail
+
 /** A value; false, writing nothing, for a type it does not know. */
 template <typename W>
 inline bool value(W& w, const std::any& v) {
-  // std::any::type() is an indirect call into the value's manager: ask once,
-  // not once per candidate type.
-  const std::type_info& id = v.type();
-  if (dftracer::same_type(id, typeid(RawJson))) {
-    w.raw(std::any_cast<const RawJson&>(v).value);
-    return true;
-  }
-  if (dftracer::same_type(id, typeid(ArgList))) {
-    list(w, std::any_cast<const ArgList&>(v));
-    return true;
-  }
-#define DFTRACER_JSON_NUMBER(TYPE, VALUE, BLOCK)       \
-  if (dftracer::same_type(id, typeid(TYPE))) {         \
-    const TYPE n = *std::any_cast<TYPE>(&VALUE);       \
-    if constexpr (std::is_floating_point<TYPE>::value) \
-      w.f64(static_cast<double>(n));                   \
-    else if constexpr (std::is_signed<TYPE>::value)    \
-      w.i64(static_cast<int64_t>(n));                  \
-    else                                               \
-      w.u64(static_cast<uint64_t>(n));                 \
-    return true;                                       \
-  }
-  DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_JSON_NUMBER, v, {})
-#undef DFTRACER_JSON_NUMBER
-  const char* s = nullptr;
-  if (dftracer::same_type(id, typeid(std::string)))
-    s = std::any_cast<const std::string&>(v).c_str();
-  else if (dftracer::same_type(id, typeid(const char*)))
-    s = std::any_cast<const char*>(v);
-  else if (dftracer::same_type(id, typeid(HashType)))
-    s = std::any_cast<HashType>(v);
-  else
-    return false;
-  w.raw("\"");
-  if (s != nullptr) w.raw(s);
-  w.raw("\"");
+  const detail::Kind kind = detail::kind_of(v.type());
+  if (kind == detail::kUnknown) return false;
+  detail::put(w, kind, v);
   return true;
 }
 
 /** Whether value() knows the type. */
 inline bool known(const std::any& v) {
-  const std::type_info& id = v.type();
-  if (dftracer::same_type(id, typeid(RawJson)) ||
-      dftracer::same_type(id, typeid(ArgList)) ||
-      dftracer::same_type(id, typeid(std::string)) ||
-      dftracer::same_type(id, typeid(const char*)) ||
-      dftracer::same_type(id, typeid(HashType)))
-    return true;
-  DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_ANY_ID_MACRO, v, { return true; });
-  return false;
+  return detail::kind_of(v.type()) != detail::kUnknown;
 }
 
 /** "key":value,... (a comma before each when `leading_comma`); entries of
@@ -166,12 +201,13 @@ inline size_t fields(W& w, const Metadata& metadata, bool leading_comma) {
   size_t n = 0;
   for (const auto& item : metadata) {
     const std::any& v = std::get<1>(item.second);
-    if (!known(v)) continue;
+    const detail::Kind kind = detail::kind_of(v.type());
+    if (kind == detail::kUnknown) continue;
     if (n > 0 || leading_comma) w.raw(",");
     w.raw("\"");
     w.raw(item.first);
     w.raw("\":");
-    value(w, v);
+    detail::put(w, kind, v);
     ++n;
   }
   return n;
