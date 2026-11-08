@@ -35,6 +35,20 @@ int main() {
   DFT_CHECK(waitpid(child, &status, 0) == child);
   DFT_CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
   DFT_CHECK(df_gettid() == main_tid);
+
+  // A fresh thread, so the vfork child is the first to fill the shared cache.
+  bool vfork_ok = false;
+  std::thread v([&]() {
+    pid_t pid = vfork();
+    if (pid == 0) {
+      df_gettid();
+      _exit(0);
+    }
+    waitpid(pid, nullptr, 0);
+    vfork_ok = df_gettid() == kernel_tid();
+  });
+  v.join();
+  DFT_CHECK(vfork_ok);
   std::cout << "✓ df_gettid keeps the id per thread and renews it after fork"
             << std::endl;
   return 0;
