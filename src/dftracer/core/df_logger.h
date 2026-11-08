@@ -745,7 +745,7 @@ class DFTLogger {
       bool first_app = true;
       for (auto& entry : app_metadata_) {
         if (!first_app) app_json << ",";
-        app_json << "\"" << entry.first << "\":";
+        app_json << "\"" << entry.first.view() << "\":";
         const dftracer::MetadataValue& value = std::get<1>(entry.second);
         if (const auto* i = std::get_if<int64_t>(&value)) {
           app_json << *i;
@@ -834,11 +834,11 @@ class DFTLogger {
   dftracer::Singleton<DFTLogger>::get_instance()->finalize()
 #define DFT_LOGGER_UPDATE(value)               \
   if (trace && this->logger->include_metadata) \
-    metadata->insert_or_assign(#value, value);
+    metadata->insert_or_assign(dftracer::StaticKey{#value}, value);
 
 #define DFT_LOGGER_UPDATE_TYPE(value, type)    \
   if (trace && this->logger->include_metadata) \
-    metadata->insert_or_assign(#value, value, type);
+    metadata->insert_or_assign(dftracer::StaticKey{#value}, value, type);
 
 #define DFT_LOGGER_UPDATE_HASH(value)                                 \
   if (trace && this->logger->include_metadata) {                      \

@@ -26,15 +26,15 @@ bool Aggregator::aggregate(AggregatedKey& aggregated_key) {
 
   Shard& shard = shard_for(aggregated_key.thread_id);
   std::lock_guard<std::mutex> lock(shard.mtx);
-  AggregatedDataType& data = shard.data;
-  insert_number_value(data, interval, aggregated_key, "dur",
-                      aggregated_key.duration);
+  AggregatedValues* values = bucket(shard.data, interval, aggregated_key);
+  static const MetadataKey kDur{StaticKey{"dur"}};
+  values->add_number(kDur, aggregated_key.duration);
 
   // Fast path: skip metadata iteration if empty
   if (aggregated_key.additional_keys &&
       !aggregated_key.additional_keys->empty()) {
     for (const auto& entry : *aggregated_key.additional_keys) {
-      const std::string& key = entry.first;
+      const MetadataKey& key = entry.first;
       const Metadata::Value& value = entry.second;
       // Only process MT_VALUE metadata (skip MT_KEY)
       if (std::get<0>(value) == MetadataType::MT_VALUE) {
@@ -42,10 +42,10 @@ bool Aggregator::aggregate(AggregatedKey& aggregated_key) {
             [&](const auto& v) {
               using T = std::decay_t<decltype(v)>;
               if constexpr (std::is_arithmetic_v<T>) {
-                insert_number_value(data, interval, aggregated_key, key, v);
+                values->add_number(key, v);
               } else if constexpr (std::is_same_v<T, const char*> ||
                                    std::is_same_v<T, std::string>) {
-                insert_general_value(data, interval, aggregated_key, key, v);
+                values->add_general(key, v);
               }
             },
             std::get<1>(value));

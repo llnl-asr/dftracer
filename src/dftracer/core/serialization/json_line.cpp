@@ -85,7 +85,7 @@ size_t JsonLines::data(char* buffer, int index, ConstEventNameType event_name,
   if (!include_metadata && metadata != nullptr) {
     for (auto it = metadata->begin(); it != metadata->end();) {
       const auto& v = std::get<1>(it->second);
-      if (it->first == DFT_RELATIONS_ARG &&
+      if (it->first.view() == DFT_RELATIONS_ARG &&
           (std::holds_alternative<dftracer::RawJson>(v) ||
            std::holds_alternative<dftracer::ArgList>(v)))
         ++it;
@@ -217,7 +217,7 @@ void JsonLines::aggregated(RowSink& rows, int index, ProcessID process_id,
         }
       }
       for (const auto& value_entry : event_values->values) {
-        const std::string& base_key = value_entry.first;
+        const std::string base_key = value_entry.first.str();
         BaseAggregatedValue* base_value = value_entry.second;
         if (!base_value) continue;
         // metadata->erase(base_key);
@@ -227,8 +227,9 @@ void JsonLines::aggregated(RowSink& rows, int index, ProcessID process_id,
         DFTRACER_FOR_EACH_STRING_TYPE(DFTRACER_ANY_GENERAL_AGGREGATE_MACRO,
                                       base_value, { continue; });
       }
-      rows.wrote(series(rows.row(), index, key.event_name.c_str(),
-                        key.category.c_str(), key.type,
+      // A stored key owns its names (own_names), so they end in a NUL.
+      rows.wrote(series(rows.row(), index, key.event_name.data(),
+                        key.category.data(), key.type,
                         TracePhaseType::TRACE_PHASE_AGGREGATED, interval,
                         process_id, key.thread_id, metadata));
     }

@@ -429,7 +429,7 @@ void test_aggregator_mt_keys() {
   for (auto& interval : data) {
     for (auto& [key, values] : interval.second) {
       auto* size = dynamic_cast<NumberAggregationValue<int64_t>*>(
-          values->values.at("size"));
+          values->values.at(MetadataKey{StaticKey{"size"}}));
       DFT_CHECK(size != nullptr);
       if (key.event_name == "write") {
         ++write_buckets;

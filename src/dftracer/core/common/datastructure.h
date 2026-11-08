@@ -127,10 +127,62 @@ inline MetadataValue make_metadata_value(T&& v) {
   }
 }
 
+/** A metadata key whose characters outlive every map that holds it, such as
+ * a string literal: maps keep the pointer instead of a copy. */
+struct StaticKey {
+  std::string_view name;
+};
+
+/** A metadata key: a borrowed StaticKey or an owned copy of any other key. */
+class MetadataKey {
+ public:
+  MetadataKey() = default;
+  MetadataKey(StaticKey key) : ptr_(key.name.data()), len_(key.name.size()) {}
+  explicit MetadataKey(std::string_view key) : owned_(key) {}
+  std::string_view view() const {
+    return ptr_ != nullptr ? std::string_view(ptr_, len_)
+                           : std::string_view(owned_);
+  }
+  operator std::string_view() const { return view(); }
+  const char* data() const { return view().data(); }
+  std::size_t size() const { return view().size(); }
+  std::string str() const { return std::string(view()); }
+  bool matches(std::string_view other) const {
+    if (ptr_ != nullptr && ptr_ == other.data()) return len_ == other.size();
+    return view() == other;
+  }
+  friend bool operator==(const MetadataKey& a, const MetadataKey& b) {
+    return a.matches(b.view());
+  }
+
+ private:
+  const char* ptr_ = nullptr;
+  std::size_t len_ = 0;
+  std::string owned_;
+};
+
+}  // namespace dftracer
+
+template <>
+struct std::hash<dftracer::MetadataKey> {
+  std::size_t operator()(const dftracer::MetadataKey& key) const {
+    return std::hash<std::string_view>()(key.view());
+  }
+};
+#if defined(__GLIBCXX__)
+// As for std::string: libstdc++ then scans a map of up to 20 keys instead of
+// hashing, and an aggregation bucket has a handful.
+template <>
+struct std::__is_fast_hash<std::hash<dftracer::MetadataKey>> : std::false_type {
+};
+#endif
+
+namespace dftracer {
+
 class Metadata {
  public:
   using Value = std::tuple<MetadataType, MetadataValue, std::size_t>;
-  using Entry = std::pair<std::string, Value>;
+  using Entry = std::pair<MetadataKey, Value>;
 
  private:
   /**
@@ -183,6 +235,43 @@ class Metadata {
           }
         },
         value);
+  }
+  template <typename K, typename V>
+  std::pair<DataMap::iterator, bool> assign(std::string_view name, const K& key,
+                                            V&& value,
+                                            const MetadataType& type) {
+    if constexpr (!detail::is_metadata_value_v<std::decay_t<V>>) {
+      erase(name);
+      return {data.end(), false};
+    } else {
+      MetadataValue converted = make_metadata_value(std::forward<V>(value));
+      const std::size_t hash = key_hash(converted, type);
+      auto it = find(name);
+      if (it != data.end()) {
+        it->second = Value(type, std::move(converted), hash);
+        return {it, false};
+      }
+      data.emplace_back(
+          std::piecewise_construct, std::forward_as_tuple(key),
+          std::forward_as_tuple(type, std::move(converted), hash));
+      return {data.end() - 1, true};
+    }
+  }
+  template <typename K, typename V>
+  std::pair<DataMap::iterator, bool> add(std::string_view name, const K& key,
+                                         V&& value, const MetadataType& type) {
+    auto it = find(name);
+    if (it != data.end()) return {it, false};
+    if constexpr (!detail::is_metadata_value_v<std::decay_t<V>>) {
+      return {data.end(), false};
+    } else {
+      MetadataValue converted = make_metadata_value(std::forward<V>(value));
+      const std::size_t hash = key_hash(converted, type);
+      data.emplace_back(
+          std::piecewise_construct, std::forward_as_tuple(key),
+          std::forward_as_tuple(type, std::move(converted), hash));
+      return {data.end() - 1, true};
+    }
   }
 
  public:
@@ -240,53 +329,42 @@ class Metadata {
   }
   iterator find(std::string_view key) {
     for (auto it = data.begin(); it != data.end(); ++it)
-      if (it->first == key) return it;
+      if (it->first.matches(key)) return it;
     return data.end();
   }
   const_iterator find(std::string_view key) const {
     for (auto it = data.begin(); it != data.end(); ++it)
-      if (it->first == key) return it;
+      if (it->first.matches(key)) return it;
     return data.end();
   }
 
+  /** Sets `key` to `value`. A key that is not a StaticKey is copied. */
   template <typename V>
   std::pair<iterator, bool> insert_or_assign(
       std::string_view key, V&& value,
       const MetadataType& type = MetadataType::MT_KEY) {
-    if constexpr (!detail::is_metadata_value_v<std::decay_t<V>>) {
-      erase(key);
-      return {data.end(), false};
-    } else {
-      MetadataValue converted = make_metadata_value(std::forward<V>(value));
-      const std::size_t hash = key_hash(converted, type);
-      auto it = find(key);
-      if (it != data.end()) {
-        it->second = Value(type, std::move(converted), hash);
-        return {it, false};
-      }
-      data.emplace_back(
-          std::piecewise_construct, std::forward_as_tuple(key),
-          std::forward_as_tuple(type, std::move(converted), hash));
-      return {data.end() - 1, true};
-    }
+    return assign(key, key, std::forward<V>(value), type);
+  }
+  template <typename V>
+  std::pair<iterator, bool> insert_or_assign(
+      StaticKey key, V&& value,
+      const MetadataType& type = MetadataType::MT_KEY) {
+    return assign(key.name, key, std::forward<V>(value), type);
   }
 
+  /** Adds `key` unless the map has it. A key that is not a StaticKey is
+   * copied. */
   template <typename V>
   std::pair<iterator, bool> insert(
       std::string_view key, V&& value,
       const MetadataType& type = MetadataType::MT_KEY) {
-    auto it = find(key);
-    if (it != data.end()) return {it, false};
-    if constexpr (!detail::is_metadata_value_v<std::decay_t<V>>) {
-      return {data.end(), false};
-    } else {
-      MetadataValue converted = make_metadata_value(std::forward<V>(value));
-      const std::size_t hash = key_hash(converted, type);
-      data.emplace_back(
-          std::piecewise_construct, std::forward_as_tuple(key),
-          std::forward_as_tuple(type, std::move(converted), hash));
-      return {data.end() - 1, true};
-    }
+    return add(key, key, std::forward<V>(value), type);
+  }
+  template <typename V>
+  std::pair<iterator, bool> insert(
+      StaticKey key, V&& value,
+      const MetadataType& type = MetadataType::MT_KEY) {
+    return add(key.name, key, std::forward<V>(value), type);
   }
 
   bool contains(std::string_view key) const { return find(key) != data.end(); }
@@ -308,6 +386,15 @@ class Metadata {
 
   Value& operator[](std::string_view key) {
     auto it = find(key);
+    if (it != data.end()) return it->second;
+    data.emplace_back(std::piecewise_construct, std::forward_as_tuple(key),
+                      std::forward_as_tuple());
+    return data.back().second;
+  }
+  /** As operator[](std::string_view), but a new entry keeps `key` as it is,
+   * borrowed or owned. */
+  Value& operator[](const MetadataKey& key) {
+    auto it = find(key.view());
     if (it != data.end()) return it->second;
     data.emplace_back(std::piecewise_construct, std::forward_as_tuple(key),
                       std::forward_as_tuple());
@@ -361,8 +448,8 @@ struct TagSource {
 };
 
 struct AggregatedKey {
-  std::string category;
-  std::string event_name;
+  std::string_view category;
+  std::string_view event_name;
   TraceEventType type;
   TimeResolution time_interval;
   ThreadID thread_id;
@@ -375,9 +462,7 @@ struct AggregatedKey {
   mutable size_t _cached_hash;            // Cached hash value
 
   AggregatedKey()
-      : category(nullptr),
-        event_name(nullptr),
-        type(TraceEventType::TRACE_TYPE_UNKNOWN),
+      : type(TraceEventType::TRACE_TYPE_UNKNOWN),
         time_interval(0),
         thread_id(0),
         additional_keys(nullptr),
@@ -413,7 +498,17 @@ struct AggregatedKey {
         app_name(other.app_name),
         rank(other.rank),
         tag_source(other.tag_source),
-        _cached_hash(other._cached_hash) {}
+        _cached_hash(other._cached_hash) {
+    if (other.owned_names_ != nullptr) own_names();
+  }
+  AggregatedKey& operator=(const AggregatedKey&) = delete;
+  /** Copies the category and name, so this key no longer borrows them. */
+  void own_names() {
+    owned_names_ = std::make_unique<std::pair<std::string, std::string>>(
+        category, event_name);
+    category = owned_names_->first;
+    event_name = owned_names_->second;
+  }
   bool operator==(const AggregatedKey& other) const {
     if (category != other.category || event_name != other.event_name ||
         type != other.type || time_interval != other.time_interval ||
@@ -446,6 +541,8 @@ struct AggregatedKey {
     }
     return true;
   }
+
+  std::unique_ptr<std::pair<std::string, std::string>> owned_names_;
 };
 
 // Specialize std::hash for AggregatedKey
@@ -461,8 +558,8 @@ struct hash<dftracer::AggregatedKey> {
     }
 
     // Hash string members
-    std::size_t h1 = std::hash<std::string>()(key.category);
-    std::size_t h2 = std::hash<std::string>()(key.event_name);
+    std::size_t h1 = std::hash<std::string_view>()(key.category);
+    std::size_t h2 = std::hash<std::string_view>()(key.event_name);
     std::size_t h3 = std::hash<TimeResolution>()(key.time_interval);
     std::size_t h4 = std::hash<ThreadID>()(key.thread_id);
     std::size_t h6 = std::hash<uint8_t>()(static_cast<uint8_t>(key.type));
@@ -471,7 +568,7 @@ struct hash<dftracer::AggregatedKey> {
     if (key.additional_keys && !key.additional_keys->empty()) {
       for (const auto& pair : *key.additional_keys) {
         if (std::get<0>(pair.second) == MetadataType::MT_KEY) {
-          h5 ^= std::hash<std::string>()(pair.first);
+          h5 ^= std::hash<std::string_view>()(pair.first.view());
           h5 ^= std::get<2>(pair.second);
         }
       }
@@ -558,17 +655,39 @@ class AggregatedValues {
  public:
   AggregatedValues() {}
   ~AggregatedValues() {}
-  std::unordered_map<std::string, BaseAggregatedValue*> values;
-  int update(const std::string& key, const std::type_info& id,
-             BaseAggregatedValue* value) {
+  std::unordered_map<MetadataKey, BaseAggregatedValue*> values;
+  /** Folds `value` into the number aggregate of `key`, in place. A key that
+   * already holds another type keeps it and ignores `value`. */
+  template <typename T>
+  void add_number(const MetadataKey& key, T value) {
     auto it = values.find(key);
-    if (it != values.end()) {
-      it->second->update(value);
-      delete value;
-    } else {
-      values.insert_or_assign(key, value);
+    if (it == values.end()) {
+      values.emplace(key, new NumberAggregationValue<T>(value));
+      return;
     }
-    return 0;
+    BaseAggregatedValue* current = it->second;
+    if (current->_type != ValueType::VALUE_TYPE_NUMBER ||
+        current->_id != std::type_index(typeid(T)))
+      return;
+    auto* number = static_cast<NumberAggregationValue<T>*>(current);
+    if (value < number->min) number->min = value;
+    if (value > number->max) number->max = value;
+    number->sum += value;
+    ++number->count;
+  }
+  /** Counts `value` into the aggregate of `key`, as add_number() does. */
+  template <typename T>
+  void add_general(const MetadataKey& key, T value) {
+    auto it = values.find(key);
+    if (it == values.end()) {
+      values.emplace(key, new AggregatedValue<T>(value));
+      return;
+    }
+    BaseAggregatedValue* current = it->second;
+    if (current->_type != ValueType::VALUE_TYPE_STRING ||
+        current->_id != std::type_index(typeid(T)))
+      return;
+    ++static_cast<AggregatedValue<T>*>(current)->count;
   }
 };
 
@@ -635,9 +754,9 @@ inline std::optional<Value> getFieldValue(const AggregatedKey* key,
   const std::string& fieldName = field.path[0];
 
   if (fieldName == "cat") {
-    return Value{key->category};
+    return Value{std::string(key->category)};
   } else if (fieldName == "name") {
-    return Value{key->event_name};
+    return Value{std::string(key->event_name)};
   } else if (fieldName == "ts") {
     return Value{key->time_interval};
   } else if (fieldName == "dur") {
