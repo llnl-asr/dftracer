@@ -8,7 +8,6 @@
 #include <dftracer/core/serialization/metadata_json.h>
 
 #include <algorithm>
-#include <any>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -249,50 +248,35 @@ inline uint16_t encode_metadata(ByteWriter& w, const Metadata* metadata) {
     if (count == 0xffff) break;
     const std::string& key = item.first;
     const uint8_t mtype = static_cast<uint8_t>(std::get<0>(item.second));
-    const std::any& value = std::get<1>(item.second);
-    // std::any::type() is an indirect call into the value's manager: ask
-    // once, not once per candidate type below.
-    const std::type_info& id = value.type();
+    const MetadataValue& value = std::get<1>(item.second);
     ++count;
-    if (dftracer::same_type(id, typeid(RawJson))) {
-      const auto& raw = std::any_cast<const RawJson&>(value);
-      put_key(w, SHM_VALUE_RAW_JSON, mtype, key);
-      detail::put_long_string(w, raw.value.data(), raw.value.size());
-      continue;
-    }
-    if (dftracer::same_type(id, typeid(ArgList))) {
-      const auto& list = std::any_cast<const ArgList&>(value);
-      put_key(w, SHM_VALUE_RAW_JSON, mtype, key);
-      put_json(w, [&](JsonWriter& json) { metadata_json::list(json, list); });
-      continue;
-    }
-#define DFTRACER_ENCODE_NUMBER(TYPE, VALUE, BLOCK)                    \
-  if (dftracer::same_type(id, typeid(TYPE))) {                        \
-    using V = TYPE;                                                   \
-    uint8_t tag = std::is_floating_point<V>::value ? SHM_VALUE_DOUBLE \
-                  : std::is_signed<V>::value       ? SHM_VALUE_INT    \
-                                                   : SHM_VALUE_UINT;        \
-    put_key(w, tag, mtype, key);                                      \
-    detail::put_number_value(w, *std::any_cast<V>(&VALUE));           \
-    continue;                                                         \
-  }
-    DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_ENCODE_NUMBER, value, {})
-#undef DFTRACER_ENCODE_NUMBER
-    if (dftracer::same_type(id, typeid(std::string))) {
-      const auto& str = std::any_cast<const std::string&>(value);
-      put_key(w, SHM_VALUE_STRING, mtype, key);
-      detail::put_long_string(w, str.data(), str.size());
-      continue;
-    }
-    const char* cstr = nullptr;
-    if (dftracer::same_type(id, typeid(const char*))) {
-      cstr = std::any_cast<const char*>(value);
-    } else if (dftracer::same_type(id, typeid(HashType))) {
-      cstr = std::any_cast<HashType>(value);
-    }
-    put_key(w, SHM_VALUE_STRING, mtype, key);
-    detail::put_long_string(w, cstr == nullptr ? "" : cstr,
-                            cstr == nullptr ? 0 : std::strlen(cstr));
+    std::visit(
+        [&](const auto& v) {
+          using T = std::decay_t<decltype(v)>;
+          if constexpr (std::is_same_v<T, RawJson>) {
+            put_key(w, SHM_VALUE_RAW_JSON, mtype, key);
+            detail::put_long_string(w, v.value.data(), v.value.size());
+          } else if constexpr (std::is_same_v<T, ArgList>) {
+            put_key(w, SHM_VALUE_RAW_JSON, mtype, key);
+            put_json(w,
+                     [&](JsonWriter& json) { metadata_json::list(json, v); });
+          } else if constexpr (std::is_same_v<T, std::string>) {
+            put_key(w, SHM_VALUE_STRING, mtype, key);
+            detail::put_long_string(w, v.data(), v.size());
+          } else if constexpr (std::is_same_v<T, const char*>) {
+            put_key(w, SHM_VALUE_STRING, mtype, key);
+            detail::put_long_string(w, v == nullptr ? "" : v,
+                                    v == nullptr ? 0 : std::strlen(v));
+          } else {
+            constexpr uint8_t tag = std::is_floating_point_v<T>
+                                        ? SHM_VALUE_DOUBLE
+                                    : std::is_signed_v<T> ? SHM_VALUE_INT
+                                                          : SHM_VALUE_UINT;
+            put_key(w, tag, mtype, key);
+            detail::put_number_value(w, v);
+          }
+        },
+        value);
   }
   return count;
 }

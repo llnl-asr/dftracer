@@ -86,8 +86,8 @@ size_t JsonLines::data(char* buffer, int index, ConstEventNameType event_name,
     for (auto it = metadata->begin(); it != metadata->end();) {
       const auto& v = std::get<1>(it->second);
       if (it->first == DFT_RELATIONS_ARG &&
-          (dftracer::same_type(v.type(), typeid(dftracer::RawJson)) ||
-           dftracer::same_type(v.type(), typeid(dftracer::ArgList))))
+          (std::holds_alternative<dftracer::RawJson>(v) ||
+           std::holds_alternative<dftracer::ArgList>(v)))
         ++it;
       else
         it = metadata->erase(it);

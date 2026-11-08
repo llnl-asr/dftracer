@@ -15,7 +15,6 @@
 #include <dftracer/core/utils/configuration_manager.h>
 #include <dftracer/core/writer/stdio_writer.h>
 
-#include <any>
 #include <atomic>
 #include <memory>
 #include <mutex>

@@ -7,14 +7,12 @@
 
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/singleton.h>
-#include <dftracer/core/common/type_match.h>
 #include <dftracer/core/utils/posix_bypass.h>
 #include <execinfo.h>
 #include <limits.h>
 #include <signal.h>
 #include <unistd.h>
 
-#include <any>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -362,14 +360,6 @@ inline const char* is_traced_common(const char* filename, const char* func) {
   DFTRACER_LOG_INFO("Profiler Intercepted POSIX tracing file %s for func %s",
                     filename, func);
   return filename;
-}
-
-template <typename T>
-auto any_cast_and_apply(const std::any& value) -> std::optional<T> {
-  if (dftracer::same_type(value.type(), typeid(T))) {
-    return std::any_cast<T>(value);
-  }
-  return std::nullopt;
 }
 
 #endif  // DFTRACER_UTILS_H

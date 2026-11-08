@@ -34,9 +34,8 @@ class StringTable {
 /**
  * Aggregation of the service's packed events (docs/design_pc_service.rst,
  * "Metadata in the service"). The same rows Aggregator gives a process's
- * Metadata events, from the decoded record and without the heap Metadata,
- * std::any and per-value allocations that Aggregator needs for its general
- * API.
+ * Metadata events, from the decoded record and without the heap Metadata
+ * and per-value allocations that Aggregator needs for its general API.
  *
  * An event's metadata is two sets. Its keys (MT_KEY fields) are part of the
  * bucket, with category, name, type, thread and interval: events that differ

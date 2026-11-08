@@ -13,7 +13,6 @@
 #include <dftracer/core/common/type_match.h>
 #include <dftracer/core/ipc/event_codec.h>
 
-#include <any>
 #include <cstdint>
 #include <cstdio>
 #include <iostream>
@@ -39,17 +38,17 @@ void test_metadata_semantics() {
   auto r =
       m.insert_or_assign("a", static_cast<int64_t>(7), MetadataType::MT_VALUE);
   DFT_CHECK(!r.second && m.size() == 3);
-  DFT_CHECK(std::any_cast<int64_t>(std::get<1>(r.first->second)) == 7);
+  DFT_CHECK(std::get<int64_t>(std::get<1>(r.first->second)) == 7);
   DFT_CHECK(std::get<0>(m.at("a")) == MetadataType::MT_VALUE);
   // insert does not overwrite.
   DFT_CHECK(!m.insert("b", std::string("y")).second);
-  DFT_CHECK(std::any_cast<std::string>(std::get<1>(m.at("b"))) == "x");
+  DFT_CHECK(std::get<std::string>(std::get<1>(m.at("b"))) == "x");
   // Insertion order.
   std::vector<std::string> order;
   for (const auto& e : m) order.push_back(e.first);
   DFT_CHECK((order == std::vector<std::string>{"a", "b", "c"}));
   // operator[] adds a default entry once.
-  m["d"] = Metadata::Value(MetadataType::MT_KEY, std::any(4), 0);
+  m["d"] = Metadata::Value(MetadataType::MT_KEY, MetadataValue(int64_t{4}), 0);
   m["d"];
   DFT_CHECK(m.size() == 4 && m.contains("d"));
   // at() of a missing key throws, as unordered_map::at did.
@@ -74,8 +73,8 @@ void test_metadata_semantics() {
   for (int i = 0; i < 100; ++i)
     big.insert_or_assign("key" + std::to_string(i), i);
   for (int i = 0; i < 100; ++i)
-    DFT_CHECK(std::any_cast<int>(
-                  std::get<1>(big.at("key" + std::to_string(i)))) == i);
+    DFT_CHECK(
+        std::get<int64_t>(std::get<1>(big.at("key" + std::to_string(i)))) == i);
   // Equal maps in different orders still key aggregation equally.
   Metadata x, y;
   x.insert_or_assign("p", 1);
@@ -91,6 +90,46 @@ void test_metadata_semantics() {
   std::cout << "✓ Metadata semantics" << std::endl;
 }
 
+void test_metadata_value_keys() {
+  // One number is one key value however it is typed; strings compare by
+  // content, whatever holds them.
+  char buf[] = "abc";
+  const std::string abc = "abc";
+  Metadata a, b;
+  a.insert_or_assign("n", 5);
+  a.insert_or_assign("s", static_cast<const char*>(buf));
+  b.insert_or_assign("n", 5L);
+  b.insert_or_assign("s", "abc");
+  AggregatedKey ka("c", "n", TraceEventType::TRACE_TYPE_LIBC_IO, 1, 1, 1, &a,
+                   nullptr, nullptr);
+  AggregatedKey kb("c", "n", TraceEventType::TRACE_TYPE_LIBC_IO, 1, 1, 1, &b,
+                   nullptr, nullptr);
+  DFT_CHECK(ka == kb);
+  DFT_CHECK(std::hash<AggregatedKey>()(ka) == std::hash<AggregatedKey>()(kb));
+  Metadata c;
+  c.insert_or_assign("n", 5U);
+  c.insert_or_assign("s", abc);
+  AggregatedKey kc("c", "n", TraceEventType::TRACE_TYPE_LIBC_IO, 1, 1, 1, &c,
+                   nullptr, nullptr);
+  DFT_CHECK(!(ka == kc));  // unsigned and signed differ, const char* and string
+  // A bool is 0 or 1 (hbool_t since HDF5 1.14); a type with no alternative,
+  // such as a struct (H5O_token_t) or a handle pointer, is skipped.
+  struct Token {
+    unsigned char data[16];
+  } token = {};
+  int handle = 0;
+  Metadata d;
+  d.insert_or_assign("closing", true);
+  d.insert_or_assign("token", token);
+  d.insert("handle", &handle);
+  d.insert_or_assign("n", 1);
+  d.insert_or_assign("n", static_cast<void*>(&handle));
+  DFT_CHECK(std::get<uint64_t>(std::get<1>(d.at("closing"))) == 1);
+  DFT_CHECK(d.size() == 1 && !d.contains("token") && !d.contains("handle"));
+  DFT_CHECK(!d.contains("n"));  // assigning a skipped type drops the key
+  std::cout << "✓ Metadata value keys" << std::endl;
+}
+
 void test_metadata_reuse_threads() {
   // Many threads acquiring, filling and releasing at once: no map is shared,
   // and a reused map is always empty.
@@ -104,7 +143,7 @@ void test_metadata_reuse_threads() {
         good = good && m->empty();
         m->insert_or_assign("thread", t);
         m->insert_or_assign("i", i);
-        good = good && std::any_cast<int>(std::get<1>(m->at("thread"))) == t;
+        good = good && std::get<int64_t>(std::get<1>(m->at("thread"))) == t;
         if (i % 3 == 0)
           delete m;  // deleting a pooled map is fine
         else
@@ -372,6 +411,7 @@ void test_interning_matches_plain() {
 
 int main() {
   test_metadata_semantics();
+  test_metadata_value_keys();
   test_metadata_reuse_threads();
   check_same_type(Candidates{});
   test_writer_forms();

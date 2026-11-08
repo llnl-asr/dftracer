@@ -11,7 +11,6 @@
 #include <dftracer/core/utils/configuration_manager.h>
 #include <dftracer/core/utils/utils.h>
 
-#include <any>
 #include <atomic>
 #include <map>
 #include <mutex>

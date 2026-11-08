@@ -21,12 +21,20 @@ BaseAggregatedValue* BaseAggregatedValue::get_value() { return _child; }
 std::string Metadata::getTagValue(const std::string& tagKey) const {
   auto it = find(tagKey);
   if (it != data.end()) {
-    DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_ANY_CAST_MACRO,
-                                   std::get<1>(it->second),
-                                   { return std::to_string(res.value()); });
-    DFTRACER_FOR_EACH_STRING_TYPE(DFTRACER_ANY_CAST_MACRO,
-                                  std::get<1>(it->second),
-                                  { return res.value(); });
+    return std::visit(
+        [](const auto& v) -> std::string {
+          using T = std::decay_t<decltype(v)>;
+          if constexpr (std::is_arithmetic_v<T>) {
+            return std::to_string(v);
+          } else if constexpr (std::is_same_v<T, const char*>) {
+            return v == nullptr ? std::string() : std::string(v);
+          } else if constexpr (std::is_same_v<T, std::string>) {
+            return v;
+          } else {
+            return std::string();
+          }
+        },
+        std::get<1>(it->second));
   }
   return "";
 }

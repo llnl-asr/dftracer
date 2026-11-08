@@ -6,10 +6,10 @@
 
 namespace dftracer {
 /**
- * Whether a std::any (or an aggregated value) holds `b`: the same answer as
- * `a == b`, without its string compare in the common case.
+ * Whether an aggregated value's type is `b`: the same answer as `a == b`,
+ * without its string compare in the common case.
  *
- * Metadata values are matched against a chain of candidate types (the
+ * Aggregated values are matched against a chain of candidate types (the
  * DFTRACER_FOR_EACH_*_TYPE macros), so most comparisons are mismatches. With
  * libstdc++, type_info::operator== compares the name pointers and, when they
  * differ, the names with strcmp -- one call per candidate, measured at 11% of
