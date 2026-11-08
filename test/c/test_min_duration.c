@@ -1,8 +1,9 @@
 // DFTRACER_MIN_DURATION_NS: events shorter than it are not traced. FAST
-// regions do no work (well under a microsecond); SLOW regions spin for 2 ms.
-// With the threshold at 1 ms only the slow ones, and dftracer's own events,
+// regions do no work (well under a microsecond); SLOW regions spin for 20 ms.
+// With the threshold at 10 ms only the slow ones, and dftracer's own events,
 // are in the trace; without it, all of them (test/CMakeLists.txt checks
-// both). Usage: test_min_duration
+// both). The margin is for valgrind on CI, where a fast region can take over
+// 1 ms. Usage: test_min_duration
 #include <dftracer/dftracer.h>
 #include <stdint.h>
 #include <time.h>
@@ -27,13 +28,22 @@ static void slow_region(int i) {
   DFTRACER_C_REGION_START(slow_region);
   DFTRACER_C_REGION_UPDATE_INT(slow_region, "i", i);
   const uint64_t t0 = now_ns();
-  while (now_ns() - t0 < 2000000ull) {
+  while (now_ns() - t0 < 20000000ull) {
   }
   DFTRACER_C_REGION_END(slow_region);
 }
 
+// The first region of a run pays one-time setup inside its own timing (13 ms
+// under valgrind), so it gets a name of its own that the checks ignore.
+static void warmup_region(void) {
+  DFTRACER_C_REGION_START(warmup_region);
+  DFTRACER_C_REGION_UPDATE_INT(warmup_region, "i", 0);
+  DFTRACER_C_REGION_END(warmup_region);
+}
+
 int main(void) {
   DFTRACER_C_INIT(NULL, NULL, NULL);
+  warmup_region();
   for (int i = 0; i < ROUNDS; ++i) {
     fast_region(i);
     slow_region(i);
