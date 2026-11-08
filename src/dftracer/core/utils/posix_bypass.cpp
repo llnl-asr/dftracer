@@ -9,6 +9,7 @@
 #include <sys/syscall.h>
 #include <syscall.h>
 
+#include <atomic>
 #include <cassert>
 #include <dftracer/core/dftracer_config.hpp>
 
@@ -92,7 +93,12 @@ int POSIXBypass::dirfd(DIR* dir) { return real_dirfd_(dir); }
 // cannot get: "cannot allocate memory in static TLS block".
 namespace {
 thread_local ThreadID tl_tid = 0;
-void forget_tid_in_child() { tl_tid = 0; }
+std::atomic<ProcessID> owner_pid{static_cast<ProcessID>(syscall(SYS_getpid))};
+void forget_tid_in_child() {
+  tl_tid = 0;
+  owner_pid.store(static_cast<ProcessID>(syscall(SYS_getpid)),
+                  std::memory_order_relaxed);
+}
 const int tid_fork_hook = pthread_atfork(nullptr, nullptr, forget_tid_in_child);
 }  // namespace
 
@@ -100,7 +106,9 @@ ThreadID df_gettid() {
   ThreadID tid = tl_tid;
   if (__builtin_expect(tid == 0, 0)) {
     tid = static_cast<ThreadID>(syscall(SYS_gettid));
-    tl_tid = tid;
+    // A vfork child shares the parent thread's cache.
+    if (syscall(SYS_getpid) == owner_pid.load(std::memory_order_relaxed))
+      tl_tid = tid;
   }
   return tid;
 }
