@@ -6,13 +6,6 @@ std::shared_ptr<dftracer::Aggregator>
 template <>
 bool dftracer::Singleton<dftracer::Aggregator>::stop_creating_instances = false;
 
-#define NUM_INSERT(TYPE)                                               \
-  insert_number_value<TYPE>(iter2, time_interval, aggregated_key, key, \
-                            std::any_cast<TYPE>(value.second));
-
-#define GENERAL_INSERT(TYPE)                                            \
-  insert_general_value<TYPE>(iter2, time_interval, aggregated_key, key, \
-                             std::any_cast<TYPE>(value.second));
 namespace dftracer {
 bool Aggregator::aggregate(AggregatedKey& aggregated_key) {
   const bool first = is_first.exchange(false, std::memory_order_relaxed);
@@ -40,21 +33,22 @@ bool Aggregator::aggregate(AggregatedKey& aggregated_key) {
   // Fast path: skip metadata iteration if empty
   if (aggregated_key.additional_keys &&
       !aggregated_key.additional_keys->empty()) {
-    for (const auto& [key, value] : *aggregated_key.additional_keys) {
+    for (const auto& entry : *aggregated_key.additional_keys) {
+      const std::string& key = entry.first;
+      const Metadata::Value& value = entry.second;
       // Only process MT_VALUE metadata (skip MT_KEY)
       if (std::get<0>(value) == MetadataType::MT_VALUE) {
-        DFTRACER_FOR_EACH_NUMERIC_TYPE(
-            DFTRACER_ANY_CAST_MACRO, std::get<1>(value), {
-              insert_number_value(data, interval, aggregated_key, key,
-                                  res.value());
-              continue;
-            })
-        DFTRACER_FOR_EACH_STRING_TYPE(
-            DFTRACER_ANY_CAST_MACRO, std::get<1>(value), {
-              insert_general_value(data, interval, aggregated_key, key,
-                                   res.value());
-              continue;
-            })
+        std::visit(
+            [&](const auto& v) {
+              using T = std::decay_t<decltype(v)>;
+              if constexpr (std::is_arithmetic_v<T>) {
+                insert_number_value(data, interval, aggregated_key, key, v);
+              } else if constexpr (std::is_same_v<T, const char*> ||
+                                   std::is_same_v<T, std::string>) {
+                insert_general_value(data, interval, aggregated_key, key, v);
+              }
+            },
+            std::get<1>(value));
       }
     }
   }

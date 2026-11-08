@@ -524,7 +524,7 @@ void test_min_duration() {
   // Reported with the rest of the configuration in the end event.
   Metadata meta;
   config_env->populate_metadata(&meta, false, "");
-  const auto& cfg = std::any_cast<const RawJson&>(std::get<1>(meta.at("cfg")));
+  const auto& cfg = std::get<RawJson>(std::get<1>(meta.at("cfg")));
   DFT_CHECK(cfg.value.find("\"min_duration_ns\":1000000") != std::string::npos);
 
   unsetenv("DFTRACER_MIN_DURATION_NS");

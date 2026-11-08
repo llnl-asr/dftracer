@@ -13,15 +13,17 @@
 // standard headers
 #include <stddef.h>
 
-#include <any>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <type_traits>
 #include <typeindex>
 #include <typeinfo>
 #include <unordered_map>
@@ -61,9 +63,73 @@ struct ArgList {
   std::vector<Sub> subs;
 };
 
+/**
+ * A metadata value. Integers are held as int64_t or uint64_t and floats as
+ * double, so one number has one representation however the caller typed it;
+ * strings are held by pointer (const char*, which must outlive the event) or
+ * by value (std::string). Use make_metadata_value() to convert.
+ */
+using MetadataValue = std::variant<int64_t, uint64_t, double, const char*,
+                                   std::string, RawJson, ArgList>;
+
+namespace detail {
+template <typename T>
+inline constexpr bool is_char_like_v =
+    std::is_same_v<T, char> || std::is_same_v<T, signed char> ||
+    std::is_same_v<T, unsigned char> || std::is_same_v<T, wchar_t> ||
+    std::is_same_v<T, char16_t> || std::is_same_v<T, char32_t>;
+// Whether make_metadata_value() takes T. insert() skips any other type,
+// such as an MPI handle under Open MPI, an HDF5 void* or an H5O_token_t, as
+// the std::any writer did.
+template <typename T>
+inline constexpr bool is_metadata_value_v =
+    std::is_same_v<T, MetadataValue> ||
+    (std::is_arithmetic_v<T> && !is_char_like_v<T>) || std::is_enum_v<T> ||
+    std::is_same_v<T, char*> || std::is_same_v<T, const char*> ||
+    std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view> ||
+    std::is_same_v<T, RawJson> || std::is_same_v<T, ArgList>;
+}  // namespace detail
+
+/** The MetadataValue alternative that holds `v`; an enum is stored as its
+ * underlying integer and a bool as 0 or 1 (hbool_t is unsigned before HDF5
+ * 1.14 and bool since). A type with none does not compile. */
+template <typename T>
+inline MetadataValue make_metadata_value(T&& v) {
+  using D = std::decay_t<T>;
+  if constexpr (std::is_same_v<D, MetadataValue>) {
+    return std::forward<T>(v);
+  } else if constexpr (std::is_same_v<D, bool>) {
+    return MetadataValue(std::in_place_type<uint64_t>, v ? 1u : 0u);
+  } else if constexpr (detail::is_char_like_v<D>) {
+    static_assert(!sizeof(D), "char is not a metadata value");
+  } else if constexpr (std::is_enum_v<D>) {
+    return make_metadata_value(static_cast<std::underlying_type_t<D>>(v));
+  } else if constexpr (std::is_integral_v<D> && std::is_signed_v<D>) {
+    return MetadataValue(std::in_place_type<int64_t>, static_cast<int64_t>(v));
+  } else if constexpr (std::is_integral_v<D>) {
+    return MetadataValue(std::in_place_type<uint64_t>,
+                         static_cast<uint64_t>(v));
+  } else if constexpr (std::is_floating_point_v<D>) {
+    return MetadataValue(std::in_place_type<double>, static_cast<double>(v));
+  } else if constexpr (std::is_same_v<D, char*> ||
+                       std::is_same_v<D, const char*>) {
+    return MetadataValue(std::in_place_type<const char*>,
+                         static_cast<const char*>(v));
+  } else if constexpr (std::is_same_v<D, std::string> ||
+                       std::is_same_v<D, std::string_view>) {
+    return MetadataValue(std::in_place_type<std::string>,
+                         std::string(std::forward<T>(v)));
+  } else if constexpr (std::is_same_v<D, RawJson> ||
+                       std::is_same_v<D, ArgList>) {
+    return MetadataValue(std::in_place_type<D>, std::forward<T>(v));
+  } else {
+    static_assert(!sizeof(D), "unsupported metadata value type");
+  }
+}
+
 class Metadata {
  public:
-  using Value = std::tuple<MetadataType, std::any, std::size_t>;
+  using Value = std::tuple<MetadataType, MetadataValue, std::size_t>;
   using Entry = std::pair<std::string, Value>;
 
  private:
@@ -72,8 +138,8 @@ class Metadata {
    * keys, so a linear scan finds one faster than hashing it would, and the
    * vector holds them without a heap node each: with the per-thread map of
    * acquire()/release(), whose clear() keeps the vector's capacity, an event
-   * whose keys fit std::string's inline buffer and whose values fit
-   * std::any's allocates nothing.
+   * whose keys and values fit std::string's inline buffer allocates
+   * nothing.
    */
   using DataMap = std::vector<Entry>;
   DataMap data;
@@ -94,21 +160,29 @@ class Metadata {
     }
   };
   inline static thread_local CacheGuard tl_guard_;
-  std::size_t key_hash(const std::any& value, const MetadataType& type) const {
+  std::size_t key_hash(const MetadataValue& value,
+                       const MetadataType& type) const {
     return hashed_ ? get_hash(value, type) : 0;
   }
-  std::size_t get_hash(const std::any& value, const MetadataType& type) const {
+  std::size_t get_hash(const MetadataValue& value,
+                       const MetadataType& type) const {
     if (type != MetadataType::MT_KEY) {
       return 0;
     }
-    DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_ANY_CAST_MACRO, value, {
-      auto val = std::to_string(res.value());
-      return std::hash<std::string>()(val);
-    });
-    DFTRACER_FOR_EACH_STRING_TYPE(DFTRACER_ANY_CAST_MACRO, value, {
-      return std::hash<std::string>()(res.value());
-    });
-    return 0;
+    return std::visit(
+        [](const auto& v) -> std::size_t {
+          using T = std::decay_t<decltype(v)>;
+          if constexpr (std::is_arithmetic_v<T>) {
+            return std::hash<std::string>()(std::to_string(v));
+          } else if constexpr (std::is_same_v<T, const char*>) {
+            return v == nullptr ? 0 : std::hash<std::string_view>()(v);
+          } else if constexpr (std::is_same_v<T, std::string>) {
+            return std::hash<std::string>()(v);
+          } else {
+            return 0;
+          }
+        },
+        value);
   }
 
  public:
@@ -175,29 +249,44 @@ class Metadata {
     return data.end();
   }
 
+  template <typename V>
   std::pair<iterator, bool> insert_or_assign(
-      std::string_view key, std::any value,
+      std::string_view key, V&& value,
       const MetadataType& type = MetadataType::MT_KEY) {
-    const std::size_t hash = key_hash(value, type);
-    auto it = find(key);
-    if (it != data.end()) {
-      it->second = Value(type, std::move(value), hash);
-      return {it, false};
+    if constexpr (!detail::is_metadata_value_v<std::decay_t<V>>) {
+      erase(key);
+      return {data.end(), false};
+    } else {
+      MetadataValue converted = make_metadata_value(std::forward<V>(value));
+      const std::size_t hash = key_hash(converted, type);
+      auto it = find(key);
+      if (it != data.end()) {
+        it->second = Value(type, std::move(converted), hash);
+        return {it, false};
+      }
+      data.emplace_back(
+          std::piecewise_construct, std::forward_as_tuple(key),
+          std::forward_as_tuple(type, std::move(converted), hash));
+      return {data.end() - 1, true};
     }
-    data.emplace_back(std::piecewise_construct, std::forward_as_tuple(key),
-                      std::forward_as_tuple(type, std::move(value), hash));
-    return {data.end() - 1, true};
   }
 
+  template <typename V>
   std::pair<iterator, bool> insert(
-      std::string_view key, std::any value,
+      std::string_view key, V&& value,
       const MetadataType& type = MetadataType::MT_KEY) {
     auto it = find(key);
     if (it != data.end()) return {it, false};
-    const std::size_t hash = key_hash(value, type);
-    data.emplace_back(std::piecewise_construct, std::forward_as_tuple(key),
-                      std::forward_as_tuple(type, std::move(value), hash));
-    return {data.end() - 1, true};
+    if constexpr (!detail::is_metadata_value_v<std::decay_t<V>>) {
+      return {data.end(), false};
+    } else {
+      MetadataValue converted = make_metadata_value(std::forward<V>(value));
+      const std::size_t hash = key_hash(converted, type);
+      data.emplace_back(
+          std::piecewise_construct, std::forward_as_tuple(key),
+          std::forward_as_tuple(type, std::move(converted), hash));
+      return {data.end() - 1, true};
+    }
   }
 
   bool contains(std::string_view key) const { return find(key) != data.end(); }
@@ -242,12 +331,26 @@ class Metadata {
   std::string getTagValue(const std::string& tagKey) const;
 };
 
-inline bool compare_any(const std::any& a, const std::any& b) {
-  if (a.type() != b.type()) return false;
-  DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_COMPARE_TYPE, NULL,
-                                 { return result; })
-  DFTRACER_FOR_EACH_STRING_TYPE(DFTRACER_COMPARE_TYPE, NULL, { return result; })
-  return false;
+/** Whether two values are the same alternative with equal contents. Strings
+ * compare by content; RawJson and ArgList never match. */
+inline bool metadata_value_equal(const MetadataValue& a,
+                                 const MetadataValue& b) {
+  if (a.index() != b.index()) return false;
+  return std::visit(
+      [&b](const auto& x) -> bool {
+        using T = std::decay_t<decltype(x)>;
+        if constexpr (std::is_arithmetic_v<T> ||
+                      std::is_same_v<T, std::string>) {
+          return x == *std::get_if<T>(&b);
+        } else if constexpr (std::is_same_v<T, const char*>) {
+          const char* y = *std::get_if<T>(&b);
+          if (x == nullptr || y == nullptr) return x == y;
+          return std::strcmp(x, y) == 0;
+        } else {
+          return false;
+        }
+      },
+      a);
 }
 
 /** Where rules read tags.<key> of an event that has no Metadata: the
@@ -336,7 +439,8 @@ struct AggregatedKey {
       auto it = b->find(pair.first);
       if (it == b->end() || std::get<0>(it->second) != MetadataType::MT_KEY ||
           std::get<2>(it->second) != std::get<2>(pair.second) ||
-          !compare_any(std::get<1>(it->second), std::get<1>(pair.second))) {
+          !metadata_value_equal(std::get<1>(it->second),
+                                std::get<1>(pair.second))) {
         return false;
       }
     }
@@ -368,7 +472,6 @@ struct hash<dftracer::AggregatedKey> {
       for (const auto& pair : *key.additional_keys) {
         if (std::get<0>(pair.second) == MetadataType::MT_KEY) {
           h5 ^= std::hash<std::string>()(pair.first);
-          // For std::any, we can only hash the type info
           h5 ^= std::get<2>(pair.second);
         }
       }

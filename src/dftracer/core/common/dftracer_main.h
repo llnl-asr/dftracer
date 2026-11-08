@@ -29,7 +29,6 @@
 #include <dftracer/core/df_logger.h>
 #include <execinfo.h>
 
-#include <any>
 #include <csignal>
 #include <cstring>
 #include <stdexcept>

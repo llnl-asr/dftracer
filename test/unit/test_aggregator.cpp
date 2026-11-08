@@ -440,8 +440,8 @@ void test_aggregator_mt_keys() {
       ++read_buckets;
       DFT_CHECK(key.additional_keys != nullptr);
       DFT_CHECK(key.additional_keys->size() == 1);  // fhash only, no size
-      const auto fhash = std::any_cast<std::string>(
-          std::get<1>(key.additional_keys->at("fhash")));
+      const auto fhash =
+          std::get<std::string>(std::get<1>(key.additional_keys->at("fhash")));
       if (fhash == "111") {
         DFT_CHECK(size->count == 2 && size->sum == 400 && size->min == 100 &&
                   size->max == 300);

@@ -192,7 +192,7 @@ static void append_value([[maybe_unused]] TraceEventType layer,
   if (it == metadata->end())
     it = metadata->insert_or_assign(key, dftracer::ArgList{sub != nullptr, {}})
              .first;
-  auto* list = std::any_cast<dftracer::ArgList>(&std::get<1>(it->second));
+  auto* list = std::get_if<dftracer::ArgList>(&std::get<1>(it->second));
   if (list == nullptr || list->nested != (sub != nullptr)) return;
   for (auto& s : list->subs) {
     if (sub == nullptr || std::strcmp(s.name, sub) == 0) {

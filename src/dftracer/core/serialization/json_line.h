@@ -9,7 +9,6 @@
 #include <dftracer/core/serialization/line_format.h>
 #include <dftracer/core/utils/configuration_manager.h>
 
-#include <any>
 #include <cstddef>
 #include <iomanip>
 #include <sstream>

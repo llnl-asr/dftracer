@@ -11,7 +11,6 @@
 #include <dftracer/core/utils/configuration_manager.h>
 
 #include <algorithm>
-#include <any>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -27,7 +26,7 @@ static char kHostname[] = "hosthash";
 
 struct EventField {
   std::string key;
-  std::any value;
+  MetadataValue value;
   MetadataType type;
 };
 

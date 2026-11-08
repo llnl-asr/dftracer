@@ -24,7 +24,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <any>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -578,7 +577,12 @@ class DFTLogger {
       if (metadata != nullptr) {
         auto iter = metadata->find("tid");
         if (iter != metadata->end()) {
-          tid = std::any_cast<ThreadID>(std::get<1>(iter->second));
+          std::visit(
+              [&tid](const auto& v) {
+                if constexpr (std::is_arithmetic_v<std::decay_t<decltype(v)>>)
+                  tid = static_cast<ThreadID>(v);
+              },
+              std::get<1>(iter->second));
           metadata->erase("tid");
         }
       }
@@ -742,11 +746,11 @@ class DFTLogger {
       for (auto& entry : app_metadata_) {
         if (!first_app) app_json << ",";
         app_json << "\"" << entry.first << "\":";
-        const std::any& value = std::get<1>(entry.second);
-        if (value.type() == typeid(int64_t)) {
-          app_json << std::any_cast<int64_t>(value);
-        } else if (value.type() == typeid(std::string)) {
-          app_json << "\"" << std::any_cast<std::string>(value) << "\"";
+        const dftracer::MetadataValue& value = std::get<1>(entry.second);
+        if (const auto* i = std::get_if<int64_t>(&value)) {
+          app_json << *i;
+        } else if (const auto* s = std::get_if<std::string>(&value)) {
+          app_json << "\"" << *s << "\"";
         }
         first_app = false;
       }

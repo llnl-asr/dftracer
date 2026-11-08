@@ -11,7 +11,6 @@
 #include <rocprofiler-sdk/rocprofiler.h>
 #include <rocprofiler-sdk/version.h>
 
-#include <any>
 #include <cstdlib>
 #include <string>
 #include <string_view>

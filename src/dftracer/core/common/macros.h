@@ -2,11 +2,6 @@
 #define DFTRACER_CORE_MACRO
 #include <dftracer/core/common/type_match.h>
 
-#define DFTRACER_ANY_CAST_MACRO(TYPE, VALUE, BLOCK) \
-  if (auto res = any_cast_and_apply<TYPE>(VALUE)) { \
-    BLOCK;                                          \
-  }
-
 #define DFTRACER_ANY_ID_MACRO(TYPE, VALUE, BLOCK) \
   if (dftracer::same_type(id, typeid(TYPE))) {    \
     BLOCK;                                        \
@@ -59,11 +54,6 @@
       this_casted->update(value_casted);                                       \
     }                                                                          \
     return;                                                                    \
-  }
-
-#define DFTRACER_COMPARE_TYPE(TYPE, VALUE, BLOCK)            \
-  if (dftracer::same_type(a.type(), typeid(TYPE))) {         \
-    return std::any_cast<TYPE>(a) == std::any_cast<TYPE>(b); \
   }
 
 #define DFTRACER_FOR_EACH_NUMERIC_TYPE(MACRO, VALUE, BLOCK) \
