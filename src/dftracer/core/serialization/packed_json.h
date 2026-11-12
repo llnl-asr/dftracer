@@ -18,7 +18,7 @@
  * Aggregator's rows share. Lines are written straight from the decoded record,
  * with no Metadata, no stringstream and no allocation. Field order is the
  * record's; values print as the types the decoder yields (64-bit integers,
- * double as ostream does, strings unescaped).
+ * double as ostream does, strings escaped).
  */
 namespace dftracer {
 namespace packed_json {
@@ -29,7 +29,7 @@ using Line = line_format::Line;
 /** "key":value of a decoded metadata entry. */
 inline void field(Line& w, const ipc::DecodedValue& v) {
   w.raw("\"");
-  w.raw(v.key);
+  w.escaped(v.key);
   w.raw("\":");
   switch (v.tag) {
     case SHM_VALUE_INT:
@@ -43,7 +43,7 @@ inline void field(Line& w, const ipc::DecodedValue& v) {
       break;
     case SHM_VALUE_STRING:
       w.raw("\"");
-      w.raw(v.s);
+      w.escaped(v.s);
       w.raw("\"");
       break;
     case SHM_VALUE_RAW_JSON:

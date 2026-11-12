@@ -136,6 +136,14 @@ inline std::vector<Event> line_events() {
        true,
        {{"items", list, K}, {"relations", nested, K}}},
       {"only_ignored", "POSIX", io, 170, 3, 1, true, {{"note", int64_t{1}, I}}},
+      {"say \"x\"",
+       "c\\at\n",
+       py,
+       180,
+       2,
+       5,
+       true,
+       {{"k\"ey", std::string("v\tal"), K}, {"n\\m", int64_t{1}, V}}},
   };
 }
 
@@ -206,6 +214,16 @@ inline std::vector<Event> aggregated_events() {
                     1,
                     true,
                     {{"fhash", std::string("ccc"), K}}});
+  // Escapes in a name and a key.
+  events.push_back(
+      {"we\"ird",
+       "POSIX",
+       io,
+       600,
+       4,
+       1,
+       true,
+       {{"f\"h", std::string("a\nb"), K}, {"s\\z", int64_t{5}, V}}});
   return events;
 }
 

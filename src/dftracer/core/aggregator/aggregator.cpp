@@ -279,11 +279,11 @@ void Aggregator::write_row(char* out, size_t& size, const Interval& interval,
   for (uint32_t i = 0; i < b.keys_count; ++i) {
     const KeyField& f = interval.keys[b.keys_at + i];
     w.raw(",\"");
-    w.raw(names_.at(f.key));
+    w.escaped(names_.at(f.key));
     w.raw("\":");
     if (f.tag == SHM_VALUE_STRING) {
       w.raw("\"");
-      w.raw(interval.key_strings.at(static_cast<uint32_t>(f.v.u)));
+      w.escaped(interval.key_strings.at(static_cast<uint32_t>(f.v.u)));
       w.raw("\"");
     } else if (f.tag == SHM_VALUE_RAW_JSON) {
       w.raw(interval.key_strings.at(static_cast<uint32_t>(f.v.u)));
@@ -297,7 +297,7 @@ void Aggregator::write_row(char* out, size_t& size, const Interval& interval,
     const std::string_view key = names_.at(a.key);
     if (a.count == 1) {
       w.raw(",\"");
-      w.raw(key);
+      w.escaped(key);
       w.raw("\":");
       number(w, a.tag, a.sum);
       continue;
@@ -306,7 +306,7 @@ void Aggregator::write_row(char* out, size_t& size, const Interval& interval,
         {"_sum", a.sum}, {"_min", a.min}, {"_max", a.max}};
     for (const auto& [suffix, n] : parts) {
       w.raw(",\"");
-      w.raw(key);
+      w.escaped(key);
       w.raw(suffix);
       w.raw("\":");
       number(w, a.tag, n);

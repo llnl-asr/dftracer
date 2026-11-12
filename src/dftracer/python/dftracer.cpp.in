@@ -69,7 +69,7 @@ static std::string py_json(py::handle v) {
     snprintf(buf, sizeof(buf), "%.15g", v.cast<double>());
     return buf;
   }
-  return json_quote(py::str(v).cast<std::string>().c_str());
+  return line_format::quoted(py::str(v).cast<std::string>());
 }
 
 // A list arg as JSON: [v, ...] or {sub: [v, ...], ...}.
@@ -79,7 +79,7 @@ static std::string py_list_json(py::handle values) {
     json = "{";
     for (auto sub : values.cast<py::dict>()) {
       if (json.size() > 1) json += ',';
-      json += json_quote(py::str(sub.first).cast<std::string>().c_str());
+      json += line_format::quoted(py::str(sub.first).cast<std::string>());
       json += ':';
       json += py_list_json(sub.second);
     }
