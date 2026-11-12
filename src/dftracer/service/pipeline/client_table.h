@@ -1,9 +1,7 @@
 #ifndef DFTRACER_SERVICE_PIPELINE_CLIENT_TABLE_H
 #define DFTRACER_SERVICE_PIPELINE_CLIENT_TABLE_H
 
-#include <dftracer/core/aggregator/aggregator.h>
-#include <dftracer/core/buffer/local_buffer_manager.h>
-#include <dftracer/core/serialization/json_line.h>
+#include <dftracer/core/buffer/lane_buffer.h>
 #include <dftracer/service/common/datastructure.h>
 #include <signal.h>
 
@@ -44,11 +42,8 @@ class ClientTable {
     auto& entry = process.lanes[tid];
     if (entry == nullptr) {
       entry = std::make_shared<ClientLane>();
-      entry->serializer = std::make_shared<JsonLines>();
-      entry->buffer = std::make_shared<LocalBufferManager>(
-          std::make_shared<Aggregator>(), entry->serializer);
-      entry->buffer->initialize(nullptr,
-                                const_cast<HashType>(hostname_hash_.c_str()));
+      entry->buffer = std::make_shared<LaneBuffer>(
+          const_cast<HashType>(hostname_hash_.c_str()));
     }
     return entry;
   }

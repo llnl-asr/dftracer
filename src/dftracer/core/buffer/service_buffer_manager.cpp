@@ -1,4 +1,5 @@
 #include <dftracer/core/buffer/service_buffer_manager.h>
+#include <dftracer/core/common/event_draft.h>
 #include <dftracer/core/common/event_types.h>
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/profiler.h>
@@ -480,28 +481,25 @@ void ServiceBufferManager::set_rank(const int& r) {
 }
 
 void ServiceBufferManager::log_data_event(
-    int index, ConstEventNameType event_name, ConstEventNameType category,
+    int index, std::string_view event_name, std::string_view category,
     TraceEventType type, TimeResolution start_time, TimeResolution duration,
-    dftracer::Metadata* metadata, ProcessID process_id, ThreadID tid) {
+    const dftracer::EventDraft* args, ProcessID process_id, ThreadID tid) {
   if (!is_ready()) return;
   DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(BUFFER));
-  // The service has no event-type registry: tell it per event.
   const uint8_t flags = static_cast<uint8_t>(
       event_flags_ |
-      (dftracer::event_type_aggregatable(type) ? 0 : SHM_EVENT_NO_AGGREGATE));
+      (dftracer::event_type_aggregatable(type) ? 0 : SHM_EVENT_NO_AGGREGATE) |
+      (args != nullptr ? SHM_EVENT_HAS_METADATA : 0));
   if (emit(SHM_KIND_DATA, [&](ipc::ByteWriter& w) {
-        ipc::encode_event(w, index, event_name, category, type, start_time,
-                          duration, metadata, process_id, tid, flags);
-      })) {
-    Metadata::release(metadata);
-    return;
-  }
-  // The spill file's manager takes the metadata, as it does in-process.
-  if (!spill([&](LocalBufferManager& m) {
-        m.log_data_event(index, event_name, category, type, start_time,
-                         duration, metadata, process_id, tid);
+        ipc::encode_event_entries(w, index, event_name, category, type,
+                                  start_time, duration, args, process_id, tid,
+                                  flags);
       }))
-    Metadata::release(metadata);
+    return;
+  spill([&](LocalBufferManager& m) {
+    m.log_data_event(index, event_name, category, type, start_time, duration,
+                     args, process_id, tid);
+  });
 }
 
 void ServiceBufferManager::log_counter_event(

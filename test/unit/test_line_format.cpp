@@ -3,6 +3,8 @@
 // when the way a line is built does. Metadata has one key where it appears,
 // since a Metadata is an unordered_map and its order is not fixed.
 #include <dftracer/core/common/datastructure.h>
+#include <dftracer/core/common/event_draft.h>
+#include <dftracer/core/ipc/event_codec.h>
 #include <dftracer/core/serialization/json_line.h>
 #include <dftracer/core/serialization/line_format.h>
 
@@ -10,6 +12,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "check.h"
 
@@ -66,6 +69,22 @@ void test_formatter() {
 
 std::string line(const char* buf, size_t n) { return std::string(buf, n); }
 
+// A data event as the service decodes it from the ring.
+const ipc::DecodedEvent& decoded(std::vector<uint8_t>& bytes,
+                                 ipc::DecodedEvent& event, int index,
+                                 const char* name, const char* category,
+                                 TimeResolution ts, TimeResolution dur,
+                                 const EventDraft* args, bool include) {
+  ipc::ByteWriter w(bytes);
+  ipc::encode_event_entries(w, index, name, category,
+                            TraceEventType::TRACE_TYPE_LIBC_IO, ts, dur, args,
+                            42, 7,
+                            (include ? SHM_EVENT_INC_METADATA : 0) |
+                                (args != nullptr ? SHM_EVENT_HAS_METADATA : 0));
+  DFT_CHECK(ipc::decode_event(bytes.data(), bytes.size(), event));
+  return event;
+}
+
 void test_json_lines_bytes() {
   JsonLines js;
   js.set_include_metadata(true);
@@ -73,23 +92,24 @@ void test_json_lines_bytes() {
   js.initialize(nullptr, host);
   static char buf[DFTRACER_SERIALIZATION_EVENT_MAX + 16];
 
-  size_t n =
-      js.data(buf, 3, "read", "POSIX", TraceEventType::TRACE_TYPE_LIBC_IO, 100,
-              20, nullptr, 42, 7);
+  std::vector<uint8_t> bytes;
+  ipc::DecodedEvent event;
+  size_t n = js.data(
+      buf, decoded(bytes, event, 3, "read", "POSIX", 100, 20, nullptr, true));
   DFT_CHECK(line(buf, n) ==
             "{\"id\":3,\"name\":\"read\",\"cat\":\"POSIX\",\"type\":3,"
             "\"pid\":42,\"tid\":7,\"ts\":100,\"dur\":20,\"ph\":1}\n");
 
-  auto* m = new Metadata();
-  m->insert_or_assign("size", static_cast<int64_t>(4096));
-  n = js.data(buf, 4, "write", "POSIX", TraceEventType::TRACE_TYPE_LIBC_IO, 5,
-              6, m, 42, 7);
+  EventDraft args;
+  args.set("size", static_cast<int64_t>(4096));
+  n = js.data(buf,
+              decoded(bytes, event, 4, "write", "POSIX", 5, 6, &args, true));
   DFT_CHECK(line(buf, n) ==
             "{\"id\":4,\"name\":\"write\",\"cat\":\"POSIX\",\"type\":3,"
             "\"pid\":42,\"tid\":7,\"ts\":5,\"dur\":6,\"ph\":1,"
             "\"args\":{\"hhash\":\"hh\",\"size\":4096}}\n");
 
-  m = new Metadata();
+  auto* m = new Metadata();
   m->insert_or_assign("fname", std::string("/a/b"));
   n = js.counter(buf, 1, "mem", "PAPI", TraceEventType::TRACE_TYPE_PAPI, 9, 42,
                  7, m);
@@ -132,10 +152,10 @@ void test_json_lines_bytes() {
 
   // Without DFTRACER_INC_METADATA an event keeps no optional args.
   js.set_include_metadata(false);
-  m = new Metadata();
-  m->insert_or_assign("size", static_cast<int64_t>(1));
-  n = js.data(buf, 5, "read", "POSIX", TraceEventType::TRACE_TYPE_LIBC_IO, 1, 2,
-              m, 42, 7);
+  args.reset();
+  args.set("size", static_cast<int64_t>(1));
+  n = js.data(buf,
+              decoded(bytes, event, 5, "read", "POSIX", 1, 2, &args, false));
   DFT_CHECK(line(buf, n) ==
             "{\"id\":5,\"name\":\"read\",\"cat\":\"POSIX\",\"type\":3,"
             "\"pid\":42,\"tid\":7,\"ts\":1,\"dur\":2,\"ph\":1}\n");

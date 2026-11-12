@@ -64,6 +64,7 @@ class ConfigurationManager {
   bool bind_signals;
   bool throw_error;
   size_t write_buffer_size;
+  size_t defer_buffer_size;
   size_t trace_interval_ms;
   bool trace_interval_explicit;
   // Events shorter than this many ns are not traced (DFTLogger::log); 0

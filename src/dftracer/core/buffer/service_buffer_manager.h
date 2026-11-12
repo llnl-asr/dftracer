@@ -68,10 +68,10 @@ class ServiceBufferManager : public BufferManager {
   static std::string spill_file_for(const std::string& trace_file);
   void set_rank(const int& r) override;
 
-  void log_data_event(int index, ConstEventNameType event_name,
-                      ConstEventNameType category, TraceEventType type,
+  void log_data_event(int index, std::string_view event_name,
+                      std::string_view category, TraceEventType type,
                       TimeResolution start_time, TimeResolution duration,
-                      dftracer::Metadata* metadata, ProcessID process_id,
+                      const dftracer::EventDraft* args, ProcessID process_id,
                       ThreadID tid) override;
   void log_record(ConstEventNameType record_name,
                   const dftracer::Metadata* fields, TraceEventType type,

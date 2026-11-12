@@ -61,15 +61,11 @@ void __cyg_profile_func_exit(void* func, void* caller) {
   TimeResolution start_time;
   int status = function->exit_event(event_name, start_time);
   if (status == 0) {
-    dftracer::Metadata* metadata = nullptr;
-    if (function->logger->include_metadata) {
-      metadata = new dftracer::Metadata();
-      const char* so = info.dli_fname;
-      metadata->insert_or_assign("so", so);
-    }
+    dftracer::DraftScope draft(function->logger->include_metadata);
+    if (draft.get() != nullptr) draft.get()->set("so", info.dli_fname);
     function->logger->enter_event();
-    function->logger->log(event_name.c_str(), CATEGORY, TRACE_TYPE, start_time,
-                          end_time - start_time, metadata);
+    function->logger->log(event_name, CATEGORY, TRACE_TYPE, start_time,
+                          end_time - start_time, draft.get());
     function->logger->exit_event();
   }
 }

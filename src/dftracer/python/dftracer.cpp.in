@@ -101,29 +101,27 @@ void log_event(
     std::unordered_map<std::string, std::tuple<int, double>> &float_args,
     py::dict list_args) {
   DFTRACER_LOG_DEBUG("py.log_event", "");
-  auto args = new Metadata();
+  dftracer::DraftScope draft(true);
+  EventDraft* args = draft.get();
   for (auto item : int_args)
-    args->insert_or_assign(item.first, std::get<1>(item.second),
-                           convert(std::get<0>(item.second)));
+    args->set(item.first, std::get<1>(item.second),
+              convert(std::get<0>(item.second)));
   for (auto item : string_args)
-    args->insert_or_assign(item.first, std::get<1>(item.second),
-                           convert(std::get<0>(item.second)));
+    args->set(item.first, std::get<1>(item.second),
+              convert(std::get<0>(item.second)));
   for (auto item : float_args)
-    args->insert_or_assign(item.first, std::get<1>(item.second),
-                           convert(std::get<0>(item.second)));
+    args->set(item.first, std::get<1>(item.second),
+              convert(std::get<0>(item.second)));
   // {key: [v, ...]} -> args.key, {key: {sub: [v, ...]}} -> args.key.sub.
   for (auto item : list_args)
-    args->insert_or_assign(py::str(item.first).cast<std::string>(),
-                           RawJson(py_list_json(item.second)));
+    args->set(py::str(item.first).cast<std::string>(),
+              RawJson(py_list_json(item.second)));
   auto dftracer_inst =
       dftracer::Singleton<dftracer::DFTracerCore>::get_instance(
           ProfilerStage::PROFILER_OTHER, ProfileType::PROFILER_PY_APP);
-  // log() takes the args only when it writes the event.
-  if (dftracer_inst == nullptr ||
-      !dftracer_inst->log(name.c_str(), cat.c_str(),
-                          TraceEventType::TRACE_TYPE_PYTHON, start_time,
-                          duration, args))
-    delete args;
+  if (dftracer_inst != nullptr)
+    dftracer_inst->log(name, cat, TraceEventType::TRACE_TYPE_PYTHON,
+                       start_time, duration, args);
 }
 
 // Without fields, a key/value metadata event. With fields ({name: value},

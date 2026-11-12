@@ -6,7 +6,6 @@
 #include <dftracer/core/common/cpp_typedefs.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/common/logging.h>
-#include <dftracer/core/common/macros.h>
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/utils/utils.h>
 
@@ -456,7 +455,7 @@ inline bool metadata_value_equal(const MetadataValue& a,
 }
 
 /** Where rules read tags.<key> of an event that has no Metadata: the
- * service's packed events (PackedAggregator). Same strings as getTagValue. */
+ * service's packed events (Aggregator). Same strings as getTagValue. */
 struct TagSource {
   virtual ~TagSource() = default;
   virtual Value tag(std::string_view key) const = 0;
@@ -605,106 +604,6 @@ struct hash<dftracer::AggregatedKey> {
 }  // namespace std
 
 namespace dftracer {
-
-struct BaseAggregatedValue {
- public:
-  BaseAggregatedValue* _child;
-  ValueType _type;
-  std::type_index _id;
-
- protected:
-  BaseAggregatedValue(BaseAggregatedValue* child, ValueType type,
-                      std::type_index id)
-      : _child(child), _type(type), _id(id) {}
-
- public:
-  virtual ~BaseAggregatedValue() = default;
-  void update(BaseAggregatedValue* value);
-  BaseAggregatedValue* get_value();
-};
-
-template <typename T>
-struct AggregatedValue : public BaseAggregatedValue {
- protected:
-  AggregatedValue(const AggregatedValue<T>& value, BaseAggregatedValue* child)
-      : BaseAggregatedValue(child, ValueType::VALUE_TYPE_STRING, typeid(T)),
-        count(value.count) {}
-  AggregatedValue(const AggregatedValue<T>& value, BaseAggregatedValue* child,
-                  ValueType id, std::type_index tid)
-      : BaseAggregatedValue(child, id, tid), count(value.count) {}
-  AggregatedValue(BaseAggregatedValue* child, ValueType id, std::type_index tid)
-      : BaseAggregatedValue(child, id, tid), count(1) {}
-
- public:
-  size_t count;
-  void update(AggregatedValue<T>* value) { count += value->count; }
-  AggregatedValue(T value)
-      : BaseAggregatedValue(nullptr, ValueType::VALUE_TYPE_STRING, typeid(T)),
-        count(1) {}
-};
-
-template <typename T>
-struct NumberAggregationValue : public AggregatedValue<T> {
- public:
-  T min, max, sum;
-  NumberAggregationValue(NumberAggregationValue<T>& value)
-      : AggregatedValue<T>(value, nullptr, ValueType::VALUE_TYPE_NUMBER,
-                           typeid(T)),
-        min(value.min),
-        max(value.max),
-        sum(value.sum) {}
-  NumberAggregationValue(T value)
-      : AggregatedValue<T>(nullptr, ValueType::VALUE_TYPE_NUMBER, typeid(T)),
-        min(value),
-        max(value),
-        sum(value) {}
-  void update(NumberAggregationValue<T>* value) {
-    if (value->min < min) min = value->min;
-    if (value->max > max) max = value->max;
-    sum += value->sum;
-    AggregatedValue<T>::update(value);
-  }
-};
-
-class AggregatedValues {
- public:
-  AggregatedValues() {}
-  ~AggregatedValues() {}
-  std::unordered_map<MetadataKey, BaseAggregatedValue*> values;
-  /** Folds `value` into the number aggregate of `key`, in place. A key that
-   * already holds another type keeps it and ignores `value`. */
-  template <typename T>
-  void add_number(const MetadataKey& key, T value) {
-    auto it = values.find(key);
-    if (it == values.end()) {
-      values.emplace(key, new NumberAggregationValue<T>(value));
-      return;
-    }
-    BaseAggregatedValue* current = it->second;
-    if (current->_type != ValueType::VALUE_TYPE_NUMBER ||
-        current->_id != std::type_index(typeid(T)))
-      return;
-    auto* number = static_cast<NumberAggregationValue<T>*>(current);
-    if (value < number->min) number->min = value;
-    if (value > number->max) number->max = value;
-    number->sum += value;
-    ++number->count;
-  }
-  /** Counts `value` into the aggregate of `key`, as add_number() does. */
-  template <typename T>
-  void add_general(const MetadataKey& key, T value) {
-    auto it = values.find(key);
-    if (it == values.end()) {
-      values.emplace(key, new AggregatedValue<T>(value));
-      return;
-    }
-    BaseAggregatedValue* current = it->second;
-    if (current->_type != ValueType::VALUE_TYPE_STRING ||
-        current->_id != std::type_index(typeid(T)))
-      return;
-    ++static_cast<AggregatedValue<T>*>(current)->count;
-  }
-};
 
 struct Field {
   std::vector<std::string>

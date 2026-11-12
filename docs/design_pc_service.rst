@@ -583,14 +583,13 @@ libuv stages below, each drain thread (``RingSink``) handles a block from
 start to finish:
 
 1. claim it, or take it over;
-2. replay its records into the ``LocalBufferManager`` of the producer thread
+2. replay its records into the ``LaneBuffer`` of the producer thread
    that wrote them (``ClientTable``: one lane per ``(pid, tid)``);
 3. write into the drain thread's chunk, which goes out as one gzip member when
    full or older than ``DFTRACER_PC_FLUSH_MS``;
 4. release the block.
 
-The lane runs in attached mode, with its own aggregator and serializer and no
-file of its own. Aggregation keys include the thread id, so lanes aggregate
+The lane has its own aggregator and serializer and no file of its own. Aggregation keys include the thread id, so lanes aggregate
 exactly as the process would. Each member is written at an offset reserved
 with one ``fetch_add`` (``NodeTraceFile``); members in any order form a valid
 ``.pfw.gz``. ``ConsumerScaler`` sizes the drain threads by busy time, which now
@@ -656,7 +655,7 @@ fully parallel. A block waiting on its deadline holds back only later slices,
 for at most ``2 × T_bad``.
 
 **Streams.** A stream is one client process, keyed by pid and client slot. It
-has its own ``LocalBufferManager`` (aggregation intervals, ``app_name``,
+has its own ``LaneBuffer`` (aggregation intervals, ``app_name``,
 ``rank``) and a bounded FIFO of slices (``DFTRACER_PC_STREAM_QUEUE``). A full
 FIFO stops S1 dispatch, and the ring then fills, so backpressure reaches the
 producers.
@@ -796,50 +795,22 @@ Classes (``service/pipeline/``)
      // processed.
    };
 
-Aggregation in the service: reusing ``LocalBufferManager`` (additive only)
---------------------------------------------------------------------------
+Aggregation in the service: ``LaneBuffer``
+------------------------------------------
 
-S2 runs one ``LocalBufferManager`` per producer thread of a client process
-(a *lane*), so aggregation gives the rows the process would have produced
-itself. METADATA and RECORD records go through its ordinary ``log_*`` calls.
-DATA and COUNTER records go through ``log_packed_event`` and the
-``PackedAggregator``, which work on the decoded record instead of a
-``Metadata`` (`Metadata in the service`_). Today's components are process-wide
-singletons. Three additions make that possible while leaving the default path
-untouched:
+S2 runs one ``LaneBuffer`` (``src/dftracer/core/buffer/lane_buffer.h``) per
+producer thread of a client process (a *lane*), so aggregation gives the rows
+the process would have produced itself. DATA and COUNTER records go through
+``log_packed_event`` and the ``Aggregator``, which work on the decoded
+record instead of a ``Metadata`` (`Metadata in the service`_). METADATA and
+RECORD records go through ``log_metadata_event`` and ``log_record``.
 
-1. **A second constructor.** ``LocalBufferManager(BufferManagerComponents)``
-   takes its own serializer and aggregator, plus a reference to the shared
-   rules. The default constructor and ``initialize()`` keep using the
-   singletons exactly as today.
-2. **Rules parsed once, shared read-only.** The service loads its aggregation
-   config and rule file at startup into one
-   ``std::shared_ptr<const AggregationRules>``. Each stream's ``Aggregator``
-   holds only its own interval and bucket state. ``app_name`` and ``rank``
-   come from ``SET_APP_NAME`` and ``SET_RANK``, so rules see the same keys they
-   would in-process.
-3. **An attached chunk instead of an owned buffer.** In the service a
-   ``LocalBufferManager`` does not own its buffer. S2 calls
-   ``attach_chunk(Chunk*)`` before replaying a slice and ``detach_chunk()``
-   after it. When the chunk fills mid-slice, ``compress_and_write_if_needed``
-   hands it back through the ``ChunkSink`` and receives a fresh one. That
-   branch runs only when a sink is attached. Otherwise the existing
-   compress-in-place and ``STDIOWriter`` code runs, unmodified.
-
-.. code-block:: cpp
-
-   struct BufferManagerComponents {
-     std::shared_ptr<const ConfigurationManager> config;   // the service's
-     std::shared_ptr<const AggregationRules> rules;        // shared, parsed once
-     std::unique_ptr<Aggregator> aggregator;               // per stream
-     std::unique_ptr<JsonLines> serializer;                // per stream
-   };
-
-   class ChunkSink {                        // implemented by the S2 task
-    public:
-     virtual ~ChunkSink() = default;
-     virtual Chunk* exchange(Chunk* full) = 0;   // seal full, return a fresh one
-   };
+A lane owns no buffer. S2 calls ``attach()`` with the drain thread's chunk
+before it replays a block and ``detach()`` after it. When the chunk fills
+mid-block, the lane hands it to the ``ChunkSink`` (the drain thread's
+``ChunkWriter``), which compresses and writes it, and starts it over.
+``app_name`` and ``rank`` come from ``SET_APP_NAME`` and ``SET_RANK``, so
+rules see the same keys they would in-process.
 
 Metadata in the service
 -----------------------
@@ -858,17 +829,16 @@ event.
 
 The service path uses its own structures instead:
 
-* **Plain events** (``core/serialization/packed_json.h``). ``data`` and
-  ``counter`` write the line that ``JsonLines::data`` and
-  ``JsonLines::counter`` write for the same event, straight from the decoded
-  record into the chunk. There is no ``Metadata``, no ``stringstream`` and no
-  allocation. Numbers print as ``JsonLines`` prints the decoder's types:
-  64-bit integers, and ``double`` as ``ostream`` prints it (``%g``). Strings
-  are written unescaped, as ``JsonLines`` writes them. Field order is the
-  record's; JSON does not fix it, and ``JsonLines`` follows its
-  ``unordered_map``. Without ``DFTRACER_INC_METADATA`` only the ``relations``
+* **Plain events** (``core/serialization/json_line.h``, with the shared
+  pieces in ``packed_json.h``). The ``JsonLines::data`` and
+  ``JsonLines::counter`` overloads that take an ``ipc::DecodedEvent`` write the
+  line straight from the decoded record into the chunk. There is no
+  ``Metadata``, no ``stringstream`` and no allocation. Numbers print as the
+  decoder's types: 64-bit integers, and ``double`` as ``ostream`` prints it
+  (``%g``). Strings are written unescaped. Field order is the record's; JSON
+  does not fix it. Without ``DFTRACER_INC_METADATA`` only the ``relations``
   arg survives.
-* **Aggregation** (``core/aggregator/packed_aggregator.h``). An event's
+* **Aggregation** (``core/aggregator/aggregator.h``). An event's
   metadata is two sets:
 
   - *Keys*: its ``MT_KEY`` fields. They are part of the bucket, together with
@@ -876,10 +846,10 @@ The service path uses its own structures instead:
     are aggregated apart, and each row carries its bucket's keys.
   - *Values*: its ``MT_VALUE`` fields. They are folded into the bucket: count,
     sum, min and max of a number, and the count of a string (which only adds
-    to the row's ``dft_cnt``, as in ``Aggregator``). Other fields are not
+    to the row's ``dft_cnt``). Other fields are not
     aggregated.
 
-  ``PackedAggregator`` holds, per lane:
+  ``Aggregator`` holds, per lane:
 
   - a ``StringTable`` of categories, event names and key names (bounded by
     the code);
@@ -894,18 +864,14 @@ The service path uses its own structures instead:
   Folding an event is therefore a few table lookups and integer updates, with
   no allocation once its strings are known. Intervals (``trace_interval_ms``
   in the configured time unit), the closing of earlier intervals when a later
-  one opens, and ``SELECTIVE`` rules are ``Aggregator``'s. Rules read
+  one opens, and ``SELECTIVE`` rules follow the configuration. Rules read
   ``tags.<key>`` through a ``TagSource`` on the decoded record, with the same
-  strings ``Metadata::getTagValue`` gives. Each row is written as
-  ``JsonLines::aggregated`` writes it: the keys, ``dft_cnt``, and per value
+  strings ``Metadata::getTagValue`` gives. A row has the keys, ``dft_cnt``, and per value
   either ``key`` (one event) or ``key_sum``, ``key_min`` and ``key_max``. Rows
   go into the chunk one at a time, so a long drain moves on to a fresh chunk.
 
-``Aggregator`` follows the same key semantics. It looks up a bucket with the
-event's key, and stores a key that owns a copy of the event's ``MT_KEY``
-fields (nullptr when there are none), which ``release_aggregated_data``
-frees. ``AggregatedKey`` equality and hash look at the ``MT_KEY`` fields
-alone, so a live key (all of an event's metadata) matches a stored one. Note
+``AggregatedKey`` equality and hash look at the ``MT_KEY`` fields alone, so
+a live key (all of an event's metadata) matches a stored one. Note
 that ``DFT_LOGGER_UPDATE`` without a type stores ``MT_KEY``, so such fields
 (``fhash``, the fd fields, ``path``, ``pid``, and ``ret`` in some calls) split
 buckets.
@@ -1067,13 +1033,13 @@ Correctness (``test/unit/ipc/``, in regular CI)
 * **Codec round trip.** Every ``MetadataType`` and every ``std::any`` value
   tag, ``RawJson``, empty and maximum-length strings, and an oversize record
   rejected.
-* **Packed path** (``test/unit/test_packed.cpp``). For the same events,
-  ``packed_json`` writes the lines ``JsonLines`` writes (args compared as
-  sets), with metadata included and not, for data and counter events. For
-  the same events, ``PackedAggregator`` writes the rows that ``Aggregator``
-  plus ``JsonLines::aggregated`` write: several keys, threads and intervals,
-  number and string values, an ``MT_IGNORE`` field, and a single-event
-  bucket.
+* **Golden lines** (``test/unit/test_golden.cpp``). A fixed list of events,
+  with the lines the Metadata-based serializer and aggregator wrote for them
+  (``golden_lines.h``). ``JsonLines::data`` and ``counter`` through the ring
+  codec and the compact codec, and the ``Aggregator``, must write those
+  lines byte for byte, with metadata included and not: several keys, threads
+  and intervals, number and string values, an ``MT_IGNORE`` field, and a
+  single-event bucket.
 * **Aggregation keys** (``test/unit/test_aggregator.cpp``). Events that differ
   in an ``MT_KEY`` field are aggregated apart, each bucket keeps its keys and
   not its values, and events without keys share one bucket.

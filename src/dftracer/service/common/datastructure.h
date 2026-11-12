@@ -14,8 +14,7 @@
 #include <unordered_map>
 
 namespace dftracer {
-class LocalBufferManager;
-class JsonLines;
+class LaneBuffer;
 
 struct CpuMetrics {
   unsigned long long user = 0;
@@ -197,15 +196,14 @@ struct DrainScratch {
 };
 
 /**
- * One producer thread of a client process. Its LocalBufferManager holds that
+ * One producer thread of a client process. Its LaneBuffer holds that
  * thread's aggregation state; aggregation keys carry the thread id, so lanes
  * aggregate exactly as the process would have. A drain thread holds `mtx`
  * while it replays one of the thread's blocks.
  */
 struct ClientLane {
   std::mutex mtx;
-  std::shared_ptr<LocalBufferManager> buffer;
-  std::shared_ptr<JsonLines> serializer;  // the one inside `buffer`
+  std::shared_ptr<LaneBuffer> buffer;
   uint64_t synced = 0;  // ClientProcess::version last applied to `buffer`
 };
 
@@ -218,7 +216,6 @@ struct ClientProcess {
   int rank = -1;
   uint64_t version = 0;  // bumped by SET_APP_NAME and SET_RANK
   bool said_goodbye = false;
-  int goodbye_index = 0;
   uint64_t goodbye_ns = 0;
   std::unordered_map<uint32_t, std::shared_ptr<ClientLane>> lanes;
 };

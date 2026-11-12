@@ -1132,11 +1132,11 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/serialization/json_line.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/compression/gzip_compression.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/buffer/local_buffer_manager.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/buffer/lane_buffer.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/buffer/buffer_manager_factory.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/buffer/service_buffer_manager.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/writer/stdio_writer.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/aggregator.cpp
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/packed_aggregator.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/datastructure.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/rules.cpp)
 
@@ -1194,7 +1194,6 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/singleton.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/configuration_manager.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/aggregator.h
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/packed_aggregator.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/serialization/packed_json.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/datastructure.h)
 

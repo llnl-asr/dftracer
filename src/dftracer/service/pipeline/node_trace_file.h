@@ -184,7 +184,7 @@ class NodeTraceFile {
  * A drain thread's output chunk: the JSON lines of whatever producers it
  * replays, compressed into one gzip member and written to the node file when
  * it reaches `capacity`, gets old, or the thread goes idle. It is the
- * ChunkSink of the LocalBufferManager attached to it.
+ * ChunkSink of the LaneBuffer attached to it.
  */
 class ChunkWriter : public ChunkSink {
  public:

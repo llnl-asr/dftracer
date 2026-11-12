@@ -68,6 +68,7 @@
 #define DFT_YAML_INTERNAL_SIGNALS "bind_signals"
 #define DFT_YAML_INTERNAL_THROW_ERROR "throw_error"
 #define DFT_YAML_INTERNAL_WRITE_BUFFER_SIZE "write_buffer_size"
+#define DFT_YAML_INTERNAL_DEFER_BUFFER_SIZE "defer_buffer_size"
 
 template <>
 std::shared_ptr<dftracer::ConfigurationManager>
@@ -150,6 +151,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
       bind_signals(false),
       throw_error(false),
       write_buffer_size(16 * 1024 * 1024),
+      defer_buffer_size(64 * 1024 * 1024),
       trace_interval_ms(10),
       trace_interval_explicit(false),
       min_duration_ns(0),
@@ -427,6 +429,11 @@ dftracer::ConfigurationManager::ConfigurationManager()
       }
       DFTRACER_LOG_DEBUG("YAML ConfigurationManager.write_buffer_size %d",
                          this->write_buffer_size);
+      if (config[DFT_YAML_INTERNAL][DFT_YAML_INTERNAL_DEFER_BUFFER_SIZE]) {
+        this->defer_buffer_size =
+            config[DFT_YAML_INTERNAL][DFT_YAML_INTERNAL_DEFER_BUFFER_SIZE]
+                .as<size_t>();
+      }
     }
   }
   // ENV variables override any YAML configuration, so this must run after
@@ -670,6 +677,9 @@ dftracer::ConfigurationManager::ConfigurationManager()
     }
     DFTRACER_LOG_DEBUG("ENV ConfigurationManager.write_buffer_size %d",
                        this->write_buffer_size);
+    const char* env_defer_size = getenv(DFTRACER_DEFER_BUFFER_SIZE);
+    if (env_defer_size != nullptr)
+      this->defer_buffer_size = strtoull(env_defer_size, nullptr, 10);
   }
   derive_configurations();
   DFTRACER_LOG_DEBUG("ENV ConfigurationManager finished");
@@ -888,6 +898,7 @@ void dftracer::ConfigurationManager::populate_metadata(
       << "\"tids\":" << (int)this->tids << ","
       << "\"bind_signals\":" << (int)this->bind_signals << ","
       << "\"write_buffer_size\":" << this->write_buffer_size << ","
+      << "\"defer_buffer_size\":" << this->defer_buffer_size << ","
       << "\"trace_interval_ms\":" << this->trace_interval_ms << ","
       << "\"min_duration_ns\":" << this->min_duration_ns << ","
       << "\"libuv_thread_count\":" << this->libuv_thread_count << ","

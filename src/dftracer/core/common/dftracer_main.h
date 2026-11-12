@@ -56,9 +56,10 @@ class DFTracerCore {
 
   TimeResolution get_time();
 
-  bool log(ConstEventNameType event_name, ConstEventNameType category,
+  // Does not take `args`, which may be null.
+  void log(std::string_view event_name, std::string_view category,
            TraceEventType type, TimeResolution start_time,
-           TimeResolution duration, dftracer::Metadata* metadata);
+           TimeResolution duration, const dftracer::EventDraft* args);
 
   void log_metadata(ConstEventNameType key, ConstEventNameType value,
                     TraceEventType type);
