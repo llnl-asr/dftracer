@@ -2,22 +2,6 @@
 #include <dftracer/core/utils/utils.h>
 namespace dftracer {
 
-void BaseAggregatedValue::update(BaseAggregatedValue* value) {
-  if (!value) return;
-
-  // Type mismatch check - both must be the same type
-  if (value->_id != this->_id) {
-    return;
-  }
-
-  auto id = _id;
-  DFTRACER_FOR_EACH_NUMERIC_TYPE(DFTRACER_ANY_NUM_AGGREGATE_UPDATE_MACRO, value,
-                                 {});
-  DFTRACER_FOR_EACH_STRING_TYPE(DFTRACER_ANY_GENERAL_AGGREGATE_UPDATE_MACRO,
-                                value, {});
-}
-
-BaseAggregatedValue* BaseAggregatedValue::get_value() { return _child; }
 dftracer::Value Metadata::getTagValue(std::string_view tagKey) const {
   auto it = find(tagKey);
   if (it == data.end()) return dftracer::Value{std::string_view()};

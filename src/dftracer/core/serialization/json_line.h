@@ -1,12 +1,12 @@
 #ifndef DFTRACER_SERIALIZATION_JSON_LINE_H
 #define DFTRACER_SERIALIZATION_JSON_LINE_H
 
-#include <dftracer/core/aggregator/aggregator.h>
 #include <dftracer/core/common/cpp_typedefs.h>
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/serialization/line_format.h>
+#include <dftracer/core/serialization/packed_json.h>
 #include <dftracer/core/utils/configuration_manager.h>
 
 #include <cstddef>
@@ -40,10 +40,8 @@ class JsonLines {
   bool includes_metadata() const { return include_metadata; }
   HashType hostname() const { return hostname_hash; }
   size_t initialize(char* buffer, HashType hostname_hash);
-  size_t data(char* buffer, int index, ConstEventNameType event_name,
-              ConstEventNameType category, TraceEventType type,
-              TimeResolution start_time, TimeResolution duration,
-              dftracer::Metadata* metadata, ProcessID process_id, ThreadID tid);
+  // A data event, written straight from its decoded record.
+  size_t data(char* out, const ipc::DecodedEvent& event) const;
   // record_name is the metadata record kind (PR, FH, HH, SH, CM), not a phase.
   size_t metadata(char* buffer, ConstEventNameType name,
                   ConstEventNameType value, ConstEventNameType record_name,
@@ -64,21 +62,56 @@ class JsonLines {
                  ConstEventNameType category, TraceEventType type,
                  TimeResolution start_time, ProcessID process_id,
                  ThreadID thread_id, dftracer::Metadata* metadata);
-  // Where aggregated rows go, one at a time: row() is where the next row is
-  // written (room for DFTRACER_SERIALIZATION_EVENT_MAX bytes), wrote() is told
-  // its size. A buffer manager flushes in wrote() when it fills up, since an
-  // interval can hold more rows than any fixed slack.
-  struct RowSink {
-    virtual ~RowSink() = default;
-    virtual char* row() = 0;
-    virtual void wrote(size_t size) = 0;
-  };
-  void aggregated(RowSink& rows, int index, ProcessID process_id,
-                  dftracer::AggregatedDataType& data);
-  // All rows contiguously into buffer, which must have room for them.
-  size_t aggregated(char* buffer, int index, ProcessID process_id,
-                    dftracer::AggregatedDataType& data);
+  // A COUNTER record from the decoded event: every field, no args when none.
+  size_t counter(char* out, const ipc::DecodedEvent& event) const;
 };
+
+inline size_t JsonLines::data(char* out, const ipc::DecodedEvent& e) const {
+  const ipc::EventHead& h = e.head;
+  const bool has_metadata = (h.flags & SHM_EVENT_HAS_METADATA) != 0;
+  const bool include = (h.flags & SHM_EVENT_INC_METADATA) != 0;
+  // Without DFTRACER_INC_METADATA only the relations survive, and an event
+  // left with none has no args at all.
+  bool args = has_metadata;
+  if (has_metadata && !include) {
+    args = false;
+    for (const auto& v : e.values) args = args || packed_json::is_relations(v);
+  }
+  packed_json::Line w(out);
+  line_format::append<packed_json::DataHead>(
+      w, h.index, e.name, e.category, static_cast<unsigned>(h.type),
+      h.process_id, h.thread_id, h.start_time, h.duration,
+      static_cast<unsigned>(TracePhaseType::TRACE_PHASE_COMPLETE));
+  if (args) {
+    line_format::append<packed_json::ArgsHead>(w, hostname_hash);
+    for (const auto& v : e.values) {
+      if (!include && !packed_json::is_relations(v)) continue;
+      w.raw(",");
+      packed_json::field(w, v);
+    }
+    w.raw("}");
+  }
+  w.raw("}");
+  return w.finish("JsonLines.data", h.index);
+}
+
+inline size_t JsonLines::counter(char* out, const ipc::DecodedEvent& e) const {
+  const ipc::EventHead& h = e.head;
+  packed_json::Line w(out);
+  packed_json::series_head(w, e.name, e.category, h.type,
+                           TracePhaseType::TRACE_PHASE_COUNTER, h.start_time,
+                           h.process_id, h.thread_id);
+  if ((h.flags & SHM_EVENT_HAS_METADATA) != 0 && !e.values.empty()) {
+    line_format::append<packed_json::ArgsHead>(w, hostname_hash);
+    for (const auto& v : e.values) {
+      w.raw(",");
+      packed_json::field(w, v);
+    }
+    w.raw("}");
+  }
+  w.raw("}");
+  return w.finish("JsonLines.counter", h.index);
+}
 }  // namespace dftracer
 
 #endif  // DFTRACER_SERIALIZATION_JSON_LINE_H

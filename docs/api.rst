@@ -97,6 +97,9 @@ Any other value turns it off, where a default of 1 applies.
    DFTRACER_WRITE_BUFFER_SIZE       INT     Setup the buffering size for write optimization (default 0). Note: Disabled as
                                             this won't work for AI workloads which uses ``fork`` and ``spawn`` without a clear ``exit``.
                                             Also, it does not work for workloads which uses ``exec`` and rewrite process buffer state.
+   DFTRACER_DEFER_BUFFER_SIZE       INT     Bytes of full thread buffers that wait in memory before they are compressed
+                                            (default 67108864). Compression then runs at a flush, at exit or when this is
+                                            full, not while the application runs. 0 compresses each buffer when it fills.
    DFTRACER_TRACE_INTERVAL_MS       INT     Setup the interval for trace collection (default 10).
    DFTRACER_MIN_DURATION_NS         INT     Skip events shorter than this many ns, before they are serialized or aggregated:
                                             a skipped event is in neither the trace nor any aggregated row. The duration is

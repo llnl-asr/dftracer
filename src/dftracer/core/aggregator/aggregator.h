@@ -1,148 +1,127 @@
 #ifndef DFTRACER_AGGREGATOR_H
 #define DFTRACER_AGGREGATOR_H
-#include <dftracer/core/common/logging.h>
-//
 #include <dftracer/core/aggregator/rules.h>
-#include <dftracer/core/common/cpp_typedefs.h>
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
-#include <dftracer/core/common/singleton.h>
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/utils/configuration_manager.h>
-#include <dftracer/core/utils/utils.h>
 
-#include <atomic>
+#include <cstdint>
+#include <deque>
 #include <map>
-#include <mutex>
-#include <new>
-#include <shared_mutex>
+#include <memory>
+#include <string>
+#include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace dftracer {
-typedef std::unordered_map<AggregatedKey, AggregatedValues*> AggregatedDataPair;
-typedef std::map<TimeResolution, AggregatedDataPair> AggregatedDataType;
-class Aggregator {
- private:
-  static void cleanup_aggregated_values(AggregatedDataPair& event_map) {
-    for (auto& pair : event_map) {
-      for (auto& val_pair : pair.second->values) {
-        delete val_pair.second;
-      }
-      delete pair.second;
-      // A stored key owns its MT_KEY fields (see copy_mt_keys).
-      delete pair.first.additional_keys;
-    }
-  }
 
-  // A bucket key holds the thread id, so one thread's buckets all live in one
-  // shard and threads in different shards never wait for each other.
-  static constexpr size_t SHARDS = 64;
-  struct alignas(64) Shard {
-    std::mutex mtx;
-    AggregatedDataType data;
-  };
-  Shard shards_[SHARDS];
-  Shard& shard_for(ThreadID tid) { return shards_[tid % SHARDS]; }
-
-  std::shared_ptr<dftracer::ConfigurationManager> config;
-  std::atomic<TimeResolution> last_interval;
-  TimeResolution cached_interval;  // trace_interval_ms, cached in the
-                                   // configured time_metric unit
-  std::atomic<bool> is_first;
-  Rules inclusion_rules;
-  Rules exclusion_rules;
-  bool always_aggregate;
-  // The MT_KEY fields of `metadata`, which a stored key owns: the event's own
-  // metadata is freed once it has been aggregated. nullptr when there are
-  // none. The serializer writes them with the bucket's aggregated values and
-  // frees them (JsonLines::aggregated).
-  static Metadata* copy_mt_keys(const Metadata* metadata) {
-    if (metadata == nullptr) return nullptr;
-    Metadata* keys = nullptr;
-    for (const auto& pair : *metadata) {
-      if (std::get<0>(pair.second) != MetadataType::MT_KEY) continue;
-      if (keys == nullptr) keys = new Metadata();
-      (*keys)[pair.first] = pair.second;
-    }
-    return keys;
-  }
-
-  // The values of the bucket of `aggregated_key`: its category, name, type,
-  // interval and thread, and the values of its MT_KEY fields, so events that
-  // differ in an MT_KEY field are aggregated apart.
-  AggregatedValues* bucket(AggregatedDataType& data,
-                           TimeResolution time_interval,
-                           const AggregatedKey& aggregated_key) {
-    auto& events = data[time_interval];
-    auto iter = events.find(aggregated_key);
-    if (iter != events.end()) return iter->second;
-    AggregatedKey stored(aggregated_key);
-    stored.own_names();
-    stored.additional_keys = copy_mt_keys(aggregated_key.additional_keys);
-    auto values = new AggregatedValues();
-    events.emplace(stored, values);
-    DFTRACER_LOG_INFO("Events in %llu are %d", time_interval, events.size());
-    return values;
-  }
-
+/** Strings by id, for the lifetime of the table; ids are dense. */
+class StringTable {
  public:
-  static void release_aggregated_data(AggregatedDataType& data) {
-    for (auto& interval_map : data) {
-      cleanup_aggregated_values(interval_map.second);
-    }
-    data.clear();
-  }
+  uint32_t intern(std::string_view s);
+  std::string_view at(uint32_t id) const { return strings_[id]; }
+  size_t size() const { return strings_.size(); }
 
-  Aggregator() {
-    config =
-        dftracer::Singleton<dftracer::ConfigurationManager>::get_instance();
-    for (const auto& rule : config->aggregation_inclusion_rules) {
-      inclusion_rules.addRule(rule);
-    }
-    for (const auto& rule : config->aggregation_exclusion_rules) {
-      exclusion_rules.addRule(rule);
-    }
-    always_aggregate = true;
-    if (config->aggregation_inclusion_rules.size() > 0 ||
-        config->aggregation_exclusion_rules.size() > 0) {
-      always_aggregate = false;
-    }
-    last_interval.store(0, std::memory_order_relaxed);
-    is_first.store(true, std::memory_order_relaxed);
-    // Cache trace_interval_ms (a wall-clock millisecond value) scaled into
-    // whatever unit get_time()/config->time_metric is currently using, so
-    // interval bucketing below stays correct regardless of TIME_METRIC.
-    double units_per_ms =
-        time_metric_units_per_second(config->time_metric) / 1000.0;
-    cached_interval =
-        (TimeResolution)(config->trace_interval_ms * units_per_ms);
-    if (cached_interval == 0) cached_interval = 1;  // avoid divide-by-zero
-  }
-  bool should_aggregate(const AggregatedKey* key) {
-    if (always_aggregate) return true;
-    if (inclusion_rules.satisfies(key) && !exclusion_rules.satisfies(key))
-      return true;
-    return false;
-  }
-  ~Aggregator() {}
-  void finalize() {
-    for (auto& shard : shards_) {
-      std::lock_guard<std::mutex> lock(shard.mtx);
-      release_aggregated_data(shard.data);
-    }
-  }
-  /** pthread_atfork handlers: no shard lock may be held across fork. */
-  void lock_for_fork() {
-    for (auto& shard : shards_) shard.mtx.lock();
-  }
-  void unlock_in_parent() {
-    for (auto& shard : shards_) shard.mtx.unlock();
-  }
-  void reset_in_child() {
-    for (auto& shard : shards_) new (&shard.mtx) std::mutex();
-  }
-  bool aggregate(AggregatedKey& aggregated_key);
-  int get_previous_aggregations(AggregatedDataType& data, bool all = false);
+ private:
+  void grow();
+  std::deque<std::string> strings_;  // stable: views into it stay valid
+  std::vector<uint64_t> hashes_;     // per id
+  std::vector<uint32_t> slots_;      // open addressing: id + 1, 0 empty
 };
+
+/**
+ * Aggregation of the service's packed events (docs/design_pc_service.rst,
+ * "Metadata in the service"), folded from the decoded record without a heap
+ * Metadata or per-value allocations.
+ *
+ * An event's metadata is two sets. Its keys (MT_KEY fields) are part of the
+ * bucket, with category, name, type, thread and interval: events that differ
+ * in one are aggregated apart, and each row carries its bucket's keys. Its
+ * values (MT_VALUE fields) are folded into the bucket: count, sum, min and
+ * max of a number, the count of a string. Other fields are not aggregated.
+ *
+ * One per lane (one producer thread), used under the lane's lock.
+ */
+class Aggregator {
+ public:
+  explicit Aggregator(std::shared_ptr<ConfigurationManager> config);
+
+  /** SELECTIVE aggregation: whether the rules aggregate `event`. */
+  bool should_aggregate(const ipc::DecodedEvent& event, const char* app_name,
+                        const int* rank) const;
+  /** Fold `event` in. True when it opened a later interval than any so far
+   * (not the first), so the earlier intervals are complete. */
+  bool aggregate(const ipc::DecodedEvent& event);
+
+  /** Receives the rows of drain(), one line at a time. */
+  struct RowSink {
+    virtual ~RowSink() = default;
+    /** Room for one line (DFTRACER_SERIALIZATION_EVENT_MAX bytes). */
+    virtual char* row() = 0;
+    /** The line written into row() is `size` bytes. */
+    virtual void wrote(size_t size) = 0;
+  };
+  /** Write and drop the complete intervals, or every one with `all`. */
+  void drain(bool all, ProcessID process_id, HashType hostname_hash,
+             RowSink& sink);
+
+ private:
+  union Number {
+    int64_t i;
+    uint64_t u;
+    double d;
+  };
+  /** A key field of a bucket; `v.u` is a string id for STRING / RAW_JSON. */
+  struct KeyField {
+    uint32_t key;
+    uint8_t tag;
+    Number v;
+  };
+  /** A value field of a bucket. */
+  struct Accumulator {
+    uint32_t key;
+    uint8_t tag;  // ShmValueTag
+    uint64_t count;
+    Number sum, min, max;
+  };
+  struct Bucket {
+    uint32_t category, name;
+    uint8_t type;
+    uint64_t thread_id;
+    uint64_t signature;
+    uint32_t keys_at, keys_count;  // in Interval::keys
+    uint32_t next;                 // same signature chain, UINT32_MAX ends
+    uint64_t count;
+    std::vector<Accumulator> values;  // values[0] is dur
+  };
+  struct Interval {
+    std::vector<Bucket> buckets;
+    std::vector<KeyField> keys;
+    std::unordered_map<uint64_t, uint32_t> by_signature;  // first bucket
+    StringTable key_strings;  // string keys' values: freed with the interval
+  };
+
+  Bucket& bucket(Interval& interval, const ipc::DecodedEvent& event,
+                 uint32_t category, uint32_t name);
+  static void fold(std::vector<Accumulator>& values, uint32_t key, uint8_t tag,
+                   Number v);
+  void write_row(char* out, size_t& size, const Interval& interval,
+                 const Bucket& bucket, TimeResolution ts, ProcessID process_id,
+                 HashType hostname_hash) const;
+
+  std::shared_ptr<ConfigurationManager> config_;
+  Rules inclusion_rules_, exclusion_rules_;
+  bool always_aggregate_;
+  TimeResolution cached_interval_;
+  TimeResolution last_interval_ = 0;
+  bool is_first_ = true;
+  uint32_t dur_key_;
+  StringTable names_;  // categories, event names and keys: bounded by code
+  std::map<TimeResolution, Interval> intervals_;
+  std::vector<KeyField> scratch_;
+};
+
 }  // namespace dftracer
 #endif  // DFTRACER_AGGREGATOR_H

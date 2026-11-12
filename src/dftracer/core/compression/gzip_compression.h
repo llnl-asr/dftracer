@@ -5,7 +5,7 @@
 #include <libdeflate.h>
 
 #include <cstring>
-#include <vector>
+#include <memory>
 
 namespace dftracer {
 /**
@@ -31,7 +31,7 @@ class GzipCompression {
       return -1;
     }
     // Room for the whole member even if the data does not compress.
-    out_.resize(libdeflate_gzip_compress_bound(compressor_, chunk_size));
+    reserve(libdeflate_gzip_compress_bound(compressor_, chunk_size));
     return 0;
   }
 
@@ -40,14 +40,14 @@ class GzipCompression {
   size_t compress(char* buffer, size_t data_size) {
     if (compressor_ == nullptr) return 0;
     const size_t bound = libdeflate_gzip_compress_bound(compressor_, data_size);
-    if (bound > out_.size()) out_.resize(bound);
+    if (bound > out_size_) reserve(bound);
     const size_t compressed_size = libdeflate_gzip_compress(
-        compressor_, buffer, data_size, out_.data(), out_.size());
+        compressor_, buffer, data_size, out_.get(), out_size_);
     if (compressed_size == 0) {
       DFTRACER_LOG_ERROR("Compression of %zu bytes failed", data_size);
       return 0;
     }
-    std::memcpy(buffer, out_.data(), compressed_size);
+    std::memcpy(buffer, out_.get(), compressed_size);
     return compressed_size;
   }
 
@@ -60,8 +60,15 @@ class GzipCompression {
   }
 
  private:
+  // Not zero-filled, so a page costs memory only once a member reaches it.
+  void reserve(size_t size) {
+    out_.reset(new char[size]);
+    out_size_ = size;
+  }
+
   libdeflate_compressor* compressor_ = nullptr;
-  std::vector<char> out_;
+  std::unique_ptr<char[]> out_;
+  size_t out_size_ = 0;
 };
 }  // namespace dftracer
 

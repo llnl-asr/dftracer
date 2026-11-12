@@ -3,6 +3,7 @@
 
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
+#include <dftracer/core/common/event_draft.h>
 #include <dftracer/core/common/type_match.h>
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/serialization/metadata_json.h>
@@ -139,6 +140,10 @@ inline uint16_t short_len(const char* s, size_t* n) {
   if (len > 0xffff) len = 0xffff;
   *n = len;
   return static_cast<uint16_t>(len);
+}
+
+inline uint16_t short_len(std::string_view s) {
+  return static_cast<uint16_t>(std::min<size_t>(s.size(), 0xffff));
 }
 
 namespace detail {
@@ -318,6 +323,35 @@ inline void encode_event(ByteWriter& w, int index, ConstEventNameType name,
   const uint16_t count = encode_metadata(w, metadata);
   std::memcpy(w.data() + offsetof(EventHead, meta_count), &count,
               sizeof(count));
+}
+
+/**
+ * DATA payload whose metadata entries are already encoded (an EventDraft,
+ * null for none): they are copied as they are, so the record is never
+ * interned.
+ */
+inline void encode_event_entries(ByteWriter& w, int index,
+                                 std::string_view name,
+                                 std::string_view category, TraceEventType type,
+                                 TimeResolution start_time,
+                                 TimeResolution duration,
+                                 const EventDraft* args, ProcessID process_id,
+                                 ThreadID thread_id, uint8_t flags) {
+  EventHead head{};
+  head.start_time = start_time;
+  head.duration = duration;
+  head.thread_id = thread_id;
+  head.index = index;
+  head.process_id = process_id;
+  head.type = static_cast<uint8_t>(type);
+  head.flags = static_cast<uint8_t>(flags & ~SHM_EVENT_INTERNED);
+  head.name_len = short_len(name);
+  head.category_len = short_len(category);
+  head.meta_count = args != nullptr ? args->count() : 0;
+  w.put(head);
+  w.put_bytes(name.data(), head.name_len);
+  w.put_bytes(category.data(), head.category_len);
+  if (args != nullptr) w.put_bytes(args->data(), args->size());
 }
 
 inline void encode_metadata_event(ByteWriter& w, ConstEventNameType name,

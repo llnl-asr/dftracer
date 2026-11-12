@@ -1,7 +1,7 @@
 #ifndef DFTRACER_SERVICE_PIPELINE_RING_SINK_H
 #define DFTRACER_SERVICE_PIPELINE_RING_SINK_H
 
-#include <dftracer/core/buffer/local_buffer_manager.h>
+#include <dftracer/core/buffer/lane_buffer.h>
 #include <dftracer/core/buffer/service_buffer_manager.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/ipc/event_codec.h>
@@ -37,8 +37,8 @@ namespace dftracer {
  *
  * Each drain thread works a block from start to finish: claim it (or take it
  * over from a producer that holds it unpublished), replay its records into the
- * LocalBufferManager of the producer thread that wrote them -- the same JSON
- * and aggregation that process would have produced -- into the drain thread's
+ * LaneBuffer of the producer thread that wrote them (the same JSON and
+ * aggregation that process would have produced) into the drain thread's
  * own chunk, release it, and, when the chunk is full or old, gzip it into one
  * member and write that at its own offset of the node file. Blocks are
  * independent, so threads share only the producer's lane while replaying it.
@@ -353,7 +353,7 @@ class RingSink {
       ChunkWriter& writer = *writers_[id];
       std::lock_guard<std::mutex> lock(lane->mtx);
       ClientTable::sync(*process, *lane);
-      LocalBufferManager& buffer = *lane->buffer;
+      LaneBuffer& buffer = *lane->buffer;
       buffer.attach(writer.data(), writer.used(), writer.capacity(), &writer);
       stats.uncommitted += ipc::for_each_record(
           ring, seq,
@@ -376,7 +376,7 @@ class RingSink {
               uint16_t kind, const uint8_t* payload, uint32_t bytes,
               uint64_t now) {
     DrainScratch& s = scratch_[id];
-    LocalBufferManager& buffer = *lane.buffer;
+    LaneBuffer& buffer = *lane.buffer;
     switch (kind) {
       case SHM_KIND_DATA:
       case SHM_KIND_COUNTER: {
@@ -447,7 +447,6 @@ class RingSink {
             ++process.version;
           } else {
             process.said_goodbye = true;
-            process.goodbye_index = value;
             process.goodbye_ns = now;
           }
         }
@@ -462,11 +461,9 @@ class RingSink {
   /** Write a finished process's open aggregates, on thread `id`'s chunk. */
   void finish(uint32_t id, ClientProcess& process) {
     std::vector<std::shared_ptr<ClientLane>> lanes;
-    int index;
     {
       std::lock_guard<std::mutex> lock(process.mtx);
       for (auto& entry : process.lanes) lanes.push_back(entry.second);
-      index = process.goodbye_index;
     }
     ChunkWriter& writer = *writers_[id];
     for (auto& lane : lanes) {
@@ -474,7 +471,7 @@ class RingSink {
       ClientTable::sync(process, *lane);
       lane->buffer->attach(writer.data(), writer.used(), writer.capacity(),
                            &writer);
-      lane->buffer->finalize(index, static_cast<ProcessID>(process.pid));
+      lane->buffer->finalize(static_cast<ProcessID>(process.pid));
       writer.set_used(lane->buffer->detach(), ipc::monotonic_ns());
     }
   }

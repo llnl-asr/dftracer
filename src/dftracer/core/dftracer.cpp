@@ -241,11 +241,10 @@ void DFTracer::finalize() {
   if (dftracer_core != nullptr && dftracer_core->is_active()) {
     if (event_type == DF_DATA_EVENT) {
       TimeResolution end_time = dftracer_core->get_time();
-      bool consumed = dftracer_core->log(name, cat, type, start_time,
-                                         end_time - start_time, metadata);
-      if (consumed) {
-        metadata = nullptr;
-      }
+      dftracer::DraftScope draft(metadata != nullptr);
+      if (metadata != nullptr) draft.get()->set_all(*metadata);
+      dftracer_core->log(name, cat, type, start_time, end_time - start_time,
+                         draft.get());
     } else if (event_type == DF_METADATA_EVENT) {
       // With fields, a record named after the region; without, the
       // key/value pair (name, cat).

@@ -97,6 +97,13 @@ dftracer_add_c_flags(CMAKE_C_FLAGS
   -fPIC -Wall -Wextra -pedantic -Wno-unused-parameter
   -Wno-deprecated-declarations)
 
+# TLS descriptors: a thread_local read in the preloaded library is a short
+# inline sequence, not a __tls_get_addr call per access. Safe with dlopen.
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+  dftracer_add_cxx_flags(CMAKE_CXX_FLAGS -mtls-dialect=gnu2)
+  dftracer_add_c_flags(CMAKE_C_FLAGS -mtls-dialect=gnu2)
+endif ()
+
 if (${GLIBC_VERSION} VERSION_GREATER_EQUAL "2.19")
   # to suppress usleep() warning
   add_definitions(-D_DEFAULT_SOURCE)

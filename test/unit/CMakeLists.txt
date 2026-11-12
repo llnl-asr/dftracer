@@ -56,15 +56,18 @@ add_executable(test_trace_event_type test_trace_event_type.cpp)
 target_link_libraries(test_trace_event_type ${PROJECT_NAME}_core_dbg)
 add_dependencies(test_trace_event_type ${PROJECT_NAME}_core_dbg)
 
-# Test aggregated value
-add_executable(test_aggregated_value test_aggregated_value.cpp)
-target_link_libraries(test_aggregated_value ${PROJECT_NAME}_core_dbg)
-add_dependencies(test_aggregated_value ${PROJECT_NAME}_core_dbg)
+# The trace lines are the lines the Metadata-based writers wrote.
+add_executable(test_golden test_golden.cpp)
+target_link_libraries(test_golden ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_golden ${PROJECT_NAME}_core_dbg)
 
-# The service's packed path writes the lines the Metadata path writes.
-add_executable(test_packed test_packed.cpp)
-target_link_libraries(test_packed ${PROJECT_NAME}_core_dbg)
-add_dependencies(test_packed ${PROJECT_NAME}_core_dbg)
+add_executable(test_event_draft test_event_draft.cpp)
+target_link_libraries(test_event_draft ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_event_draft ${PROJECT_NAME}_core_dbg)
+
+add_executable(test_compact_event test_compact_event.cpp)
+target_link_libraries(test_compact_event ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_compact_event ${PROJECT_NAME}_core_dbg)
 
 # Test the shared-memory event ring (core/ipc, header-only). rt: shm_open lives
 # in librt before glibc 2.34.
@@ -128,12 +131,16 @@ set(test_name unit_test_file_handle_table)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_file_handle_table)
 set_common_properties(${test_name})
 
-set(test_name unit_test_aggregated_value)
-df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_aggregated_value)
+set(test_name unit_test_golden)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_golden)
 set_common_properties(${test_name})
 
-set(test_name unit_test_packed)
-df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_packed)
+set(test_name unit_test_event_draft)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_event_draft)
+set_common_properties(${test_name})
+
+set(test_name unit_test_compact_event)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_compact_event)
 set_common_properties(${test_name})
 
 # Existing mmap test

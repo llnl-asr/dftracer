@@ -7,7 +7,9 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <string_view>
 namespace dftracer {
+class EventDraft;
 /**
  * Where a process's events go. Two implementations, chosen once per process
  * by BufferManagerFactory:
@@ -78,11 +80,13 @@ class BufferManager {
 
   virtual int finalize(int index, ProcessID process_id) = 0;
 
-  virtual void log_data_event(int index, ConstEventNameType event_name,
-                              ConstEventNameType category, TraceEventType type,
+  // A data event with the args its caller encoded. Does not take ownership
+  // of `args`, which may be null.
+  virtual void log_data_event(int index, std::string_view event_name,
+                              std::string_view category, TraceEventType type,
                               TimeResolution start_time,
                               TimeResolution duration,
-                              dftracer::Metadata* metadata,
+                              const dftracer::EventDraft* args,
                               ProcessID process_id, ThreadID tid) = 0;
 
   // Metadata record whose args are the fields (see JsonLines::record). Does
