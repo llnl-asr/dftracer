@@ -52,6 +52,11 @@ void test_formatter() {
             R"({"a":1,"b":"v","c":2})");
   const char* null_str = nullptr;
   DFT_CHECK(format<Json>(1, null_str, 2) == R"({"a":1,"b":"","c":2})");
+  DFT_CHECK(format<Json>(1, "say \"hi\"\\\n\x01", 2) ==
+            R"({"a":1,"b":"say \"hi\"\\\u000a\u0001","c":2})");
+  DFT_CHECK(format<Leading>(line_format::Raw{"[\"a\"]"}, "\"") ==
+            R"(["a"]-\")");
+  DFT_CHECK(line_format::quoted("a\"b\tc") == R"("a\"b\u0009c")");
   DFT_CHECK(format<Literal>(5) == "x{}y5");
   DFT_CHECK(format<Leading>(1, 2) == "1-2");
 
@@ -129,6 +134,12 @@ void test_json_lines_bytes() {
             "{\"name\":\"FH\",\"cat\":\"dftracer\",\"type\":1,\"pid\":42,"
             "\"tid\":7,\"ph\":4,\"args\":{\"hhash\":\"hh\",\"name\":\"/a/b\","
             "\"value\":\"f00d\"}}\n");
+  n = js.metadata(buf, "/a\"b\n", "f00d", "FH",
+                  TraceEventType::TRACE_TYPE_DFTRACER, 42, 7, true);
+  DFT_CHECK(line(buf, n) ==
+            "{\"name\":\"FH\",\"cat\":\"dftracer\",\"type\":1,\"pid\":42,"
+            "\"tid\":7,\"ph\":4,\"args\":{\"hhash\":\"hh\","
+            "\"name\":\"/a\\\"b\\u000a\",\"value\":\"f00d\"}}\n");
   n = js.metadata(buf, "rank", "3", "PR", TraceEventType::TRACE_TYPE_DFTRACER,
                   42, 7, false);
   DFT_CHECK(line(buf, n) ==

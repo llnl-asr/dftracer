@@ -309,6 +309,7 @@ class DFTLogger {
     HashType exec_hash;
     char hostname[256];
     gethostname(hostname, 256);
+    hostname[255] = '\0';
     hostname_hash = has_hash(hostname);
     if (hostname_hash == NO_HASH_DEFAULT) {
       hostname_hash = get_hash(hostname);
@@ -316,12 +317,8 @@ class DFTLogger {
     }
     if (this->buffer_manager != nullptr) {
       this->buffer_manager->initialize(log_file.c_str(), hostname_hash);
-      char hostname_event[256];
-      strcpy(hostname_event, hostname);
-      hostname_event[255] = '\0';
-      fix_str(hostname_event, sizeof(hostname_event));
       this->buffer_manager->log_metadata_event(
-          hostname_event, hostname_hash, METADATA_NAME_HOSTNAME_HASH,
+          hostname, hostname_hash, METADATA_NAME_HOSTNAME_HASH,
           TraceEventType::TRACE_TYPE_DFTRACER, this->process_id, tid, true);
       char thread_name[128];
       auto size =
@@ -343,11 +340,6 @@ class DFTLogger {
           auto cwd_hash = hash_and_store(cwd, METADATA_NAME_FILE_HASH);
           meta->set("cwd", cwd_hash);
         }
-        // Both are arbitrary text from the environment and are stored
-        // verbatim in a metadata record, so they have to be made safe for the
-        // one-object-per-line format first.
-        fix_str(cmd.data(), cmd.size());
-        fix_str(exec_name.data(), exec_name.size());
         cmd_hash = hash_and_store(cmd.data(), METADATA_NAME_STRING_HASH);
         exec_hash = hash_and_store(exec_name.data(), METADATA_NAME_STRING_HASH);
 #ifdef DFTRACER_GIT_VERSION
@@ -626,45 +618,16 @@ class DFTLogger {
     return hash_and_store(static_cast<const char*>(filename), name);
   }
 
-  bool ignore_chars(char c) {
-    // Control characters, newline above all. Records are one JSON object per
-    // line, so a newline reaching the trace splits a record in two and makes
-    // the file unparseable. A traced agent is typically launched as
-    // `python -c "<multi-line script>"`, so the command line really does carry
-    // them.
-    if (static_cast<unsigned char>(c) < 0x20) return true;
-    switch (c) {
-      case '(':
-      case ')':
-      case '\\':
-      case '"':
-      case '\'':
-      case '|':
-        return true;
-      default:
-        return false;
-    }
-  }
-
-  void fix_str(char* str, size_t len) {
-    for (size_t i = 0; i < len && str[i] != '\0'; ++i) {
-      if (ignore_chars(str[i])) str[i] = ' ';
-    }
-  }
-
   inline HashType hash_and_store_str(char file[PATH_MAX],
                                      ConstEventNameType name) {
     HashType hash = has_hash(file);
     if (hash == NO_HASH_DEFAULT) {
       hash = get_hash(file);
-      // Keyed by the path as traced, before fix_str below, so finalize can
-      // still look the file up.
       insert_hash(file, hash, strcmp(name, METADATA_NAME_FILE_HASH) == 0);
       ThreadID tid = 0;
       if (dftracer_tid) {
         tid = df_gettid();
       }
-      fix_str(file, PATH_MAX);
       this->buffer_manager->log_metadata_event(
           file, hash, name, TraceEventType::TRACE_TYPE_DFTRACER,
           this->process_id, tid, true);
@@ -686,8 +649,8 @@ class DFTLogger {
   }
 
   // The common case, a string hashed already, is one lookup on the caller's
-  // string: no copy, no allocation. Only a new one is copied (bounded to
-  // PATH_MAX, as it is keyed) to hash it and to make its record line-safe.
+  // string: no copy, no allocation. Only a new one is copied, bounded to
+  // PATH_MAX as it is keyed.
   inline HashType hash_and_store(const char* filename,
                                  ConstEventNameType name) {
     if (filename == NULL) return NO_HASH_DEFAULT;
@@ -732,7 +695,7 @@ class DFTLogger {
       std::shared_lock<std::shared_mutex> lock(used_extra_mtx_);
       for (const auto& name : used_extra_) {
         if (!first) used_json << ",";
-        used_json << "\"" << name << "\":1";
+        used_json << dftracer::line_format::quoted(name) << ":1";
         first = false;
       }
     }
@@ -748,12 +711,12 @@ class DFTLogger {
       bool first_app = true;
       for (auto& entry : app_metadata_) {
         if (!first_app) app_json << ",";
-        app_json << "\"" << entry.first.view() << "\":";
+        app_json << dftracer::line_format::quoted(entry.first.view()) << ":";
         const dftracer::MetadataValue& value = std::get<1>(entry.second);
         if (const auto* i = std::get_if<int64_t>(&value)) {
           app_json << *i;
         } else if (const auto* s = std::get_if<std::string>(&value)) {
-          app_json << "\"" << *s << "\"";
+          app_json << dftracer::line_format::quoted(*s);
         }
         first_app = false;
       }

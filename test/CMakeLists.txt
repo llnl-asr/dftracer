@@ -626,6 +626,22 @@ set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BI
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_BINARY_DIR})
 set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/${test_name})
 
+# A traced file whose name holds JSON and shell special characters keeps its
+# real name in the FH record; see check_odd_names_trace.py.
+set(test_name test_py_odd_names)
+df_add_test(${test_name} ${DFTRACER_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/py/test_odd_names.py ${CMAKE_CURRENT_BINARY_DIR}/data)
+set_common_properties(${test_name})
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload.so)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_DATA_DIR=${CMAKE_CURRENT_BINARY_DIR}/data)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/${test_name})
+if(DFTRACER_TRACE_CHECK_PYTHON)
+    df_add_test(check_${test_name} ${DFTRACER_TRACE_CHECK_PYTHON}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_odd_names_trace.py
+        "${CMAKE_CURRENT_BINARY_DIR}/${test_name}*.pfw*")
+    set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
+endif()
+
 set(test_name test_py_aggregation_both)
 df_add_test(${test_name} ${DFTRACER_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/py/test.py --format=npz --data_dir=${CMAKE_CURRENT_BINARY_DIR}/data)
 set_common_properties(${test_name} ${DFTRACER_PYTHON_H5PY_LIBDIR} ${DFTRACER_TEST_OPTIONAL_LIBDIR})

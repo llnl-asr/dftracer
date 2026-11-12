@@ -111,6 +111,7 @@ class EventDraft {
   struct StringWriter {
     std::string& out;
     void raw(std::string_view s) { out.append(s.data(), s.size()); }
+    void escaped(std::string_view s) { line_format::escaped(*this, s); }
     void i64(int64_t v) { out += std::to_string(v); }
     void u64(uint64_t v) { out += std::to_string(v); }
     void f64(double v) {

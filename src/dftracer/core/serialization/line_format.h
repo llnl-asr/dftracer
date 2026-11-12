@@ -31,15 +31,56 @@ static constexpr size_t DFTRACER_SERIALIZATION_EVENT_MAX = 16 * 1024;
  * Splitting the format into literal pieces, counting the placeholders and
  * checking every argument's type all happen at compile time: a wrong count or
  * an unsupported type does not compile. What is left at run time is copying
- * each piece (a memcpy of constant size) and converting each argument --
- * integers with std::to_chars, strings copied as they are (no escaping, as
- * the snprintf("%s") this replaces did). Nothing allocates.
+ * each piece (a memcpy of constant size) and converting each argument:
+ * integers with std::to_chars, strings escaped for a JSON string (a format
+ * puts the quotes around the placeholder). Nothing allocates.
  *
  * Arguments: integers (not bool or character types; cast enums), const
- * char* / char* (null writes nothing), std::string_view, std::string.
+ * char* / char* (null writes nothing), std::string_view, std::string, and
+ * Raw for text that is already JSON.
  */
 namespace dftracer {
 namespace line_format {
+
+/** Text written as it is: JSON that the caller guarantees is valid. */
+struct Raw {
+  std::string_view value;
+};
+
+/**
+ * `s` as the inside of a JSON string: quote and backslash escaped, control
+ * characters as \u00XX. Other bytes, UTF-8 too, are copied.
+ */
+template <typename W>
+inline void escaped(W& w, std::string_view s) {
+  size_t run = 0;
+  for (size_t i = 0; i < s.size(); ++i) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    if (c != '"' && c != '\\' && c >= 0x20) continue;
+    if (i > run) w.raw(s.substr(run, i - run));
+    char esc[8];
+    if (c < 0x20)
+      std::snprintf(esc, sizeof(esc), "\\u%04x", c);
+    else
+      std::snprintf(esc, sizeof(esc), "\\%c", c);
+    w.raw(esc);
+    run = i + 1;
+  }
+  if (run < s.size()) w.raw(s.substr(run));
+}
+
+/** `s` as a JSON string literal, quotes included. */
+inline std::string quoted(std::string_view s) {
+  struct Out {
+    std::string& text;
+    void raw(std::string_view v) { text.append(v.data(), v.size()); }
+  };
+  std::string text = "\"";
+  Out out{text};
+  escaped(out, s);
+  text += '"';
+  return text;
+}
 
 /**
  * Bounded writer for one line of at most DFTRACER_SERIALIZATION_EVENT_MAX
@@ -66,6 +107,7 @@ class Line {
   void raw(const char* s) {
     if (s != nullptr) raw(std::string_view(s));
   }
+  void escaped(std::string_view s) { line_format::escaped(*this, s); }
   void i64(int64_t v) { number(v); }
   void u64(uint64_t v) { number(v); }
   void f64(double v) {
@@ -171,7 +213,7 @@ constexpr bool is_str =
     std::is_same_v<T, std::string_view> || std::is_same_v<T, std::string>;
 
 template <typename T>
-constexpr bool is_arg = is_int<T> || is_str<T>;
+constexpr bool is_arg = is_int<T> || is_str<T> || std::is_same_v<T, Raw>;
 
 }  // namespace detail
 
@@ -202,11 +244,13 @@ inline void put(W& w, const T& v) {
                 "a string");
   if constexpr (is_int<T>) {
     w.number(v);
+  } else if constexpr (std::is_same_v<T, Raw>) {
+    w.raw(v.value);
   } else if constexpr (std::is_same_v<T, const char*> ||
                        std::is_same_v<T, char*>) {
-    w.raw(static_cast<const char*>(v));
+    if (v != nullptr) w.escaped(std::string_view(v));
   } else {
-    w.raw(std::string_view(v));
+    w.escaped(std::string_view(v));
   }
 }
 

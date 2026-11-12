@@ -8,6 +8,7 @@
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/module_hooks.h>
 #include <dftracer/core/common/singleton.h>
+#include <dftracer/core/serialization/line_format.h>
 #include <dftracer/core/utils/posix_bypass.h>
 #include <fcntl.h>
 #include <libgen.h>
@@ -856,32 +857,6 @@ void dftracer::ConfigurationManager::derive_configurations() {
                      "");
 }
 
-namespace {
-// Minimal JSON string escaping for arbitrary runtime values (e.g. a log file
-// path) that, unlike the fixed enum-derived strings elsewhere in this
-// function, aren't guaranteed free of quote/backslash/control characters.
-std::string json_escape(const std::string& s) {
-  std::string out;
-  out.reserve(s.size());
-  for (char c : s) {
-    switch (c) {
-      case '"':
-        out += "\\\"";
-        break;
-      case '\\':
-        out += "\\\\";
-        break;
-      case '\n':
-        out += "\\n";
-        break;
-      default:
-        out += c;
-    }
-  }
-  return out;
-}
-}  // namespace
-
 void dftracer::ConfigurationManager::populate_metadata(
     dftracer::Metadata* meta, bool bind, const std::string& log_file) const {
   std::ostringstream cfg;
@@ -913,8 +888,7 @@ void dftracer::ConfigurationManager::populate_metadata(
       // extension) — both runtime facts from DFTracerCore, not settable via
       // env/YAML, but important for reconstructing how a trace was produced.
       << "\"bind\":" << (int)bind << ","
-      << "\"log_file\":\"" << json_escape(log_file) << "\""
-      << "}";
+      << "\"log_file\":" << line_format::quoted(log_file) << "}";
   meta->insert_or_assign("cfg", dftracer::RawJson(cfg.str()));
 
   // Layer availability: what this build supports, regardless of whether it

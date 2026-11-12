@@ -202,6 +202,7 @@ class JsonWriter {
  public:
   explicit JsonWriter(ByteWriter& w) : w_(w) {}
   void raw(std::string_view s) { w_.put_bytes(s.data(), s.size()); }
+  void escaped(std::string_view s) { line_format::escaped(*this, s); }
   void i64(int64_t v) { number(v); }
   void u64(uint64_t v) { number(v); }
   void f64(double v) {

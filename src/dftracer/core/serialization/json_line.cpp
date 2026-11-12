@@ -106,7 +106,8 @@ size_t JsonLines::record(char* buffer, ConstEventNameType record_name,
   line_format::append<RecordHead>(
       w, record_name, static_cast<unsigned>(type), process_id, thread_id,
       phase(TracePhaseType::TRACE_PHASE_METADATA), this->hostname_hash);
-  line_format::append<RawFields>(w, fields);
+  line_format::append<RawFields>(
+      w, line_format::Raw{fields == nullptr ? "" : fields});
   return w.finish("JsonLines.record", 0);
 }
 
@@ -136,7 +137,8 @@ size_t JsonLines::metadata(char* buffer, ConstEventNameType name,
   if (is_string)
     line_format::append<StringValue>(w, name, value);
   else
-    line_format::append<RawValue>(w, name, value);
+    line_format::append<RawValue>(
+        w, name, line_format::Raw{value == nullptr ? "" : value});
   return w.finish("JsonLines.metadata", 0);
 }
 
