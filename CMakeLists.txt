@@ -117,6 +117,7 @@ if(NOT DFTRACER_EXPORTED_TARGETS)
 endif()
 
 include(dftracer-utils)
+include(DFTracerCompose)
 
 # ------------------------------------------------------------------------------
 # Build options
@@ -497,9 +498,34 @@ else()
         endif()
 
         find_package(brahma 5.1.1 REQUIRED)
+        # brahma built per module (dependency/CMakeLists.txt,
+        # DFTRACER_BRAHMA_VARIANTS): the core links the brahma found above,
+        # which has no MPI or HDF5, and the MPI and HDF5 modules each compile
+        # and link the static brahma under <brahma prefix>/brahma-variants/.
+        # Without them every part uses the one brahma found above.
+        get_filename_component(_dftracer_brahma_prefix "${brahma_DIR}/../../.." ABSOLUTE)
+        set(DFTRACER_BRAHMA_VARIANTS_DIR "${_dftracer_brahma_prefix}/brahma-variants" CACHE PATH
+                "Where the per-module brahma builds are installed")
+        foreach(_dftracer_brahma_variant mpi hdf5)
+                string(TOUPPER ${_dftracer_brahma_variant} _dftracer_upper)
+                set(DFTRACER_BRAHMA_${_dftracer_upper}_INCLUDE_DIR "")
+                set(DFTRACER_BRAHMA_${_dftracer_upper}_LIBRARY "")
+                set(_dftracer_dir "${DFTRACER_BRAHMA_VARIANTS_DIR}/${_dftracer_brahma_variant}")
+                file(GLOB _dftracer_archive "${_dftracer_dir}/lib*/libbrahma.a")
+                if(_dftracer_archive AND EXISTS "${_dftracer_dir}/include/brahma/brahma_config.hpp")
+                        list(GET _dftracer_archive 0 _dftracer_archive)
+                        set(DFTRACER_BRAHMA_${_dftracer_upper}_INCLUDE_DIR "${_dftracer_dir}/include")
+                        set(DFTRACER_BRAHMA_${_dftracer_upper}_LIBRARY "${_dftracer_archive}")
+                        message(STATUS "[BRAHMA] ${_dftracer_brahma_variant} module brahma: ${_dftracer_archive}")
+                endif()
+        endforeach()
         if(DFTRACER_ENABLE_MPI OR DFTRACER_ENABLE_DYNAMIC_DETECTION)
                 include(cmake/modules/DFTracerBrahmaCheck.cmake)
-                dftracer_brahma_missing_features(_brahma_missing ${BRAHMA_INCLUDE_DIRS})
+                if(DFTRACER_BRAHMA_MPI_INCLUDE_DIR)
+                        dftracer_brahma_missing_features(_brahma_missing ${DFTRACER_BRAHMA_MPI_INCLUDE_DIR})
+                else()
+                        dftracer_brahma_missing_features(_brahma_missing ${BRAHMA_INCLUDE_DIRS})
+                endif()
                 if(_brahma_missing)
                         message(FATAL_ERROR "[${PROJECT_NAME}] brahma at ${brahma_DIR} lacks "
                                 "${_brahma_missing}, which DFTracer's MPI tracers need. Rebuild "
@@ -511,7 +537,26 @@ else()
         if(${brahma_FOUND})
                 message(STATUS "[BRAHMA] found brahma at ${BRAHMA_INCLUDE_DIRS}")
                 include_directories(${BRAHMA_INCLUDE_DIRS})
-                set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${BRAHMA_LIBRARIES})
+                # A static brahma goes into libdftracer_core only, which
+                # exports it. In DEPENDENCY_LIB it would also be copied into
+                # every other target linked before the core (the Python
+                # extension, the preload library, the service), and two
+                # copies of brahma's singletons in one process are torn down
+                # twice at exit: a heap corruption DLIO hit.
+                set(DFTRACER_BRAHMA_CORE_LIB "")
+                set(_dftracer_brahma_type "")
+                foreach(_dftracer_brahma_lib IN LISTS BRAHMA_LIBRARIES)
+                        if(TARGET ${_dftracer_brahma_lib})
+                                get_target_property(_dftracer_brahma_type ${_dftracer_brahma_lib} TYPE)
+                        elseif(_dftracer_brahma_lib MATCHES "\\.a$")
+                                set(_dftracer_brahma_type STATIC_LIBRARY)
+                        endif()
+                endforeach()
+                if(_dftracer_brahma_type STREQUAL "STATIC_LIBRARY")
+                        set(DFTRACER_BRAHMA_CORE_LIB ${BRAHMA_LIBRARIES})
+                else()
+                        set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${BRAHMA_LIBRARIES})
+                endif()
                 set(BRAHMA_LIBRARY_DIR ${brahma_DIR}/../../)
 
                 # Get absolute path for BRAHMA_LIBRARY_DIR
@@ -526,7 +571,8 @@ else()
 
         add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/tools)
 
-        find_package(yaml-cpp REQUIRED)
+        # Same minimum as dependency/CMakeLists.txt (see there).
+        find_package(yaml-cpp 0.6.3 REQUIRED)
 
         if(${yaml-cpp_FOUND})
                 message(STATUS "[DFTRACER] found yaml-cpp at ${YAML_CPP_INCLUDE_DIR}")
@@ -648,7 +694,7 @@ else()
                 message(STATUS "[${PROJECT_NAME}] MPI implementation: ${DFTRACER_MPI_IMPL_NAME}")
                 set(DFTRACER_MPI_ENABLE 1)
                 include_directories(${MPI_CXX_INCLUDE_DIRS})
-                set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${MPI_CXX_LIBRARIES})
+                set(DFTRACER_MODULE_MPI_LIBS ${MPI_CXX_LIBRARIES})
 
                 # Store impl compile definition; applied after targets are created below
                 if(NOT DFTRACER_MPI_IMPL_NAME STREQUAL "UNKNOWN")
@@ -684,7 +730,7 @@ else()
         if(HWLOC_FOUND AND(NOT DFTRACER_DISABLE_HWLOC OR DFTRACER_ENABLE_DYNAMIC_DETECTION))
                 set(DFTRACER_HWLOC_ENABLE 1)
                 include_directories(${HWLOC_INCLUDE_DIRS})
-                set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${HWLOC_LIBRARIES})
+                set(DFTRACER_MODULE_HWLOC_LIBS ${HWLOC_LIBRARIES})
 
                 if(DEFINED HWLOC_LIBDIR)
                         list(APPEND DEPENDENCY_LIBRARY_DIRS ${HWLOC_LIBDIR})
@@ -749,7 +795,7 @@ else()
 
                 message(STATUS "[DFTRACER] rocprofiler-sdk version: ${DFTRACER_ROCPROFILER_VERSION_MAJOR}.${DFTRACER_ROCPROFILER_VERSION_MINOR}.${DFTRACER_ROCPROFILER_VERSION_PATCH}")
                 set(HIP_TRACING_LIBRARIES rocprofiler-sdk::rocprofiler-sdk)
-                set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${HIP_TRACING_LIBRARIES})
+                set(DFTRACER_MODULE_HIP_LIBS ${HIP_TRACING_LIBRARIES})
         else()
                 if(DFTRACER_ENABLE_HIP_TRACING OR DFTRACER_ENABLE_DYNAMIC_DETECTION)
                         # Only warn when the user explicitly requested HIP tracing but
@@ -770,7 +816,7 @@ else()
         if (PAPI_FOUND AND (DFTRACER_ENABLE_PAPI_TRACING OR DFTRACER_ENABLE_DYNAMIC_DETECTION))
                 set(DFTRACER_PAPI_TRACING_ENABLE 1)
                 include_directories(${PAPI_INCLUDE_DIRS})
-                set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${PAPI_LIBRARIES})
+                set(DFTRACER_MODULE_PAPI_LIBS ${PAPI_LIBRARIES})
                 if (DEFINED PAPI_LIBRARY_DIRS)
                         list(APPEND DEPENDENCY_LIBRARY_DIRS ${PAPI_LIBRARY_DIRS})
                 endif()
@@ -952,7 +998,7 @@ else()
                 message(STATUS "[DFTRACER] CUDA toolkit version: ${DFTRACER_CUDA_VERSION_MAJOR}.${DFTRACER_CUDA_VERSION_MINOR}.${DFTRACER_CUDA_VERSION_PATCH}")
                 include_directories(${CUPTI_INCLUDE_DIRS})
                 set(CUDA_TRACING_LIBRARIES ${CUPTI_LIBRARIES})
-                set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${CUDA_TRACING_LIBRARIES})
+                set(DFTRACER_MODULE_CUDA_LIBS ${CUDA_TRACING_LIBRARIES})
 
                 if(CUPTI_LIBRARY_DIR)
                         list(APPEND DEPENDENCY_LIBRARY_DIRS ${CUPTI_LIBRARY_DIR})
@@ -1073,9 +1119,6 @@ else()
         set(DFTRACER_CORE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/posix.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/stdio.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/finstrument/functions.cpp
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/hip/intercept.cpp
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/papi/counters.cpp
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/cuda/intercept.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/posix_bypass.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/stdio_bypass.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/dftracer.cpp
@@ -1097,24 +1140,33 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/datastructure.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/rules.cpp)
 
-        # Add MPI/MPIIO sources if MPI is enabled
-        if(DFTRACER_MPI_ENABLE)
-                list(APPEND DFTRACER_CORE_SRC
-                        ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpi.cpp
-                        ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpiio.cpp)
-                # One tracer per brahma compat interface (generated). Each compiles
-                # to nothing unless the build's MPI is the one it was generated for.
-                file(GLOB DFTRACER_MPI_COMPAT_SRC CONFIGURE_DEPENDS
-                        ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpi_*_compat.cpp
-                        ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpiio_*_compat.cpp)
-                list(APPEND DFTRACER_CORE_SRC ${DFTRACER_MPI_COMPAT_SRC})
-        endif()
-
-        # Add HDF5 sources if HDF5 is enabled
-        if(DFTRACER_HDF5_ENABLE)
-                list(APPEND DFTRACER_CORE_SRC
-                        ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/hdf5.cpp)
-        endif()
+        # The optional modules, each its own archive (see
+        # cmake/modules/DFTracerCompose.cmake). Their sources are listed here;
+        # the archives are defined once the core's targets exist.
+        set(DFTRACER_MODULE_MPI_SRC
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpi.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpiio.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpi_module.cpp)
+        # One tracer per brahma compat interface (generated). Each compiles
+        # to nothing unless the build's MPI is the one it was generated for.
+        file(GLOB DFTRACER_MPI_COMPAT_SRC CONFIGURE_DEPENDS
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpi_*_compat.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/mpiio_*_compat.cpp)
+        list(APPEND DFTRACER_MODULE_MPI_SRC ${DFTRACER_MPI_COMPAT_SRC})
+        set(DFTRACER_MODULE_HDF5_SRC
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/hdf5.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/hdf5_module.cpp)
+        set(DFTRACER_MODULE_PAPI_SRC
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/papi/counters.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/papi/module.cpp)
+        set(DFTRACER_MODULE_HWLOC_SRC
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/hwloc_affinity.cpp)
+        set(DFTRACER_MODULE_HIP_SRC
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/hip/intercept.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/hip/module.cpp)
+        set(DFTRACER_MODULE_CUDA_SRC
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/cuda/intercept.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/cuda/module.cpp)
 
         set(DFTRACER_CORE_PUBLIC_INCLUDE
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/dftracer/dftracer.h
@@ -1163,12 +1215,11 @@ else()
                         ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/hdf5.h)
         endif()
 
-        add_library(${PROJECT_NAME}_core SHARED)
-        add_library(dftracer::dftracer_core ALIAS ${PROJECT_NAME}_core)
-        set_target_properties(${PROJECT_NAME}_core PROPERTIES LINKER_LANGUAGE CXX)
-        target_compile_definitions(${PROJECT_NAME}_core PUBLIC DFTRACER_LOGGER_LEVEL_ERROR)
+        # Definitions every translation unit that includes brahma.h needs,
+        # given how brahma was built.
+        set(DFTRACER_BRAHMA_DEFINITIONS "")
         if(DEFINED DFTRACER_MPI_IMPL_COMPILE_DEF)
-                target_compile_definitions(${PROJECT_NAME}_core PUBLIC ${DFTRACER_MPI_IMPL_COMPILE_DEF})
+                list(APPEND DFTRACER_BRAHMA_DEFINITIONS ${DFTRACER_MPI_IMPL_COMPILE_DEF})
         endif()
         if(DFTRACER_HDF5_ENABLE)
                 # HDF5 1.12+ defines H5Oopen_async, H5Dopen_async, etc. as variadic macros
@@ -1177,22 +1228,123 @@ else()
                 # Defining the module guards suppresses the macro redefinitions so brahma's
                 # installed header compiles correctly when included by dftracer's sources.
                 foreach(_hdf5_mod A D F G L M O R T)
-                        target_compile_definitions(${PROJECT_NAME}_core PUBLIC H5${_hdf5_mod}_MODULE)
+                        list(APPEND DFTRACER_BRAHMA_DEFINITIONS H5${_hdf5_mod}_MODULE)
                 endforeach()
         endif()
-        target_link_libraries(${PROJECT_NAME}_core ${DEPENDENCY_LIB})
-        add_library(${PROJECT_NAME}_core_dbg SHARED)
-        add_library(dftracer::dftracer_core_dbg ALIAS ${PROJECT_NAME}_core_dbg)
-        set_target_properties(${PROJECT_NAME}_core_dbg PROPERTIES LINKER_LANGUAGE CXX)
-        if(DEFINED DFTRACER_MPI_IMPL_COMPILE_DEF)
-                target_compile_definitions(${PROJECT_NAME}_core_dbg PUBLIC ${DFTRACER_MPI_IMPL_COMPILE_DEF})
+
+        # The core archive: everything that is always built, independent of the
+        # optional modules (test/check_core_isolation.sh keeps it that way).
+        foreach(_dftracer_suffix "" "_dbg")
+                set(_dftracer_base ${PROJECT_NAME}_core_base${_dftracer_suffix})
+                add_library(${_dftracer_base} STATIC ${DFTRACER_CORE_SRC})
+                set_target_properties(${_dftracer_base} PROPERTIES
+                        POSITION_INDEPENDENT_CODE ON
+                        LINKER_LANGUAGE CXX)
+                target_compile_definitions(${_dftracer_base} PRIVATE ${DFTRACER_BRAHMA_DEFINITIONS})
+                target_include_directories(${_dftracer_base}
+                        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+                        PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+        endforeach()
+        target_compile_definitions(${PROJECT_NAME}_core_base PRIVATE DFTRACER_LOGGER_LEVEL_ERROR)
+
+        # One archive per optional module the build has, named by the library
+        # build it was compiled against.
+        if(DFTRACER_MPI_ENABLE)
+                dftracer_module_variant(mpi _dftracer_variant)
+                dftracer_add_module(NAME mpi VARIANT ${_dftracer_variant}
+                        SOURCES ${DFTRACER_MODULE_MPI_SRC}
+                        LIBRARIES ${DFTRACER_BRAHMA_MPI_LIBRARY} ${DFTRACER_MODULE_MPI_LIBS}
+                        INCLUDES ${DFTRACER_BRAHMA_MPI_INCLUDE_DIR} ${MPI_C_INCLUDE_DIRS}
+                        DEFINITIONS ${DFTRACER_BRAHMA_DEFINITIONS}
+                        VERSIONS "impl=${DFTRACER_MPI_IMPL_NAME}" "version=${DFTRACER_MPI_PACKAGE_VERSION}")
         endif()
         if(DFTRACER_HDF5_ENABLE)
-                foreach(_hdf5_mod A D F G L M O R T)
-                        target_compile_definitions(${PROJECT_NAME}_core_dbg PUBLIC H5${_hdf5_mod}_MODULE)
-                endforeach()
+                # With its own brahma the module links HDF5 itself; the single
+                # brahma otherwise brings HDF5 in.
+                set(_dftracer_hdf5_libs "")
+                if(DFTRACER_BRAHMA_HDF5_LIBRARY)
+                        if(HDF5_C_LIBRARIES)
+                                set(_dftracer_hdf5_libs ${HDF5_C_LIBRARIES})
+                        else()
+                                set(_dftracer_hdf5_libs ${HDF5_LIBRARIES})
+                        endif()
+                endif()
+                # The module links brahma by path, which carries no usage
+                # requirements: name HDF5's headers, and for a parallel HDF5
+                # (whose headers include mpi.h) MPI's, unless the compiler
+                # wrapper already adds them.
+                set(_dftracer_hdf5_includes ${HDF5_C_INCLUDE_DIRS} ${HDF5_INCLUDE_DIRS})
+                if(HDF5_IS_PARALLEL)
+                        list(APPEND _dftracer_hdf5_includes ${MPI_C_INCLUDE_DIRS})
+                endif()
+                dftracer_module_variant(hdf5 _dftracer_variant)
+                dftracer_add_module(NAME hdf5 VARIANT ${_dftracer_variant}
+                        SOURCES ${DFTRACER_MODULE_HDF5_SRC}
+                        LIBRARIES ${DFTRACER_BRAHMA_HDF5_LIBRARY} ${_dftracer_hdf5_libs}
+                        INCLUDES ${DFTRACER_BRAHMA_HDF5_INCLUDE_DIR} ${_dftracer_hdf5_includes}
+                        DEFINITIONS ${DFTRACER_BRAHMA_DEFINITIONS}
+                        VERSIONS "version=${HDF5_VERSION}" "parallel=${HDF5_IS_PARALLEL}")
         endif()
-        target_link_libraries(${PROJECT_NAME}_core_dbg ${DEPENDENCY_LIB} ${DFTRACER_CPP_LOGGER_LIB})
+        if(DFTRACER_PAPI_TRACING_ENABLE)
+                dftracer_module_variant(papi _dftracer_variant)
+                dftracer_add_module(NAME papi VARIANT ${_dftracer_variant}
+                        SOURCES ${DFTRACER_MODULE_PAPI_SRC}
+                        LIBRARIES ${DFTRACER_MODULE_PAPI_LIBS}
+                        DEFINITIONS ${DFTRACER_BRAHMA_DEFINITIONS}
+                        VERSIONS "version=${DFTRACER_PAPI_VERSION}")
+        endif()
+        if(DFTRACER_HWLOC_ENABLE)
+                dftracer_module_variant(hwloc _dftracer_variant)
+                dftracer_add_module(NAME hwloc VARIANT ${_dftracer_variant}
+                        SOURCES ${DFTRACER_MODULE_HWLOC_SRC}
+                        LIBRARIES ${DFTRACER_MODULE_HWLOC_LIBS}
+                        DEFINITIONS ${DFTRACER_BRAHMA_DEFINITIONS}
+                        VERSIONS "version=${DFTRACER_HWLOC_VERSION}")
+        endif()
+        if(DFTRACER_HIP_TRACING_ENABLE)
+                dftracer_module_variant(hip _dftracer_variant)
+                dftracer_add_module(NAME hip VARIANT ${_dftracer_variant}
+                        SOURCES ${DFTRACER_MODULE_HIP_SRC}
+                        LIBRARIES ${DFTRACER_MODULE_HIP_LIBS}
+                        DEFINITIONS ${DFTRACER_BRAHMA_DEFINITIONS}
+                        VERSIONS "rocprofiler-sdk=${DFTRACER_ROCPROFILER_VERSION_MAJOR}.${DFTRACER_ROCPROFILER_VERSION_MINOR}.${DFTRACER_ROCPROFILER_VERSION_PATCH}")
+        endif()
+        if(DFTRACER_CUDA_TRACING_ENABLE)
+                dftracer_module_variant(cuda _dftracer_variant)
+                dftracer_add_module(NAME cuda VARIANT ${_dftracer_variant}
+                        SOURCES ${DFTRACER_MODULE_CUDA_SRC}
+                        LIBRARIES ${DFTRACER_MODULE_CUDA_LIBS}
+                        DEFINITIONS ${DFTRACER_BRAHMA_DEFINITIONS}
+                        VERSIONS "cuda=${CUPTI_CUDA_VERSION}")
+        endif()
+        get_property(DFTRACER_MODULES GLOBAL PROPERTY DFTRACER_MODULES)
+        string(REPLACE ";" "," _dftracer_module_list "${DFTRACER_MODULES}")
+        message(STATUS "[DFTRACER] composed modules: ${_dftracer_module_list}")
+
+        # libdftracer_core: linked from the core archive and every module's.
+        set(_dftracer_module_archives "")
+        set(_dftracer_module_archives_dbg "")
+        foreach(_dftracer_module IN LISTS DFTRACER_MODULES)
+                list(APPEND _dftracer_module_archives ${PROJECT_NAME}_module_${_dftracer_module})
+                list(APPEND _dftracer_module_archives_dbg ${PROJECT_NAME}_module_${_dftracer_module}_dbg)
+        endforeach()
+        dftracer_compose_library(${PROJECT_NAME}_core
+                BASE ${PROJECT_NAME}_core_base
+                MODULES ${_dftracer_module_archives}
+                MODULE_NAMES ${DFTRACER_MODULES})
+        add_library(dftracer::dftracer_core ALIAS ${PROJECT_NAME}_core)
+        target_compile_definitions(${PROJECT_NAME}_core PUBLIC
+                DFTRACER_LOGGER_LEVEL_ERROR ${DFTRACER_BRAHMA_DEFINITIONS})
+        target_link_libraries(${PROJECT_NAME}_core PUBLIC ${DEPENDENCY_LIB})
+        target_link_libraries(${PROJECT_NAME}_core PRIVATE ${DFTRACER_BRAHMA_CORE_LIB})
+        dftracer_compose_library(${PROJECT_NAME}_core_dbg
+                BASE ${PROJECT_NAME}_core_base_dbg
+                MODULES ${_dftracer_module_archives_dbg}
+                MODULE_NAMES ${DFTRACER_MODULES})
+        add_library(dftracer::dftracer_core_dbg ALIAS ${PROJECT_NAME}_core_dbg)
+        target_compile_definitions(${PROJECT_NAME}_core_dbg PUBLIC ${DFTRACER_BRAHMA_DEFINITIONS})
+        target_link_libraries(${PROJECT_NAME}_core_dbg PUBLIC ${DEPENDENCY_LIB} ${DFTRACER_CPP_LOGGER_LIB})
+        target_link_libraries(${PROJECT_NAME}_core_dbg PRIVATE ${DFTRACER_BRAHMA_CORE_LIB})
         add_library(${PROJECT_NAME}_preload SHARED)
         add_library(dftracer::dftracer_preload ALIAS ${PROJECT_NAME}_preload)
         target_link_libraries(${PROJECT_NAME}_preload ${DEPENDENCY_LIB} ${PROJECT_NAME}_core)
@@ -1209,11 +1361,14 @@ else()
                 if(TARGET brahma)
                         add_dependencies(${PROJECT_NAME}_generate_interfaces brahma)
                 endif()
-                add_dependencies(${PROJECT_NAME}_core ${PROJECT_NAME}_generate_interfaces)
-                add_dependencies(${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_generate_interfaces)
+                foreach(_dftracer_target ${PROJECT_NAME}_core_base ${PROJECT_NAME}_core_base_dbg
+                                ${_dftracer_module_archives} ${_dftracer_module_archives_dbg})
+                        add_dependencies(${_dftracer_target} ${PROJECT_NAME}_generate_interfaces)
+                endforeach()
         endif()
 
-        set(DFTRACER_DEBUG_TARGETS ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_preload_dbg)
+        set(DFTRACER_DEBUG_TARGETS ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_preload_dbg
+                ${PROJECT_NAME}_core_base_dbg ${_dftracer_module_archives_dbg})
 
         set(DFTRACER_SERVICE_TELEMETRY_SRC
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/service/telemetry/cpu_collector.cpp
@@ -1272,14 +1427,14 @@ else()
                         OUTPUT_STRIP_TRAILING_WHITESPACE)
 
                 if(EXISTS "${DFTRACER_CXX_STDLIB}")
-                        target_link_libraries(${PROJECT_NAME}_core "${DFTRACER_CXX_STDLIB}")
-                        target_link_libraries(${PROJECT_NAME}_core_dbg "${DFTRACER_CXX_STDLIB}")
+                        target_link_libraries(${PROJECT_NAME}_core PRIVATE "${DFTRACER_CXX_STDLIB}")
+                        target_link_libraries(${PROJECT_NAME}_core_dbg PRIVATE "${DFTRACER_CXX_STDLIB}")
                         target_link_libraries(${PROJECT_NAME}_service "${DFTRACER_CXX_STDLIB}")
                         target_link_libraries(${PROJECT_NAME}_service_dbg "${DFTRACER_CXX_STDLIB}")
                         message(STATUS "[DFTRACER] using C++ stdlib from ${DFTRACER_CXX_STDLIB}")
                 else()
-                        target_link_libraries(${PROJECT_NAME}_core stdc++)
-                        target_link_libraries(${PROJECT_NAME}_core_dbg stdc++)
+                        target_link_libraries(${PROJECT_NAME}_core PRIVATE stdc++)
+                        target_link_libraries(${PROJECT_NAME}_core_dbg PRIVATE stdc++)
                         target_link_libraries(${PROJECT_NAME}_service stdc++)
                         target_link_libraries(${PROJECT_NAME}_service_dbg stdc++)
                 endif()
@@ -1297,14 +1452,6 @@ else()
                 list(APPEND DFTRACER_DEBUG_TARGETS ${PROJECT_NAME}_dbg)
         endif()
 
-        target_sources(${PROJECT_NAME}_core
-                PRIVATE
-                ${DFTRACER_CORE_SRC}
-        )
-        target_sources(${PROJECT_NAME}_core_dbg
-                PRIVATE
-                ${DFTRACER_CORE_SRC}
-        )
         target_sources(${PROJECT_NAME}_preload
                 PRIVATE
                 ${DFTRACER_PRELOAD_SRC}
@@ -1372,6 +1519,149 @@ else()
                 ARCHIVE DESTINATION ${DFTRACER_INSTALL_LIB_DIR}
                 RUNTIME DESTINATION ${DFTRACER_INSTALL_BIN_DIR}
         )
+
+        # The parts libdftracer_core is composed from, and the project that
+        # links it again from them (cmake/compose/CMakeLists.txt):
+        #   <libdir>/dftracer/compose/core/                 core archives, core.cmake
+        #   <libdir>/dftracer/compose/modules/<m>/<variant>/ module archives,
+        #                                                   component.cmake/.json
+        # Destinations are relative so the tree moves with the install prefix.
+        set(DFTRACER_COMPOSE_DIR ${DFTRACER_LIBDIR}/dftracer/compose)
+        set(_dftracer_compose_build ${CMAKE_BINARY_DIR}/compose)
+        install(TARGETS ${PROJECT_NAME}_core_base ${PROJECT_NAME}_core_base_dbg
+                ARCHIVE COMPONENT dftracer_compose DESTINATION ${DFTRACER_COMPOSE_DIR}/core)
+        set(_dftracer_stdlib "")
+        if(DEFINED DFTRACER_CXX_STDLIB AND EXISTS "${DFTRACER_CXX_STDLIB}")
+                set(_dftracer_stdlib "${DFTRACER_CXX_STDLIB}")
+        endif()
+        dftracer_resolve_link_items(_dftracer_core_link ${DFTRACER_BRAHMA_CORE_LIB} ${DEPENDENCY_LIB}
+                ${_dftracer_stdlib})
+        dftracer_resolve_link_items(_dftracer_core_link_dbg ${DFTRACER_BRAHMA_CORE_LIB} ${DEPENDENCY_LIB}
+                ${DFTRACER_CPP_LOGGER_LIB} ${_dftracer_stdlib})
+        # Static archives the core links (brahma) travel with the tree.
+        dftracer_bundle_link_items(_dftracer_core_link _dftracer_core_archives core
+                ${_dftracer_core_link})
+        dftracer_bundle_link_items(_dftracer_core_link_dbg _dftracer_core_archives_dbg core
+                ${_dftracer_core_link_dbg})
+        list(APPEND _dftracer_core_archives ${_dftracer_core_archives_dbg})
+        list(REMOVE_DUPLICATES _dftracer_core_archives)
+        if(_dftracer_core_archives)
+                install(FILES ${_dftracer_core_archives}
+                        COMPONENT dftracer_compose DESTINATION ${DFTRACER_COMPOSE_DIR}/core)
+        endif()
+        # Instrumentation the core archives were compiled with also has to be
+        # on the link line (gcov's or a sanitizer's runtime), or the composed
+        # library is left with undefined __gcov_* / __asan_* symbols.
+        string(TOUPPER "${CMAKE_BUILD_TYPE}" _dftracer_build_type)
+        separate_arguments(_dftracer_cxx_flags UNIX_COMMAND
+                "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_dftracer_build_type}}")
+        set(_dftracer_core_link_options "")
+        foreach(_dftracer_flag IN LISTS _dftracer_cxx_flags)
+                if(_dftracer_flag MATCHES "^(--coverage|-fprofile-arcs|-fprofile-instr-generate.*|-fsanitize=.*)$")
+                        list(APPEND _dftracer_core_link_options "${_dftracer_flag}")
+                endif()
+        endforeach()
+        # The PROFILE build type's --coverage is set with the tests, below.
+        if(_dftracer_build_type STREQUAL "PROFILE" AND DFTRACER_ENABLE_TESTS)
+                list(APPEND _dftracer_core_link_options --coverage)
+        endif()
+        list(REMOVE_DUPLICATES _dftracer_core_link_options)
+        file(CONFIGURE OUTPUT ${_dftracer_compose_build}/core/core.cmake CONTENT [[
+# Generated by DFTracer's build: how the core archive links on this system.
+set(DFTRACER_COMPOSE_VERSION "@DFTRACER_LIBRARY_VERSION@")
+set(DFTRACER_COMPOSE_LIBDIR "@DFTRACER_LIBDIR@")
+set(DFTRACER_COMPOSE_INSTALL_RPATH "@CMAKE_INSTALL_RPATH@")
+set(DFTRACER_COMPOSE_DEFINITIONS "@DFTRACER_BRAHMA_DEFINITIONS@")
+set(DFTRACER_CORE_LINK "@_dftracer_core_link@")
+set(DFTRACER_CORE_LINK_DBG "@_dftracer_core_link_dbg@")
+set(DFTRACER_CORE_LINK_OPTIONS "@_dftracer_core_link_options@")
+]] @ONLY)
+        install(FILES ${_dftracer_compose_build}/core/core.cmake
+                COMPONENT dftracer_compose DESTINATION ${DFTRACER_COMPOSE_DIR}/core)
+        foreach(_dftracer_module IN LISTS DFTRACER_MODULES)
+                get_property(_dftracer_variant GLOBAL PROPERTY DFTRACER_MODULE_${_dftracer_module}_VARIANT)
+                get_property(_dftracer_link GLOBAL PROPERTY DFTRACER_MODULE_${_dftracer_module}_LINK)
+                get_property(_dftracer_versions GLOBAL PROPERTY DFTRACER_MODULE_${_dftracer_module}_VERSIONS)
+                set(_dftracer_dest ${DFTRACER_COMPOSE_DIR}/modules/${_dftracer_module}/${_dftracer_variant})
+                set(_dftracer_out ${_dftracer_compose_build}/modules/${_dftracer_module}/${_dftracer_variant})
+                # The module's own brahma (a static archive) travels with it.
+                dftracer_bundle_link_items(_dftracer_link _dftracer_archives
+                        modules/${_dftracer_module}/${_dftracer_variant} ${_dftracer_link})
+                if(_dftracer_archives)
+                        install(FILES ${_dftracer_archives}
+                                COMPONENT dftracer_compose DESTINATION ${_dftracer_dest})
+                endif()
+                set(_dftracer_json_versions "")
+                foreach(_dftracer_pair IN LISTS _dftracer_versions)
+                        if(_dftracer_pair MATCHES "^([^=]+)=(.*)$")
+                                string(APPEND _dftracer_json_versions
+                                        ",\n    \"${CMAKE_MATCH_1}\": \"${CMAKE_MATCH_2}\"")
+                        endif()
+                endforeach()
+                string(REGEX REPLACE "^,\n" "\n" _dftracer_json_versions "${_dftracer_json_versions}")
+                file(CONFIGURE OUTPUT ${_dftracer_out}/component.cmake CONTENT [[
+# Generated by DFTracer's build: one module variant and how it links.
+set(DFTRACER_COMPONENT_NAME "@_dftracer_module@")
+set(DFTRACER_COMPONENT_VARIANT "@_dftracer_variant@")
+set(DFTRACER_COMPONENT_LINK "@_dftracer_link@")
+]] @ONLY)
+                file(CONFIGURE OUTPUT ${_dftracer_out}/component.json CONTENT [[
+{
+  "module": "@_dftracer_module@",
+  "variant": "@_dftracer_variant@",
+  "dftracer_library_version": "@DFTRACER_LIBRARY_VERSION@",
+  "versions": {@_dftracer_json_versions@
+  }
+}
+]] @ONLY)
+                install(TARGETS ${PROJECT_NAME}_module_${_dftracer_module}
+                        ${PROJECT_NAME}_module_${_dftracer_module}_dbg
+                        ARCHIVE COMPONENT dftracer_compose DESTINATION ${_dftracer_dest})
+                install(FILES ${_dftracer_out}/component.cmake ${_dftracer_out}/component.json
+                        COMPONENT dftracer_compose DESTINATION ${_dftracer_dest})
+        endforeach()
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/cmake/compose/CMakeLists.txt
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/DFTracerCompose.cmake
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/DFTracerDetect.cmake
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/FindPAPI.cmake
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/FindHWLOC.cmake
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/FindCUPTI.cmake
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/mpi_detect.c
+                COMPONENT dftracer_compose DESTINATION ${DFTRACER_COMPOSE_DIR})
+        # The sources, for building a module variant the tree lacks (or one
+        # named in DFTRACER_BUILD_FROM_SOURCE) on the machine that composes it:
+        # dftracer-compose builds it with tools/ci/build-module.sh from here.
+        option(DFTRACER_INSTALL_SOURCE "Install DFTracer's sources for source builds of modules" ON)
+        if(DFTRACER_INSTALL_SOURCE)
+                set(_dftracer_source_dest share/dftracer/source)
+                install(DIRECTORY cmake dependency include script src tools
+                        COMPONENT dftracer_source DESTINATION ${_dftracer_source_dest}
+                        PATTERN "__pycache__" EXCLUDE PATTERN "*.pyc" EXCLUDE)
+                install(FILES CMakeLists.txt VERSION PACKAGE_VERSION
+                        COMPONENT dftracer_source DESTINATION ${_dftracer_source_dest})
+                install(PROGRAMS tools/ci/build-module.sh
+                        COMPONENT dftracer_source DESTINATION ${_dftracer_source_dest}/tools/ci)
+        endif()
+        # The C++ runtime the archives were compiled with, so a compiler with
+        # an older one can still link them (DFTRACER_COMPOSE_RUNTIME in
+        # the compose project). GCC's runtime library exception allows this.
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+                set(_dftracer_runtime "")
+                foreach(_dftracer_lib libstdc++.a libgcc.a libgcc_eh.a libstdc++_nonshared.a)
+                        execute_process(COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=${_dftracer_lib}
+                                OUTPUT_VARIABLE _dftracer_path OUTPUT_STRIP_TRAILING_WHITESPACE)
+                        if(IS_ABSOLUTE "${_dftracer_path}" AND EXISTS "${_dftracer_path}")
+                                list(APPEND _dftracer_runtime "${_dftracer_path}")
+                        endif()
+                endforeach()
+                # libstdc++_nonshared.a exists only on toolsets that pair an old
+                # system libstdc++ with a newer compiler (manylinux's).
+                list(LENGTH _dftracer_runtime _dftracer_runtime_count)
+                if(_dftracer_runtime_count GREATER_EQUAL 3)
+                        install(FILES ${_dftracer_runtime}
+                                COMPONENT dftracer_compose DESTINATION ${DFTRACER_COMPOSE_DIR}/runtime)
+                endif()
+        endif()
         if(DFTRACER_BUILD_PYTHON_BINDINGS)
                 install(CODE "
                 set(_dftracer_python_exe \"${DFTRACER_PYTHON_EXE}\")

@@ -57,6 +57,13 @@ def cmake_pins() -> dict[str, str]:
     ):
         tag = re.sub(r"\$\{(\w+)\}", lambda m: defaults.get(m.group(1), m.group(0)), tag)
         pins.setdefault(name, tag_to_version(name, tag))
+    # A project added through a helper (brahma, once per variant) is pinned by
+    # its DFTRACER_<NAME>_GIT_TAG cache default.
+    for var, tag in defaults.items():
+        match = re.fullmatch(r"DFTRACER_(\w+)_GIT_TAG", var)
+        if match:
+            name = match.group(1).lower().replace("_", "-")
+            pins.setdefault(name, tag_to_version(name, tag))
     return pins
 
 

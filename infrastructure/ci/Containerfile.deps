@@ -1,0 +1,177 @@
+# CI deps image: every library version DFTracer builds a module against
+# (dependency/variants.yaml), on the manylinux_2_28 toolchain the wheels are
+# built with. Each module variant is compiled in this image
+# (tools/ci/build-module.sh), so the archives the wheel ships all come from
+# one compiler and one glibc baseline.
+#
+#   - spack builds the MPIs, HDF5 (serial and parallel with each MPI), PAPI,
+#     hwloc and Variorum versions into /opt/spack-deps, all with gcc-toolset
+#   - each ROCm release's rocprofiler-sdk and HIP headers, from AMD's
+#     versioned packages, under /opt/rocm-<release>
+#   - each CUDA release's CUPTI and runtime headers under /usr/local/cuda-<x.y>
+#
+# Nothing here can run a GPU kernel; the GPU modules are compiled and linked.
+#
+# The build context is generated from variants.yaml by
+# `infrastructure/ci/podman.sh deps-image` (spack.yaml, rocm.repo,
+# gpu-packages.txt); edit variants.yaml, not those files.
+FROM quay.io/pypa/manylinux_2_28_x86_64:latest
+
+ARG SPACK_VERSION=v1.1.1
+
+RUN dnf install -y epel-release \
+ && dnf install -y --setopt=install_weak_deps=False \
+        git which file jq gdb valgrind zlib-devel patch bzip2 xz unzip \
+ && dnf clean all
+
+# Tools that ship their own TLS stack trust the system bundle (see
+# Containerfile.dev and the CA mount in podman.sh).
+ENV PIP_CERT=/etc/pki/tls/certs/ca-bundle.crt \
+    SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt \
+    CURL_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt \
+    CMAKE_TLS_CAINFO=/etc/pki/tls/certs/ca-bundle.crt \
+    REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
+
+# Each step copies only the context files it reads, so that changing, say,
+# the GPU package list does not invalidate the hours of spack layers above it.
+
+# The build tools and common libraries come from the OS and are declared to
+# spack as externals (tools/ci/spack_externals.py), so spack builds little
+# more than the libraries variants.yaml names.
+COPY spack_externals.py /opt/deps-context/
+RUN dnf config-manager --set-enabled powertools \
+ && dnf install -y --setopt=install_weak_deps=False \
+        $(/opt/python/cp312-cp312/bin/python /opt/deps-context/spack_externals.py dnf) \
+ && dnf clean all
+
+# The libraries, all with the image's gcc-toolset (spack finds it first).
+ENV SPACK_ROOT=/opt/spack
+RUN git clone -q --depth 1 -b ${SPACK_VERSION} https://github.com/spack/spack.git /opt/spack \
+ && mkdir -p /root/.spack \
+ && /opt/python/cp312-cp312/bin/python /opt/deps-context/spack_externals.py packages-yaml \
+      > /root/.spack/packages.yaml \
+ && . /opt/spack/share/spack/setup-env.sh \
+ && spack compiler find
+
+# Concretized once, then installed a group per layer, so a failure in one
+# group does not throw away the builds of the others.
+COPY spack.yaml spack-*.txt /opt/deps-context/
+RUN . /opt/spack/share/spack/setup-env.sh \
+ && spack env create deps /opt/deps-context/spack.yaml \
+ && spack -e deps concretize --fresh
+# Packages spack builds at once (-p), each with BUILD_JOBS make jobs (-j,
+# default every core): the MPIs, and then the HDF5s, have no dependencies on
+# each other. Declared here, after the layers above, so changing them does
+# not invalidate those.
+ARG BUILD_PACKAGES=4
+ARG BUILD_JOBS=
+RUN . /opt/spack/share/spack/setup-env.sh \
+ && spack -e deps install -p"${BUILD_PACKAGES}" -j"${BUILD_JOBS:-$(nproc)}" --fail-fast \
+        $(cat /opt/deps-context/spack-mpi.txt)
+RUN . /opt/spack/share/spack/setup-env.sh \
+ && spack -e deps install -p"${BUILD_PACKAGES}" -j"${BUILD_JOBS:-$(nproc)}" --fail-fast \
+        $(cat /opt/deps-context/spack-hdf5-serial.txt)
+RUN . /opt/spack/share/spack/setup-env.sh \
+ && spack -e deps install -p"${BUILD_PACKAGES}" -j"${BUILD_JOBS:-$(nproc)}" --fail-fast \
+        $(cat /opt/deps-context/spack-hdf5-parallel.txt)
+RUN . /opt/spack/share/spack/setup-env.sh \
+ && spack -e deps install -p"${BUILD_PACKAGES}" -j"${BUILD_JOBS:-$(nproc)}" --fail-fast \
+        $(cat /opt/deps-context/spack-other.txt) \
+ && spack clean -a \
+ && rm -rf /root/.spack/cache
+
+# PAPI from ICL's release tarballs into /opt/papi-<version> (spack's papi
+# package cannot build these releases; see tools/ci/variants.py). PAPI 6
+# predates GCC 10's -fno-common default, and its configure probes for
+# __thread and the per-thread timer fail to compile under GCC 14, which then
+# leaves _papi_hwi_my_thread undeclared; name both instead of probing.
+# PAPI 5 builds its bundled libpfm4 with -Werror, and GCC 14 warns where the
+# compilers of its day did not (format-truncation); DBG holds those flags.
+# --no-same-owner: the tarballs carry ICL's uids, which rootless podman
+# cannot chown to.
+COPY papi-versions.txt /opt/deps-context/
+RUN for v in $(cat /opt/deps-context/papi-versions.txt); do \
+      curl -sSfL "https://icl.utk.edu/projects/papi/downloads/papi-$v.tar.gz" \
+        | tar xz --no-same-owner -C /tmp \
+      && cd "/tmp/papi-$v/src" \
+      && CFLAGS="-O2 -fcommon" ./configure --prefix="/opt/papi-$v" \
+           --with-tls=__thread --with-virtualtimer=clock_thread_cputime_id >/dev/null \
+      && case "$v" in 5.*) dbg="DBG=-g -Wall -Wextra -Wno-unused-parameter";; *) dbg=;; esac \
+      && make -j"${BUILD_JOBS:-$(nproc)}" ${dbg:+"$dbg"} >/dev/null \
+      && make install >/dev/null \
+      && cd / && rm -rf "/tmp/papi-$v" || exit 1; \
+    done
+
+# GPU stacks: headers and link libraries of each release, side by side. EPEL
+# carries an unrelated older rocm-device-libs, so it is left out here.
+COPY rocm.repo gpu-packages.txt /opt/deps-context/
+RUN cp /opt/deps-context/rocm.repo /etc/yum.repos.d/rocm.repo \
+ && dnf config-manager --add-repo \
+        https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo \
+ && dnf install -y --setopt=install_weak_deps=False --disablerepo=epel \
+        $(cat /opt/deps-context/gpu-packages.txt) \
+ && dnf clean all
+
+# Python for the bindings, the test drivers and the wheel tooling.
+RUN /opt/python/cp312-cp312/bin/python -m pip install --no-cache-dir \
+        pybind11 ninja "setuptools>=64" "setuptools-scm>=8" \
+        "pytest>=6.0" "numpy>=1.24.3" "pandas>=2.0.3" "PyYAML>=6.0" \
+        Pillow h5py opencv-python-headless typing_extensions "pydftracer>=2.0.5"
+ENV PATH=/opt/python/cp312-cp312/bin:$PATH
+
+ENV OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 \
+    OMPI_MCA_rmaps_base_oversubscribe=1 PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe
+
+# Coverage MPIs (variants.yaml coverage:): compiled against in CI, not
+# shipped. Added to the environment here, in the last layer, so that a new
+# one rebuilds nothing above; its file is not one of the spack-*.txt the
+# spack layers copy.
+COPY coverage-mpi.txt /opt/deps-context/
+RUN . /opt/spack/share/spack/setup-env.sh \
+ && if [ -s /opt/deps-context/coverage-mpi.txt ]; then \
+      spack -e deps add $(cat /opt/deps-context/coverage-mpi.txt) \
+      && spack -e deps concretize \
+      && spack -e deps install -p"${BUILD_PACKAGES}" -j"${BUILD_JOBS:-$(nproc)}" --fail-fast \
+      && spack clean -a; \
+    fi
+
+# Fixes found while testing the image, applied on top so the layers above
+# stay cached. Before release they move to where they belong and the image
+# is built once from scratch.
+#   - ROCm 6.2.4's rocprofiler-sdk headers include the roctx ones, which
+#     later releases' packages pull in themselves (-> variants.py
+#     gpu-packages).
+RUN dnf install -y --setopt=install_weak_deps=False --disablerepo=epel \
+        rocprofiler-sdk-roctx6.2.4 \
+ && dnf clean all
+#   - spack's provider index, which the cleanup above deleted, is rebuilt by
+#     the first spack command in a container; jobs sharing one container then
+#     queue on its lock and time out. Build it once here (-> after the
+#     cleanup in the last spack layer).
+RUN . /opt/spack/share/spack/setup-env.sh \
+ && spack -e deps load --sh --first "hdf5+mpi ^openmpi" >/dev/null \
+ && ls /root/.spack/cache/providers
+#   - Boost headers (Boost.Interprocess): without them every job downloads
+#     and unpacks Boost 1.83 itself (dependency/CMakeLists.txt). The OS's
+#     1.66 is what the wheels build with (scripts/wheel/build_deps.sh) and
+#     the minimum dftracer accepts (-> the first dnf install).
+RUN dnf install -y --setopt=install_weak_deps=False boost-devel \
+ && dnf clean all \
+ && test -f /usr/include/boost/interprocess/shared_memory_object.hpp
+#   - yaml-cpp and pybind11 at dftracer's pins (dependency/CMakeLists.txt;
+#     keep them equal): without them every job clones and builds both.
+#     dftracer's find_package calls see them through CMAKE_PREFIX_PATH.
+ARG YAML_CPP_TAG=yaml-cpp-0.6.3
+ARG PYBIND11_TAG=v2.12.0
+RUN git clone -q --depth 1 -b ${YAML_CPP_TAG} https://github.com/jbeder/yaml-cpp.git /tmp/yaml-cpp \
+ && cmake -S /tmp/yaml-cpp -B /tmp/yaml-cpp/build -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/opt/dftracer-deps -DYAML_CPP_BUILD_TESTS=OFF \
+      -DYAML_BUILD_SHARED_LIBS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null \
+ && cmake --build /tmp/yaml-cpp/build -j"${BUILD_JOBS:-$(nproc)}" >/dev/null \
+ && cmake --install /tmp/yaml-cpp/build >/dev/null \
+ && git clone -q --depth 1 -b ${PYBIND11_TAG} https://github.com/pybind/pybind11.git /tmp/pybind11 \
+ && cmake -S /tmp/pybind11 -B /tmp/pybind11/build -DCMAKE_INSTALL_PREFIX=/opt/dftracer-deps \
+      -DPYBIND11_TEST=OFF >/dev/null \
+ && cmake --install /tmp/pybind11/build >/dev/null \
+ && rm -rf /tmp/yaml-cpp /tmp/pybind11
+ENV CMAKE_PREFIX_PATH=/opt/dftracer-deps

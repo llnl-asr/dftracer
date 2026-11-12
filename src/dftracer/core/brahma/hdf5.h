@@ -2777,10 +2777,11 @@ class HDF5DFTracer : public HDF5 {
      (BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300))
   herr_t H5Pget_fapl_hdfs(hid_t fapl_id, H5FD_hdfs_fapl_t* fa_out) override;
 #endif
-#if ((BRAHMA_HDF5_VERSION >= 100823 && BRAHMA_HDF5_VERSION < 100900) || \
-     (BRAHMA_HDF5_VERSION >= 101011 && BRAHMA_HDF5_VERSION < 101100) || \
-     (BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) || \
-     (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))
+#if (((BRAHMA_HDF5_VERSION >= 100823 && BRAHMA_HDF5_VERSION < 100900) ||   \
+      (BRAHMA_HDF5_VERSION >= 101011 && BRAHMA_HDF5_VERSION < 101100) ||   \
+      (BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) ||   \
+      (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))) && \
+    (defined(H5_HAVE_PARALLEL))
   herr_t H5Pget_fapl_mpio(hid_t fapl_id, MPI_Comm* comm,
                           MPI_Info* info) override;
 #endif
@@ -2994,8 +2995,9 @@ class HDF5DFTracer : public HDF5 {
   herr_t H5Pget_modify_write_buf(hid_t plist_id,
                                  hbool_t* modify_write_buf) override;
 #endif
-#if ((BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) || \
-     (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))
+#if (((BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) ||   \
+      (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))) && \
+    (defined(H5_HAVE_PARALLEL))
   herr_t H5Pget_mpi_params(hid_t fapl_id, MPI_Comm* comm,
                            MPI_Info* info) override;
 #endif
@@ -3582,10 +3584,11 @@ class HDF5DFTracer : public HDF5 {
   herr_t H5Pset_fapl_log(hid_t fapl_id, const char* logfile,
                          unsigned long long flags, size_t buf_size) override;
 #endif
-#if ((BRAHMA_HDF5_VERSION >= 100823 && BRAHMA_HDF5_VERSION < 100900) || \
-     (BRAHMA_HDF5_VERSION >= 101011 && BRAHMA_HDF5_VERSION < 101100) || \
-     (BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) || \
-     (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))
+#if (((BRAHMA_HDF5_VERSION >= 100823 && BRAHMA_HDF5_VERSION < 100900) ||   \
+      (BRAHMA_HDF5_VERSION >= 101011 && BRAHMA_HDF5_VERSION < 101100) ||   \
+      (BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) ||   \
+      (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))) && \
+    (defined(H5_HAVE_PARALLEL))
   herr_t H5Pset_fapl_mpio(hid_t fapl_id, MPI_Comm comm, MPI_Info info) override;
 #endif
 #if ((BRAHMA_HDF5_VERSION >= 100823 && BRAHMA_HDF5_VERSION < 100900) || \
@@ -3800,8 +3803,9 @@ class HDF5DFTracer : public HDF5 {
   herr_t H5Pset_modify_write_buf(hid_t plist_id,
                                  hbool_t modify_write_buf) override;
 #endif
-#if ((BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) || \
-     (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))
+#if (((BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) ||   \
+      (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))) && \
+    (defined(H5_HAVE_PARALLEL))
   herr_t H5Pset_mpi_params(hid_t fapl_id, MPI_Comm comm,
                            MPI_Info info) override;
 #endif

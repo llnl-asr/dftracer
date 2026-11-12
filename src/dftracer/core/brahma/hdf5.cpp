@@ -7563,10 +7563,11 @@ herr_t brahma::HDF5DFTracer::H5Pget_fapl_hdfs(hid_t fapl_id,
   return ret;
 }
 #endif
-#if ((BRAHMA_HDF5_VERSION >= 100823 && BRAHMA_HDF5_VERSION < 100900) || \
-     (BRAHMA_HDF5_VERSION >= 101011 && BRAHMA_HDF5_VERSION < 101100) || \
-     (BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) || \
-     (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))
+#if (((BRAHMA_HDF5_VERSION >= 100823 && BRAHMA_HDF5_VERSION < 100900) ||   \
+      (BRAHMA_HDF5_VERSION >= 101011 && BRAHMA_HDF5_VERSION < 101100) ||   \
+      (BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) ||   \
+      (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))) && \
+    (defined(H5_HAVE_PARALLEL))
 herr_t brahma::HDF5DFTracer::H5Pget_fapl_mpio(hid_t fapl_id, MPI_Comm* comm,
                                               MPI_Info* info) {
   ConstEventNameType CATEGORY = "h5p";
@@ -8092,8 +8093,9 @@ herr_t brahma::HDF5DFTracer::H5Pget_modify_write_buf(
   return ret;
 }
 #endif
-#if ((BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) || \
-     (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))
+#if (((BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) ||   \
+      (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))) && \
+    (defined(H5_HAVE_PARALLEL))
 herr_t brahma::HDF5DFTracer::H5Pget_mpi_params(hid_t fapl_id, MPI_Comm* comm,
                                                MPI_Info* info) {
   ConstEventNameType CATEGORY = "h5p";
@@ -9644,10 +9646,11 @@ herr_t brahma::HDF5DFTracer::H5Pset_fapl_log(hid_t fapl_id, const char* logfile,
   return ret;
 }
 #endif
-#if ((BRAHMA_HDF5_VERSION >= 100823 && BRAHMA_HDF5_VERSION < 100900) || \
-     (BRAHMA_HDF5_VERSION >= 101011 && BRAHMA_HDF5_VERSION < 101100) || \
-     (BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) || \
-     (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))
+#if (((BRAHMA_HDF5_VERSION >= 100823 && BRAHMA_HDF5_VERSION < 100900) ||   \
+      (BRAHMA_HDF5_VERSION >= 101011 && BRAHMA_HDF5_VERSION < 101100) ||   \
+      (BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) ||   \
+      (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))) && \
+    (defined(H5_HAVE_PARALLEL))
 herr_t brahma::HDF5DFTracer::H5Pset_fapl_mpio(hid_t fapl_id, MPI_Comm comm,
                                               MPI_Info info) {
   ConstEventNameType CATEGORY = "h5p";
@@ -10217,8 +10220,9 @@ herr_t brahma::HDF5DFTracer::H5Pset_modify_write_buf(hid_t plist_id,
   return ret;
 }
 #endif
-#if ((BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) || \
-     (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))
+#if (((BRAHMA_HDF5_VERSION >= 101203 && BRAHMA_HDF5_VERSION < 101300) ||   \
+      (BRAHMA_HDF5_VERSION >= 101405 && BRAHMA_HDF5_VERSION < 101500))) && \
+    (defined(H5_HAVE_PARALLEL))
 herr_t brahma::HDF5DFTracer::H5Pset_mpi_params(hid_t fapl_id, MPI_Comm comm,
                                                MPI_Info info) {
   ConstEventNameType CATEGORY = "h5p";

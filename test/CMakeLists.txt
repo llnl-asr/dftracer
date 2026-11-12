@@ -946,6 +946,12 @@ if(DFTRACER_HDF5_ENABLE)
                 target_include_directories(${target_name} PRIVATE ${HDF5_INCLUDE_DIRS})
             endif()
         endif()
+        # With MPI in the build, mpi.h (and OpenMPI's C++ bindings) reach these
+        # programs through the include path, and dftracer_core no longer passes
+        # MPI on to what links it: the MPI module keeps it private.
+        if(DFTRACER_MPI_ENABLE AND MPI_CXX_LIBRARIES)
+            target_link_libraries(${target_name} ${MPI_CXX_LIBRARIES})
+        endif()
     endfunction()
 
     # Build standalone HDF5 test executables
@@ -1509,10 +1515,51 @@ endif()
 
 # libdftracer_core is loaded with dlopen by Python and the wheel: it must not
 # need static TLS (see check_no_static_tls.sh).
-df_add_test(check_core_no_static_tls bash ${CMAKE_CURRENT_SOURCE_DIR}/check_no_static_tls.sh
+# add_test(NAME ... COMMAND ...): the short form passes $<TARGET_FILE:...>
+# through unexpanded, and the check then looked at no library at all.
+add_test(NAME check_core_no_static_tls
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/check_no_static_tls.sh
     $<TARGET_FILE:${PROJECT_NAME}_core> $<TARGET_FILE:${PROJECT_NAME}_core_dbg>)
+set_tests_properties(check_core_no_static_tls PROPERTIES
+    ENVIRONMENT "LLVM_PROFILE_FILE=check_core_no_static_tls.profraw;DFTRACER_BIND_SIGNALS=0")
 
+# The core is compiled once and linked with whichever optional modules a build
+# has, so it must not depend on any of them (see check_core_isolation.sh).
+df_add_test(check_core_isolation bash ${CMAKE_CURRENT_SOURCE_DIR}/check_core_isolation.sh
+    ${CMAKE_SOURCE_DIR})
+
+# libdftracer_core links again from the installed archives, with every module
+# and with none (see check_compose.sh).
+add_test(NAME check_compose
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/check_compose.sh
+    ${CMAKE_BINARY_DIR} $<TARGET_FILE:${PROJECT_NAME}_core> ${CMAKE_CURRENT_BINARY_DIR}/compose)
 # Relative RPATH entries resolve against the caller's working directory; see check_rpath.sh.
 if(TARGET ${PROJECT_NAME}_service)
     df_add_test(check_service_rpath bash ${CMAKE_CURRENT_SOURCE_DIR}/check_rpath.sh ${CMAKE_BINARY_DIR}/bin/${PROJECT_NAME}_service)
 endif()
+
+# The MPI and HDF5 tests used to check only that a trace was written, so a
+# build that bound neither (their module compiled with nothing to bind)
+# passed. Each must record its library's calls. check_file_at_least.sh
+# deletes the traces it checks, so its check runs after this one.
+foreach(_dftracer_api_check
+        "test_c_mpi_preload;MPI_Barrier;MPI_File_open"
+        "test_c_mpi_app;MPI_Barrier;MPI_File_open"
+        "test_cpp_mpi_preload;MPI_Barrier;MPI_File_open"
+        "test_cpp_mpi_app;MPI_Barrier;MPI_File_open"
+        "test_c_hdf5_preload;H5Fcreate;H5Dwrite"
+        "test_c_hdf5_app;H5Fcreate;H5Dwrite"
+        "test_cpp_hdf5_preload;H5Fcreate;H5Dwrite"
+        "test_cpp_hdf5_app;H5Fcreate;H5Dwrite")
+    list(POP_FRONT _dftracer_api_check _dftracer_api_test)
+    if(TEST ${_dftracer_api_test})
+        df_add_test(check_events_${_dftracer_api_test} ${BASH_PROGRAM}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh
+            ${CMAKE_CURRENT_BINARY_DIR}/${_dftracer_api_test}-* ${_dftracer_api_check})
+        set_tests_properties(check_events_${_dftracer_api_test} PROPERTIES DEPENDS ${_dftracer_api_test})
+        if(TEST check_file_exists_${_dftracer_api_test})
+            set_property(TEST check_file_exists_${_dftracer_api_test} APPEND PROPERTY
+                DEPENDS check_events_${_dftracer_api_test})
+        endif()
+    endif()
+endforeach()

@@ -1,0 +1,73 @@
+# CI-dev image: the manylinux_2_28 toolchain the wheels are built with, plus
+# one version of every optional library DFTracer can trace, so a build in it
+# compiles every module (MPI, HDF5, PAPI, hwloc, Variorum, HIP/rocprofiler-sdk,
+# CUDA/CUPTI).
+#
+# The GPU stacks are headers and link libraries only: nothing here can run a
+# kernel, so the HIP and CUDA modules are compiled and linked, and their tests
+# only check that tracing starts and stops cleanly without a device.
+#
+# This is the quick, single-version image used to develop against. The image
+# with every supported version (built with spack from dependency/variants.yaml)
+# uses the same base, so a build that works here works there.
+FROM quay.io/pypa/manylinux_2_28_x86_64:latest
+
+ARG ROCM_VERSION=6.4.3
+ARG CUDA_VERSION=12.8
+
+# Distribution packages: two MPIs, HDF5 serial and parallel against each, PAPI,
+# hwloc. epel-release supplies the parallel HDF5 builds.
+RUN dnf install -y epel-release \
+ && dnf install -y --setopt=install_weak_deps=False \
+        openmpi-devel mpich-devel \
+        hdf5-devel hdf5-openmpi-devel hdf5-mpich-devel \
+        papi-devel hwloc-devel \
+        zlib-devel git which file \
+        jq gdb valgrind \
+ && dnf clean all
+
+# ROCm: rocprofiler-sdk and the HIP headers DFTracer's HIP module includes.
+# rocprofiler-sdk's CMake config also requires AMDDeviceLibs. EPEL carries an
+# unrelated, older rocm-device-libs (5.2) with a higher version number, so it
+# is left out of this step.
+RUN printf '[rocm]\nname=ROCm %s\nbaseurl=https://repo.radeon.com/rocm/rhel8/%s/main\nenabled=1\ngpgcheck=0\n' \
+        "${ROCM_VERSION}" "${ROCM_VERSION}" > /etc/yum.repos.d/rocm.repo \
+ && dnf install -y --setopt=install_weak_deps=False --disablerepo=epel \
+        rocprofiler-sdk hip-devel rocm-device-libs \
+ && dnf clean all
+ENV ROCM_PATH=/opt/rocm
+
+# CUDA: CUPTI plus the runtime and driver headers it needs, not the toolkit.
+RUN dnf config-manager --add-repo \
+        https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo \
+ && v="${CUDA_VERSION/./-}" \
+ && dnf install -y --setopt=install_weak_deps=False \
+        cuda-cupti-$v cuda-cudart-devel-$v cuda-driver-devel-$v cuda-nvcc-$v \
+ && dnf clean all \
+ && ln -sfn /usr/local/cuda-${CUDA_VERSION} /usr/local/cuda
+ENV CUDA_HOME=/usr/local/cuda
+
+# Tools that ship their own TLS stack (pip, and the curl inside pip's CMake
+# that ExternalProject downloads with) trust the system CA bundle instead of
+# their own copy, so they work wherever the system bundle does (see the CA
+# mount in podman.sh).
+ENV PIP_CERT=/etc/pki/tls/certs/ca-bundle.crt \
+    SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt \
+    CURL_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt \
+    CMAKE_TLS_CAINFO=/etc/pki/tls/certs/ca-bundle.crt \
+    REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
+
+# Python for the bindings and the test drivers: what ci.yml installs, plus
+# test/py/requirements.txt. torch is the CPU build and OpenCV the headless
+# one; the tests use neither a GPU nor a display.
+RUN /opt/python/cp312-cp312/bin/python -m pip install --no-cache-dir \
+        pybind11 ninja "setuptools>=64" "setuptools-scm>=8" \
+        "pytest>=6.0" "numpy>=1.24.3" "pandas>=2.0.3" "PyYAML>=6.0" \
+        Pillow h5py opencv-python-headless typing_extensions "pydftracer>=2.0.5" \
+ && /opt/python/cp312-cp312/bin/python -m pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu torch
+ENV PATH=/opt/python/cp312-cp312/bin:$PATH
+
+# mpirun runs as root inside a rootless container.
+ENV OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 \
+    OMPI_MCA_rmaps_base_oversubscribe=1 PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe

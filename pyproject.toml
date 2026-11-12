@@ -55,6 +55,11 @@ dependencies = [
   "typing_extensions>=4.0"
 ]
 
+[project.scripts]
+# Links libdftracer_core for this machine from the installed parts, building
+# any module variant they lack from source (python/dftracer/compose.py).
+dftracer-compose = "dftracer.compose:main"
+
 [project.urls]
 Homepage = "https://github.com/llnl-asr/dftracer"
 Repository = "https://github.com/llnl-asr/dftracer"
@@ -63,6 +68,8 @@ Documentation = "https://dftracer.readthedocs.io/en/latest/"
 
 [project.optional-dependencies]
 test = ['pytest>=6.0']
+# Prebuilt module archives for dftracer-compose (one wheel for every Python).
+modules = ['dftracer-modules']
 dfanalyzer = [
     'dftracer-analyzer>=0.0.5'
 ]

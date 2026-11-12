@@ -50,7 +50,18 @@ int main(void) {
 
     int major = 0, minor = 0, patch = 0;
 
+#if defined(CRAY_MPICH_VERSION)
+    /* Cray MPICH says its own version only in cray_version.h (e.g.
+     * "#define CRAY_MPICH_VERSION 9.0.1.498"); its library reports the
+     * MPICH it derives from. The header is also what a build against MPICH
+     * plus that header (tools/ci/build-module.sh --cray) has. */
+#define DFT_STR2(x) #x
+#define DFT_STR(x) DFT_STR2(x)
+    parse_version_str(DFT_STR(CRAY_MPICH_VERSION), &major, &minor, &patch);
+#endif
+
 #if MPI_VERSION >= 3
+    if (major == 0) {
     /* MPI_Get_library_version() is available in MPI 3.0+.  It returns the
      * version of the *runtime library*, which is the authoritative source. */
     char lib_ver[MPI_MAX_LIBRARY_VERSION_STRING];
@@ -59,6 +70,7 @@ int main(void) {
     MPI_Get_library_version(lib_ver, &lib_ver_len);
     if (lib_ver_len > 0) {
         parse_version_str(lib_ver, &major, &minor, &patch);
+    }
     }
 #endif
 

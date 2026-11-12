@@ -20,7 +20,9 @@ PROJECT_DIR="${DFTRACER_PROJECT_DIR:-/project}"
 PREFIX="${DFTRACER_DEPS_PREFIX:-/opt/dftracer-deps}"
 WORK="${DFTRACER_DEPS_WORKDIR:-/tmp/dftracer-deps}"
 JOBS="${JOBS:-$(nproc)}"
-MANIFEST="$PROJECT_DIR/dependency/manifest.txt"
+# DFTRACER_DEPS_MANIFEST points at another manifest, e.g. to build a brahma
+# branch that is not released yet.
+MANIFEST="${DFTRACER_DEPS_MANIFEST:-$PROJECT_DIR/dependency/manifest.txt}"
 
 STAMP="$PREFIX/.dftracer-deps-complete"
 
@@ -54,6 +56,25 @@ else
   chmod +x /usr/local/bin/ccache
 fi
 
+# Boost headers (Boost.Interprocess, for the service's shared-memory event
+# ring). Headers only, so the distribution package is enough; manylinux_2_28's
+# boost-devel is 1.66, the minimum dftracer accepts. It goes into the container,
+# not the cached prefix, so it is installed before the cache check: every
+# cibuildwheel container is new, and one that reuses the prefix needs it too.
+if [ ! -f /usr/include/boost/interprocess/shared_memory_object.hpp ]; then
+  log "installing boost-devel"
+  if command -v dnf >/dev/null 2>&1; then
+    dnf install -y boost-devel
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y boost-devel
+  elif command -v apt-get >/dev/null 2>&1; then
+    apt-get update && apt-get install -y libboost-dev
+  else
+    echo "[deps] no package manager found and Boost headers are missing" >&2
+    exit 1
+  fi
+fi
+
 # The prefix is usually a cache mounted from the host, so the stamp records which
 # manifest built it. Only dependency lines are hashed, so editing a comment does
 # not invalidate a good prefix.
@@ -69,22 +90,6 @@ if [ -f "$STAMP" ]; then
   find "$PREFIX" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 fi
 
-# Boost headers (Boost.Interprocess, for the service's shared-memory event
-# ring). Headers only, so the distribution package is enough; manylinux_2_28's
-# boost-devel is 1.66, the minimum dftracer accepts.
-if [ ! -f /usr/include/boost/interprocess/shared_memory_object.hpp ]; then
-  log "installing boost-devel"
-  if command -v dnf >/dev/null 2>&1; then
-    dnf install -y boost-devel
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y boost-devel
-  elif command -v apt-get >/dev/null 2>&1; then
-    apt-get update && apt-get install -y libboost-dev
-  else
-    echo "[deps] no package manager found and Boost headers are missing" >&2
-    exit 1
-  fi
-fi
 
 mkdir -p "$PREFIX" "$WORK/src"
 # Some dependencies install to lib, others to lib64; dftracer's CMake expects
@@ -140,7 +145,9 @@ dep_args() {
       # brahma's fetch_package() tries find_package() first, and gotcha and
       # cpp-logger are installed in $PREFIX by now, so nothing is fetched.
       # FETCHCONTENT_SOURCE_DIR_* is the fallback if that misses.
-      echo "-DBRAHMA_BUILD_DEPENDENCIES=ON;-DBRAHMA_BUILD_WITH_MPI=OFF;-DBRAHMA_BUILD_WITH_HDF5=OFF;-DBRAHMA_ENABLE_TESTING=OFF;-DFETCHCONTENT_FULLY_DISCONNECTED=OFF;-DFETCHCONTENT_SOURCE_DIR_GOTCHA=$WORK/src/gotcha;-DFETCHCONTENT_SOURCE_DIR_CPP-LOGGER=$WORK/src/cpp-logger"
+      # Static (when brahma supports it): libdftracer_core links it in, so the
+      # wheel's compose tree can link the core again on another machine.
+      echo "-DBUILD_SHARED_LIBS=OFF;-DBRAHMA_BUILD_DEPENDENCIES=ON;-DBRAHMA_BUILD_WITH_MPI=OFF;-DBRAHMA_BUILD_WITH_HDF5=OFF;-DBRAHMA_ENABLE_TESTING=OFF;-DFETCHCONTENT_FULLY_DISCONNECTED=OFF;-DFETCHCONTENT_SOURCE_DIR_GOTCHA=$WORK/src/gotcha;-DFETCHCONTENT_SOURCE_DIR_CPP-LOGGER=$WORK/src/cpp-logger"
       ;;
     *) echo "" ;;
   esac

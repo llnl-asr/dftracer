@@ -7,4 +7,4 @@ cpp-logger   e2f126e9fe71f7f49ad4c8b69c45e6508e1ad907 https://github.com/llnl-as
 yaml-cpp     yaml-cpp-0.6.3   https://github.com/jbeder/yaml-cpp.git
 libuv        v1.52.1          https://github.com/libuv/libuv.git
 libdeflate   v1.24            https://github.com/ebiggers/libdeflate.git
-brahma       58586ec05c7b4a3d9e0434d21bfe69407f3fdcce https://github.com/llnl-asr/brahma.git
+brahma       f1f4bc4d7ea36ebef715a851220322b23ba8dbc9 https://github.com/llnl-asr/brahma.git

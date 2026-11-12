@@ -4,6 +4,8 @@
 #define DFTRACER_HIP_INTERCEPT_H
 
 #ifdef DFTRACER_DEBUG
+#include <unistd.h>
+
 #include <atomic>
 #include <dftracer/core/dftracer_config_dbg.hpp>
 #else
@@ -84,8 +86,19 @@ class HIPFunction : public dftracer::GenericFunction {
                        void* tool_data);
   static void tool_fini(void* tool_data);
 
+  // Whether this node has an AMD GPU driver to trace. rocprofiler-sdk opens
+  // /dev/kfd while it sets up the KFD (page migration) services and aborts
+  // the whole process when it cannot, so a HIP-enabled DFTracer has to leave
+  // rocprofiler alone on a node without one -- a CPU-only node, or a
+  // container started without the device.
+  static bool device_present() { return access("/dev/kfd", R_OK | W_OK) == 0; }
+
   void initialize() override {
     DFTRACER_LOG_DEBUG("Initializing HIPFunction instance");
+    if (!device_present()) {
+      DFTRACER_LOG_INFO("HIP tracing off: no /dev/kfd on this node");
+      return;
+    }
 
     // Late-registration fallback. The PRIMARY path is the global
     // `rocprofiler_configure` symbol exported from intercept.cpp, which

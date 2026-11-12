@@ -35,7 +35,12 @@ trap 'rm -rf "$stash"' EXIT
 python "$BUNDLE" prepare "$wheel" "$stash"
 
 auditwheel show "$wheel" || true
-auditwheel repair -w "$dest" "$wheel"
+# libdftracer_core(_dbg) stay as they are in dftracer/lib64, where the wheel's
+# binaries find them through $ORIGIN: dftracer-compose links them again for
+# the machine and installs them there, so a grafted, renamed copy in
+# dftracer.libs would be the one loaded and the composed library never used.
+auditwheel repair -w "$dest" \
+  --exclude 'libdftracer_core.so*' --exclude 'libdftracer_core_dbg.so*' "$wheel"
 
 repaired="$(find "$dest" -maxdepth 1 -name '*.whl' | head -1)"
 [ -n "$repaired" ] || {

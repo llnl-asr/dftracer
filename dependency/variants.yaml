@@ -1,0 +1,84 @@
+# Every library version DFTracer builds a module against.
+#
+# One file drives everything that has to agree on it (tools/ci/variants.py):
+#   - the CI deps image: a spack environment with each version, plus the ROCm
+#     and CUDA packages, all on the manylinux toolchain the wheels use
+#   - the CI matrix: one job per module variant
+#   - the release check: every variant listed here is in the wheel
+#
+# A module variant is the library build a module archive was compiled
+# against, at the granularity where that library's interface changes (see
+# dftracer_module_variant in cmake/modules/DFTracerCompose.cmake): MPI by
+# implementation and major.minor, HDF5 by major.minor and serial or parallel
+# per MPI ABI family, PAPI by major.minor, hwloc by major, rocprofiler-sdk by ROCm
+# release, CUPTI by CUDA major.minor.
+#
+# x86_64 only.
+platform:
+  arch: x86_64
+  manylinux: "2_28"
+
+modules:
+  mpi:
+    # implementation -> versions. Each needs a compat tracer in
+    # src/dftracer/core/brahma (mpi_<impl>_<major>_<minor>_compat.*).
+    openmpi: ["4.1.6", "5.0.6"]
+    mpich: ["3.4.3", "4.2.3"]
+    mvapich: ["2.3.7"]
+    # Not redistributable, so not in the image: built against the MPICH it
+    # derives from, with a stand-in for Cray's cray_version.h
+    # (tools/ci/build-module.sh --cray). Every function brahma's Cray compat
+    # interfaces bind is declared by that MPICH; CRAY_MPICH_VERSION is all
+    # that makes it Cray MPICH. The bases are the nearest the image builds:
+    # Cray 8.1 derives from MPICH 3.4, 9.0 and 9.1 from MPICH 4.1, and all
+    # share MPICH's ABI.
+    craympich:
+      "8.1": {base: mpich@3.4.3}
+      "9.0": {base: mpich@4.2.3}
+      "9.1": {base: mpich@4.2.3}
+
+  hdf5:
+    versions: ["1.10.11", "1.12.3", "1.14.6"]
+    # A serial build of each version, and a parallel one per MPI ABI family.
+    # HDF5's parallel API is the same with every MPI, but the module
+    # forwards MPI handles by value (H5Pset_fapl_mpio), and their type is
+    # int in MPICH and its derivatives (MVAPICH, Cray MPICH, Intel MPI) and
+    # a pointer in OpenMPI. Each family's build uses the MPI named here (one
+    # from the list above); any MPI of the family can use it.
+    parallel:
+      mpich-abi: {impl: mpich, version: "4.2.3"}
+      openmpi-abi: {impl: openmpi, version: "5.0.6"}
+
+  # 5.6 is the PAPI RHEL 8 (and so TOSS 4) ships in /usr; HPE's Cray PE
+  # ships 7.0, 7.1 and 7.2 builds.
+  papi: ["5.6.0", "6.0.0.1", "7.0.1", "7.1.0", "7.2.0"]
+  hwloc: ["1.11.13", "2.11.1"]
+  variorum: ["0.8.0"]
+
+  hip:
+    # ROCm release -> the rocprofiler-sdk it ships. The module is built
+    # against each one and named by the rocprofiler-sdk version, whose
+    # interface is what it compiles against.
+    rocm:
+      "6.2.4": "0.4"
+      "6.4.3": "0.6"
+      "7.0.2": "1.0"
+
+  cuda:
+    # CUDA releases; the module is built against each one's CUPTI.
+    cuda: ["11.8", "12.4", "12.8"]
+
+# Releases a module is compiled against in CI but not shipped, to show the
+# source builds beyond the one release each variant is built from: another
+# patch release of a shipped series (variants are major.minor, so it would
+# be the same variant), or a series with no compat tracer, which gets the
+# common MPI interface only. Installed in the deps image's last layer, so
+# adding one rebuilds nothing above it.
+coverage:
+  mpi:
+    openmpi: ["4.1.8", "5.0.3"]
+    mpich: ["4.3.0"]
+  # Serial and parallel (per MPI ABI family above). 1.14.3 is what HPE's
+  # cray-hdf5 modules ship; its headers broke brahma (chid_t in the
+  # H5_DOXYGEN declaration of H5Aread_async), which 1.14.6 does not show.
+  hdf5: ["1.14.3"]
