@@ -11,6 +11,7 @@
 #include <rocprofiler-sdk/rocprofiler.h>
 #include <rocprofiler-sdk/version.h>
 
+#include <atomic>
 #include <cstdlib>
 #include <string>
 #include <string_view>
@@ -92,6 +93,10 @@ rocprofiler_configure(uint32_t version, const char* runtime_version,
                       uint32_t priority, rocprofiler_client_id_t* id) {
   const char* enabled = getenv("DFTRACER_ENABLE");
   if (enabled == nullptr || enabled[0] == '0' || enabled[0] == '\0') {
+    return nullptr;
+  }
+  // No AMD GPU driver: rocprofiler would abort opening /dev/kfd in tool_init.
+  if (!dftracer::HIPFunction::device_present()) {
     return nullptr;
   }
   if (id != nullptr) {
@@ -707,6 +712,18 @@ void HIPFunction::thread_postcreate(rocprofiler_runtime_library_t lib,
 int HIPFunction::tool_init(rocprofiler_client_finalize_t fini_func,
                            void* tool_data) {
   DFTRACER_LOG_DEBUG("HIP Intercept class initialized");
+  // dftracer registers twice when rocprofiler is not up yet as it loads:
+  // rocprofiler_force_configure in initialize() and the exported
+  // rocprofiler_configure symbol both succeed, and rocprofiler-sdk 0.4
+  // (ROCm 6.2) then runs tool_init once per registration. A second run would
+  // replace client_ctx with a context whose buffer cannot be created
+  // (rocprofiler_create_buffer: "buffer (handle=N) already allocated"),
+  // so the first registration's context is the one that traces.
+  static std::atomic<bool> initialized{false};
+  if (initialized.exchange(true)) {
+    DFTRACER_LOG_DEBUG("HIP Intercept already initialized; second client idle");
+    return 0;
+  }
   auto function = dftracer::Singleton<dftracer::HIPFunction>::get_instance();
   function->client_ctx = {0};
   function->client_name_info = rocprofiler::sdk::get_buffer_tracing_names();
@@ -731,11 +748,16 @@ int HIPFunction::tool_init(rocprofiler_client_finalize_t fini_func,
   constexpr auto buffer_watermark_bytes =
       buffer_size_bytes - (buffer_size_bytes / 8);
 
-  rocprofiler_create_buffer(function->client_ctx, buffer_size_bytes,
-                            buffer_watermark_bytes,
-                            ROCPROFILER_BUFFER_POLICY_LOSSLESS,
-                            dftracer::HIPFunction::tool_tracing_callback,
-                            tool_data, &function->client_buffer);
+  status = rocprofiler_create_buffer(
+      function->client_ctx, buffer_size_bytes, buffer_watermark_bytes,
+      ROCPROFILER_BUFFER_POLICY_LOSSLESS,
+      dftracer::HIPFunction::tool_tracing_callback, tool_data,
+      &function->client_buffer);
+  if (status != ROCPROFILER_STATUS_SUCCESS) {
+    DFTRACER_LOG_ERROR("HIP Intercept buffer creation failed: status %d (%s)\n",
+                       status, rocprofiler_get_status_name(status));
+    return -1;
+  }
 
   rocprofiler_configure_buffer_tracing_service(
       function->client_ctx, ROCPROFILER_BUFFER_TRACING_HIP_RUNTIME_API, nullptr,

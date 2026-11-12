@@ -9,6 +9,12 @@
 set -euo pipefail
 status=0
 for lib in "$@"; do
+  # readelf failing on a missing file would read as "no STATIC_TLS".
+  if [ ! -f "$lib" ]; then
+    echo "$lib: no such library" >&2
+    status=1
+    continue
+  fi
   if readelf -d "$lib" | grep -q STATIC_TLS; then
     echo "$lib needs static TLS (an initial-exec thread_local?):" >&2
     readelf -d "$lib" | grep FLAGS >&2

@@ -30,9 +30,7 @@ __attribute__((constructor)) void register_logger_fork_handlers() {
 // The order clear_hash_cache takes them in.
 void DFTLogger::lock_for_fork() {
   map_mtx.lock();
-#ifdef DFTRACER_MPI_ENABLE
   mpi_file_mtx.lock();
-#endif
   app_metadata_mtx_.lock();
   used_extra_mtx_.lock();
 }
@@ -40,18 +38,14 @@ void DFTLogger::lock_for_fork() {
 void DFTLogger::unlock_in_parent() {
   used_extra_mtx_.unlock();
   app_metadata_mtx_.unlock();
-#ifdef DFTRACER_MPI_ENABLE
   mpi_file_mtx.unlock();
-#endif
   map_mtx.unlock();
 }
 
 // pthread_rwlock_unlock matches the writer by tid, which is new in the child.
 void DFTLogger::reset_in_child() {
   new (&map_mtx) std::shared_mutex();
-#ifdef DFTRACER_MPI_ENABLE
   new (&mpi_file_mtx) std::shared_mutex();
-#endif
   new (&app_metadata_mtx_) std::mutex();
   new (&used_extra_mtx_) std::shared_mutex();
 }

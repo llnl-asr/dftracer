@@ -16,6 +16,54 @@ jobs:
       python_versions: '3.9,3.10,3.11,3.12,3.13,3.14'
       glibc: '2.28'
 
+  # The release version, the one build_wheels.sh gives the dftracer wheels,
+  # so dftracer-modules is published under the same version.
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: version
+        run: |
+          version="$(scripts/wheel/build_wheels.sh --list | awk '/wheel version/ {print $NF}')"
+          [ -n "$version" ] || { echo "::error::no wheel version from build_wheels.sh --list"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "releasing $version"
+
+  # Every module variant, one job each (modules.yml), merged into one compose
+  # tree there; then packed as the dftracer-modules wheel, which
+  # pip install "dftracer[modules]" installs next to the dftracer wheel.
+  modules:
+    name: Modules
+    uses: ./.github/workflows/modules.yml
+
+  modules-wheel:
+    name: Modules wheel
+    needs: [version, modules]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: compose-tree
+          path: compose
+      - name: Build dftracer-modules
+        run: |
+          python tools/ci/modules_wheel.py compose "${{ needs.version.outputs.version }}" dist
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-modules
+          path: dist/*.whl
+          if-no-files-found: error
+
   sdist:
     name: Source distribution
     runs-on: ubuntu-24.04
@@ -46,7 +94,7 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    needs: [wheels, sdist]
+    needs: [wheels, modules-wheel, sdist]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4

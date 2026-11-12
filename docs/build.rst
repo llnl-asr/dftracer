@@ -42,8 +42,15 @@ From PyPI (Recommended)
     pip install dftracer
 
 This installs a prebuilt wheel that traces POSIX and STDIO I/O. It requires
-nothing from the host, but it cannot trace MPI, HDF5, HIP or CUDA; for those see
-`Enabling MPI, HDF5, HIP and CUDA`_.
+nothing from the host. To trace MPI, HDF5, PAPI counters, HIP or CUDA too,
+add the prebuilt modules and compose them for the machine
+(:doc:`composable_install`):
+
+.. code-block:: Bash
+
+    pip install --pre "dftracer[modules]"
+    dftracer-compose                     # in the environment you trace in
+    dftracer_install_info --composition  # what was linked
 
 Development builds are published from every merge into ``develop``, versioned
 ``<last release>.postN.dev0``, as both wheels and a source distribution, so a
@@ -105,15 +112,18 @@ From Github
 Enabling MPI, HDF5, HIP and CUDA
 ------------------------------------------
 
-MPI, HDF5, HIP and CUDA support are compile-time options, so they require a build
-against the libraries you run with. The prebuilt wheel cannot provide them:
-DFTracer intercepts calls into the MPI or HDF5 library the application loads, and
-the interception is generated for a specific implementation and version, so a
-wheel built elsewhere would trace nothing. A wheel tag cannot express "built
-against OpenMPI 5.0.6" either, which is why only the portable configuration is
-published.
+MPI, HDF5, HIP and CUDA support have to be compiled against the libraries you
+run with: DFTracer intercepts calls into the MPI or HDF5 library the
+application loads, and the interception is generated for a specific
+implementation and version. There are two ways to get that.
 
-Build from the source distribution instead, the way ``mpi4py`` does:
+The ``dftracer-modules`` wheel ships that support prebuilt for each library
+version DFTracer is built against, and ``dftracer-compose`` links the ones
+that fit the machine, building any it lacks from source. See
+:doc:`composable_install`.
+
+Or build all of DFTracer from the source distribution, the way ``mpi4py``
+does:
 
 .. code-block:: Bash
 

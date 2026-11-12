@@ -11,6 +11,7 @@
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/common/logging.h>
+#include <dftracer/core/common/module_hooks.h>
 #include <dftracer/core/common/profiler.h>
 #include <dftracer/core/common/singleton.h>
 #include <dftracer/core/common/typedef.h>
@@ -38,12 +39,6 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#ifdef DFTRACER_HWLOC_ENABLE
-#include <hwloc.h>
-#endif
-#ifdef DFTRACER_MPI_ENABLE
-#include <mpi.h>
-#endif
 
 typedef std::chrono::high_resolution_clock chrono;
 
@@ -71,11 +66,9 @@ class DFTLogger {
       free(const_cast<char*>(hash.first.data()));
     }
     computed_hash.clear();
-#ifdef DFTRACER_MPI_ENABLE
     // Its values point into computed_hash, freed above.
     std::unique_lock<std::shared_mutex> file_lock(mpi_file_mtx);
     mpi_file_hash.clear();
-#endif
   }
   bool throw_error;
   bool is_init, dftracer_tid;
@@ -95,25 +88,25 @@ class DFTLogger {
   [[maybe_unused]] bool is_aggregated;
   // Every logging thread sets it.
   std::atomic<bool> has_entry;
-#ifdef DFTRACER_MPI_ENABLE
+  // Set once the MPI rank has been recorded.
   bool mpi_event;
   // The fhash of the path each open MPI_File was opened with, keyed by the
   // handle's bits. An MPI-IO call records this fhash, never the handle: a
   // handle is an opaque pointer in OpenMPI and ROMIO and means nothing in a
   // trace. Values are owned by computed_hash.
+  //
+  // The handle type is a template parameter so this header needs no mpi.h:
+  // only the MPI module, which has MPI_File, instantiates these.
   std::shared_mutex mpi_file_mtx;
   std::unordered_map<uint64_t, HashType> mpi_file_hash;
-  static uint64_t mpi_file_key(MPI_File fh) {
-    static_assert(sizeof(MPI_File) <= sizeof(uint64_t),
+  template <typename FileHandle>
+  static uint64_t mpi_file_key(FileHandle fh) {
+    static_assert(sizeof(FileHandle) <= sizeof(uint64_t),
                   "an MPI_File handle must fit the map key");
     uint64_t key = 0;
     std::memcpy(&key, &fh, sizeof(fh));
     return key;
   }
-#endif
-#ifdef DFTRACER_HWLOC_ENABLE
-  hwloc_topology_t topology;
-#endif
   bool enable_core_affinity;
   // DFTRACER_MIN_DURATION_NS, and the ns in one unit of config->time_metric:
   // log() skips an event whose duration * ns_per_unit_ < min_duration_ns_.
@@ -154,17 +147,9 @@ class DFTLogger {
   std::vector<unsigned> core_affinity() {
     DFTRACER_LOG_DEBUG("DFTLogger.core_affinity");
     auto cores = std::vector<unsigned>();
-#ifdef DFTRACER_HWLOC_ENABLE
-    if (enable_core_affinity) {
-      hwloc_cpuset_t set = hwloc_bitmap_alloc();
-      hwloc_get_cpubind(topology, set, HWLOC_CPUBIND_PROCESS);
-      for (int id = hwloc_bitmap_first(set); id != -1;
-           id = hwloc_bitmap_next(set, id)) {
-        cores.push_back(id);
-      }
-      hwloc_bitmap_free(set);
+    if (enable_core_affinity && dftracer_module_hwloc_core_affinity) {
+      dftracer_module_hwloc_core_affinity(&cores);
     }
-#endif
     return cores;
   }
 
@@ -178,9 +163,7 @@ class DFTLogger {
         index(0),
         is_aggregated(false),
         has_entry(false),
-#ifdef DFTRACER_MPI_ENABLE
         mpi_event(false),
-#endif
         enable_core_affinity(false),
         include_metadata(false) {
     DFTRACER_LOG_DEBUG("DFTLogger.DFTLogger");
@@ -206,12 +189,7 @@ class DFTLogger {
         ns_per_unit_ = 1000ULL;
         break;
     }
-    if (enable_core_affinity) {
-#ifdef DFTRACER_HWLOC_ENABLE
-      hwloc_topology_init(&topology);  // initialization
-      hwloc_topology_load(topology);   // actual detection
-#endif
-    }
+    // The hwloc module loads the topology on first use.
     this->buffer_manager = dftracer::BufferManagerFactory::get_instance();
     this->is_init = true;
     fork_owner_.store(this, std::memory_order_release);
@@ -369,7 +347,6 @@ class DFTLogger {
                 this->get_time(), 0, meta);
       this->exit_event();
       if (enable_core_affinity) {
-#ifdef DFTRACER_HWLOC_ENABLE
         auto cores = core_affinity();
         auto cores_size = cores.size();
         if (cores_size > 0) {
@@ -389,7 +366,6 @@ class DFTLogger {
               TraceEventType::TRACE_TYPE_DFTRACER, this->process_id, tid,
               false);
         }
-#endif
       }
     }
     this->is_init = true;
@@ -440,26 +416,27 @@ class DFTLogger {
                           HashEntry{hash, file});
   }
 
-#ifdef DFTRACER_MPI_ENABLE
   // MPI_File_open: `fh` now refers to the file whose path hashed to `fhash`.
-  inline void mpi_file_opened(MPI_File fh, HashType fhash) {
+  template <typename FileHandle>
+  inline void mpi_file_opened(FileHandle fh, HashType fhash) {
     if (fhash == NO_HASH_DEFAULT) return;
     std::unique_lock<std::shared_mutex> lock(mpi_file_mtx);
     mpi_file_hash.insert_or_assign(mpi_file_key(fh), fhash);
   }
   // The fhash of the file `fh` was opened on, or NO_HASH_DEFAULT if it was
   // not opened through a traced MPI_File_open.
-  inline HashType mpi_file_fhash(MPI_File fh) {
+  template <typename FileHandle>
+  inline HashType mpi_file_fhash(FileHandle fh) {
     std::shared_lock<std::shared_mutex> lock(mpi_file_mtx);
     auto iter = mpi_file_hash.find(mpi_file_key(fh));
     return iter != mpi_file_hash.end() ? iter->second : NO_HASH_DEFAULT;
   }
   // MPI_File_close: the handle no longer refers to the file (MPI may reuse it).
-  inline void mpi_file_closed(MPI_File fh) {
+  template <typename FileHandle>
+  inline void mpi_file_closed(FileHandle fh) {
     std::unique_lock<std::shared_mutex> lock(mpi_file_mtx);
     mpi_file_hash.erase(mpi_file_key(fh));
   }
-#endif
 
   inline TimeResolution get_time() {
     DFTRACER_LOG_DEBUG("DFTLogger.get_time");
@@ -486,53 +463,14 @@ class DFTLogger {
     return t;
   }
 
-// brahma's common MPI interface is compiled for every MPI implementation and
-// version, so these calls are always intercepted when MPI tracing is on.
-//
-// dftracer's OWN MPI calls in handle_mpi() below must use the PMPI_ entry
-// points for every implementation in this set. If they use the public MPI_
-// names they are caught by our own interceptors, and the result is unbounded
-// recursion:
-//   interceptor -> DFT_LOGGER_START_ALWAYS -> logger -> handle_mpi()
-//     -> MPI_Comm_rank -> interceptor -> ...
-// There is no reentrancy guard anywhere in the logger to stop it, and each
-// level allocates a `new dftracer::Metadata`, so the process dies of OOM rather
-// than a stack overflow. Measured on MVAPICH2 2.3.7: a SINGLE rank exhausted a
-// 515 GB node and the trace was left 0 bytes.
-//
-// The common interface in core/brahma/mpi.cpp and core/brahma/mpiio.cpp has no
-// implementation or version guards, so it holds for any MPI, including one
-// brahma has never seen. Do not narrow this to a list of implementations: an
-// MPI outside the list would still be intercepted and recurse.
-#if defined(BRAHMA_ENABLE_MPI)
-#define DFTRACER_MPI_SELF_CALLS_ARE_INTERCEPTED 1
-#endif
-
+  // Records this process's MPI rank once MPI is up. The MPI module asks MPI
+  // for it (dftracer_module_mpi_rank in core/brahma/mpi_module.cpp); without
+  // the module there is no rank to record.
   inline void handle_mpi(ThreadID tid) {
-#if defined(DFTRACER_MPI_ENABLE) && defined(BRAHMA_ENABLE_MPI)
-    if (!mpi_event && !dftracer_mpi_fork_guard().load()) {
-      int initialized;
-      int finalized;
-      int status = MPI_SUCCESS;
-      int finalized_status = MPI_SUCCESS;
-#ifdef DFTRACER_MPI_SELF_CALLS_ARE_INTERCEPTED
-      status = PMPI_Initialized(&initialized);
-      finalized_status = PMPI_Finalized(&finalized);
-#else
-      status = MPI_Initialized(&initialized);
-      finalized_status = MPI_Finalized(&finalized);
-#endif
-      // MPI_Initialized stays true forever after MPI_Init, even once
-      // MPI_Finalize has run, so it alone cannot tell us whether it is
-      // still safe to call MPI_Comm_rank.
-      if (status == MPI_SUCCESS && initialized == true &&
-          finalized_status == MPI_SUCCESS && finalized == false) {
-        int rank = 0;
-#ifdef DFTRACER_MPI_SELF_CALLS_ARE_INTERCEPTED
-        PMPI_Comm_rank(MPI_COMM_WORLD, &rank);
-#else
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-#endif
+    if (!mpi_event && dftracer_module_mpi_rank != nullptr &&
+        !dftracer_mpi_fork_guard().load()) {
+      int rank = 0;
+      if (dftracer_module_mpi_rank(&rank) == 1) {
         if (this->buffer_manager != nullptr) {
           this->buffer_manager->set_rank(rank);
         }
@@ -550,7 +488,6 @@ class DFTLogger {
         mpi_event = true;
       }
     }
-#endif
   }
 
   inline void log(ConstEventNameType event_name, ConstEventNameType category,
@@ -572,9 +509,9 @@ class DFTLogger {
     ThreadID tid = 0;
     if (dftracer_tid) {
       tid = df_gettid();
-#ifndef DFTRACER_MPI_ENABLE
-      // WARN: Not tested with MPI enabled
-      if (metadata != nullptr) {
+      // WARN: Not tested with MPI enabled, so only taken without the MPI
+      // module.
+      if (dftracer_module_mpi_rank == nullptr && metadata != nullptr) {
         auto iter = metadata->find("tid");
         if (iter != metadata->end()) {
           std::visit(
@@ -586,7 +523,6 @@ class DFTLogger {
           metadata->erase("tid");
         }
       }
-#endif
     }
 
     int current_index = this->increment_index();
@@ -847,7 +783,6 @@ class DFTLogger {
     DFT_LOGGER_UPDATE(value##_hash);                                  \
   }
 
-#ifdef DFTRACER_MPI_ENABLE
 // MPI-IO calls on an open file record the fhash of the path it was opened
 // with, as POSIX calls do, instead of the handle (see mpi_file_fhash).
 #define DFT_LOGGER_UPDATE_MPI_FILE(fh)                      \
@@ -863,7 +798,6 @@ class DFTLogger {
     fhash = this->logger->hash_and_store((path), METADATA_NAME_FILE_HASH); \
     DFT_LOGGER_UPDATE(fhash);                                              \
   }
-#endif
 
 // With DFTRACER_ENABLE_PROFILING, the two halves of an interceptor are timed
 // as its layer's capture phase (the real call between them is not), and the

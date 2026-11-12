@@ -1,0 +1,161 @@
+name: Modules
+
+# Builds the core and every module variant in dependency/variants.yaml as
+# composable archives, one job each, in the CI deps image: every library
+# version in variants.yaml, on Docker Hub, tagged by a hash of what goes into
+# it (tools/ci/deps-image-tag.sh). It is built and pushed from a machine with
+# the cores and time for it (infrastructure/ci/podman.sh deps-image, then
+# deps-push), or with ci-deps-image.yml. The repository variable
+# DFTRACER_CI_DEPS_IMAGE names the repository (default
+# docker.io/hdevarajan92/dftracer-ci).
+#
+# then merges them into one compose tree and checks it: every variant is
+# there, all were built from this commit, and libdftracer_core composes from
+# the tree for every module, for none, and for what the image's libraries
+# detect. The tree is uploaded for the wheel jobs.
+#
+# Cray MPICH, which the image cannot hold, is built from the MPICH it derives
+# from plus a stand-in for its cray_version.h (build-module.sh --cray).
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'src/**'
+      - 'include/**'
+      - 'dependency/**'
+      - 'tools/ci/**'
+      - '.github/workflows/modules.yml'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      image: ${{ steps.plan.outputs.image }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: plan
+        run: |
+          python -m pip install pyyaml
+          python tools/ci/variants.py check
+          image="${{ vars.DFTRACER_CI_DEPS_IMAGE || 'docker.io/hdevarajan92/dftracer-ci' }}:$(tools/ci/deps-image-tag.sh)"
+          # Stop here, not in every job's pull, when this tree's image was
+          # never pushed (variants.yaml or Containerfile.deps changed).
+          if ! docker manifest inspect "$image" >/dev/null 2>&1; then
+            echo "::error::$image is not pushed. Build and push it: infrastructure/ci/podman.sh deps-image && infrastructure/ci/podman.sh deps-push"
+            exit 1
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(python tools/ci/variants.py matrix)" >> "$GITHUB_OUTPUT"
+
+  core:
+    name: Core
+    needs: plan
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.plan.outputs.image }}
+      options: --shm-size=8g
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/ci/build-module.sh --core --src "$PWD" --out "$RUNNER_TEMP/part"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: part-core
+          path: ${{ runner.temp }}/part/tree
+          if-no-files-found: error
+
+  module:
+    name: ${{ matrix.variant }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    container:
+      image: ${{ needs.plan.outputs.image }}
+      options: --shm-size=8g
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.module }} for ${{ matrix.variant }}
+        run: |
+          args=(--module "${{ matrix.module }}" --src "$PWD" --out "$RUNNER_TEMP/part")
+          [ -n "${{ matrix.spack }}" ] && args+=(--spack "${{ matrix.spack }}")
+          [ -n "${{ matrix.papi }}" ] && args+=(--papi "${{ matrix.papi }}")
+          [ -n "${{ matrix.rocm }}" ] && args+=(--rocm "${{ matrix.rocm }}")
+          [ -n "${{ matrix.cuda }}" ] && args+=(--cuda "${{ matrix.cuda }}")
+          [ -n "${{ matrix.cray }}" ] && args+=(--cray "${{ matrix.cray }}")
+          tools/ci/build-module.sh "${args[@]}"
+      - name: Keep the logs of a failed build
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-${{ matrix.variant }}
+          path: ${{ runner.temp }}/part/work-*/*.log
+      # A coverage job (variants.yaml coverage:) only shows the module
+      # compiles; its tree would collide with the shipped variant's.
+      - if: ${{ !matrix.coverage }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: part-${{ matrix.variant }}
+          path: ${{ runner.temp }}/part/tree
+          if-no-files-found: error
+
+  assemble:
+    name: Assemble and compose
+    needs: [plan, core, module]
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.plan.outputs.image }}
+      options: --shm-size=8g
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: part-*
+          path: ${{ runner.temp }}/parts
+      - name: Merge the trees
+        run: |
+          parts=$RUNNER_TEMP/parts
+          echo '${{ needs.plan.outputs.matrix }}' > "$RUNNER_TEMP/matrix.json"
+          python tools/ci/assemble.py --out "$RUNNER_TEMP/compose" \
+            --expect "$RUNNER_TEMP/matrix.json" \
+            "$parts/part-core" $(ls -d "$parts"/part-* | grep -v '/part-core$')
+      - name: Compose from the tree
+        run: |
+          # Laid out as an install: the tree at <libdir>/dftracer/compose, the
+          # shared libraries the core job bundled in <libdir>, where compose
+          # links them from in place of the core job's paths.
+          libdir=$RUNNER_TEMP/install/lib64
+          mkdir -p "$libdir/dftracer"
+          cp -a "$RUNNER_TEMP/compose" "$libdir/dftracer/compose"
+          find "$RUNNER_TEMP/parts/part-core" -mindepth 2 -maxdepth 2 -name 'lib*.so*' \
+            -exec cp -a {} "$libdir/" \;
+          ls "$libdir"
+          for mode in none detect; do
+            cmake -S "$libdir/dftracer/compose" -B "$RUNNER_TEMP/compose-$mode" \
+              -DDFTRACER_COMPOSE_MODULES=$mode -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/composed-$mode"
+            cmake --build "$RUNNER_TEMP/compose-$mode"
+            cmake --install "$RUNNER_TEMP/compose-$mode"
+            echo "== $mode"; cat "$RUNNER_TEMP/compose-$mode/composition.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compose-tree
+          path: ${{ runner.temp }}/compose
+          if-no-files-found: error

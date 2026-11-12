@@ -21,6 +21,7 @@ DFTracer: is a library for profiling I/O calls and application functions.
    definitions
    limitations
    build
+   composable_install
    mpi_support
    docker
    building_applications

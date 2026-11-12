@@ -76,6 +76,38 @@ jobs:
       glibc: '2.28'
       version_scheme: 'postdev'
 
+  # Every module variant, one job each on its own runner (modules.yml), merged
+  # into one compose tree there; then packaged here as the dftracer-modules
+  # wheel, which serves every Python version.
+  modules:
+    name: Modules
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    uses: ./.github/workflows/modules.yml
+
+  modules-wheel:
+    name: Modules wheel
+    needs: [check, modules]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: compose-tree
+          path: compose
+      - name: Build dftracer-modules
+        run: |
+          python tools/ci/modules_wheel.py compose "${{ needs.check.outputs.version }}" dist
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-modules
+          path: dist/*.whl
+          if-no-files-found: error
+
   sdist:
     name: Source distribution
     needs: check
@@ -111,7 +143,7 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    needs: [check, wheels, sdist]
+    needs: [check, wheels, modules-wheel, sdist]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4

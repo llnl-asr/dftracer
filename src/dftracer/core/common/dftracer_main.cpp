@@ -3,9 +3,6 @@
 //
 #include <dftracer/core/common/dftracer_main.h>
 #include <dftracer/core/finstrument/functions.h>
-#include <dftracer/core/function/cuda/intercept.h>
-#include <dftracer/core/function/hip/intercept.h>
-#include <dftracer/core/function/papi/counters.h>
 #include <dftracer/core/utils/posix_bypass.h>
 #include <dftracer/core/utils/stdio_bypass.h>
 #include <pthread.h>
@@ -129,7 +126,6 @@ bool dftracer::DFTracerCore::finalize() {
       trie->finalize();
       dftracer::Singleton<Trie>::finalize();
     }
-#ifdef DFTRACER_PAPI_TRACING_ENABLE
     // MUST come before the I/O interception is unbound below.
     //
     // The PAPI sampler runs on its own libuv timer thread and calls PAPI_read()
@@ -158,15 +154,10 @@ bool dftracer::DFTracerCore::finalize() {
     //
     // Stopping the sampler first closes the window: no sampler thread means no
     // re-entry into the interception being dismantled.
-    {
-      auto papi_instance =
-          dftracer::Singleton<dftracer::PAPICounterFunction>::get_instance();
-      if (papi_instance != nullptr) {
-        DFTRACER_LOG_INFO("Stop PAPI sampler before releasing I/O bindings");
-        papi_instance->finalize();
-      }
+    if (dftracer_module_papi_stop) {
+      DFTRACER_LOG_INFO("Stop PAPI sampler before releasing I/O bindings");
+      dftracer_module_papi_stop();
     }
-#endif
     // GPU profiler teardown must happen BEFORE the logger is destroyed, and
     // must NOT be conditional on `bind`.
     //
@@ -185,26 +176,14 @@ bool dftracer::DFTracerCore::finalize() {
     // Hoisting it out also puts it in the same position as the PAPI sampler
     // above: stop every asynchronous producer of trace events first, then
     // dismantle what they were writing into.
-#ifdef DFTRACER_HIP_TRACING_ENABLE
-    {
-      auto hip_instance =
-          dftracer::Singleton<dftracer::HIPFunction>::get_instance();
-      if (hip_instance != nullptr) {
-        DFTRACER_LOG_INFO("Stop HIP tracing before releasing the logger");
-        hip_instance->finalize();
-      }
+    if (dftracer_module_hip_stop) {
+      DFTRACER_LOG_INFO("Stop HIP tracing before releasing the logger");
+      dftracer_module_hip_stop();
     }
-#endif
-#ifdef DFTRACER_CUDA_TRACING_ENABLE
-    {
-      auto cuda_instance =
-          dftracer::Singleton<dftracer::CUDAFunction>::get_instance();
-      if (cuda_instance != nullptr) {
-        DFTRACER_LOG_INFO("Stop CUDA tracing before releasing the logger");
-        cuda_instance->finalize();
-      }
+    if (dftracer_module_cuda_stop) {
+      DFTRACER_LOG_INFO("Stop CUDA tracing before releasing the logger");
+      dftracer_module_cuda_stop();
     }
-#endif
     if (bind) {
 #ifdef DFTRACER_FTRACING_ENABLE
       auto function_instance = dftracer::Function::get_instance();
@@ -224,29 +203,8 @@ bool dftracer::DFTracerCore::finalize() {
           stdio_instance->unbind();
           stdio_instance->finalize();
         }
-#if defined(DFTRACER_MPI_ENABLE) && defined(BRAHMA_ENABLE_MPI)
-        auto mpi_instance = brahma::MPIDFTracer::get_instance();
-        if (mpi_instance != nullptr) {
-          mpi_instance->unbind();
-          mpi_instance->finalize();
-        }
-        auto mpiio_instance = brahma::MPIIODFTracer::get_instance();
-        if (mpiio_instance != nullptr) {
-          mpiio_instance->unbind();
-          mpiio_instance->finalize();
-        }
-        // implementation-specific APIs beyond the common set; nothing is
-        // compiled here for an MPI without a compat interface
-        brahma::dftracer_mpi_compat_finalize();
-        brahma::dftracer_mpiio_compat_finalize();
-#endif
-#if defined(DFTRACER_HDF5_ENABLE) && defined(BRAHMA_ENABLE_HDF5)
-        auto hdf5_instance = brahma::HDF5DFTracer::get_instance();
-        if (hdf5_instance != nullptr) {
-          hdf5_instance->unbind();
-          hdf5_instance->finalize();
-        }
-#endif
+        if (dftracer_module_mpi_unbind) dftracer_module_mpi_unbind();
+        if (dftracer_module_hdf5_unbind) dftracer_module_hdf5_unbind();
       }
     }
     // NOTE: the PAPI sampler is deliberately finalised EARLIER in this
@@ -414,75 +372,45 @@ void dftracer::DFTracerCore::initialize(bool _bind, const char* _log_file,
             stdio->bind<brahma::STDIODFTracer>("dftracer",
                                                conf->gotcha_priority);
           }
-#if defined(DFTRACER_MPI_ENABLE) && defined(BRAHMA_ENABLE_MPI)
-          auto mpi = brahma::MPIDFTracer::get_instance();
-          mpi->bind<brahma::MPIDFTracer>("dftracer", conf->gotcha_priority);
-          auto mpiio = brahma::MPIIODFTracer::get_instance();
-          mpiio->bind<brahma::MPIIODFTracer>("dftracer", conf->gotcha_priority);
-          brahma::dftracer_mpi_compat_bind(conf->gotcha_priority);
-          brahma::dftracer_mpiio_compat_bind(conf->gotcha_priority);
-#endif
-#if defined(DFTRACER_HDF5_ENABLE) && defined(BRAHMA_ENABLE_HDF5)
-          auto hdf5 = brahma::HDF5DFTracer::get_instance();
-          hdf5->bind<brahma::HDF5DFTracer>("dftracer", conf->gotcha_priority);
-#endif
+          if (dftracer_module_mpi_bind) {
+            dftracer_module_mpi_bind(conf->gotcha_priority);
+          }
+          if (dftracer_module_hdf5_bind) {
+            dftracer_module_hdf5_bind(conf->gotcha_priority);
+          }
         }
         DFTRACER_LOG_DEBUG("Checking if FTRACING and HIP_TRACING are enabled",
                            "");
 #ifdef DFTRACER_FTRACING_ENABLE
         dftracer::Function::get_instance();
 #endif
-#ifdef DFTRACER_HIP_TRACING_ENABLE
-        DFTRACER_LOG_DEBUG("HIP tracing is enabled");
-        auto hip_instance =
-            dftracer::Singleton<dftracer::HIPFunction>::get_instance();
-        hip_instance->initialize();
-#else
-        DFTRACER_LOG_DEBUG("HIP tracing is not enabled");
-#endif
-#ifdef DFTRACER_CUDA_TRACING_ENABLE
-        DFTRACER_LOG_DEBUG("CUDA tracing is enabled");
-        auto cuda_instance =
-            dftracer::Singleton<dftracer::CUDAFunction>::get_instance();
-        cuda_instance->initialize();
-#else
-        DFTRACER_LOG_DEBUG("CUDA tracing is not enabled");
-#endif
+        if (dftracer_module_hip_start) {
+          DFTRACER_LOG_DEBUG("HIP tracing is enabled");
+          dftracer_module_hip_start();
+        } else {
+          DFTRACER_LOG_DEBUG("HIP tracing is not enabled");
+        }
+        if (dftracer_module_cuda_start) {
+          DFTRACER_LOG_DEBUG("CUDA tracing is enabled");
+          dftracer_module_cuda_start();
+        } else {
+          DFTRACER_LOG_DEBUG("CUDA tracing is not enabled");
+        }
       }
     } else {
 #ifdef DFTRACER_FTRACING_ENABLE
       dftracer::Function::get_instance()->finalize();
 #endif
-#ifdef DFTRACER_HIP_TRACING_ENABLE
-      auto hip_instance =
-          dftracer::Singleton<dftracer::HIPFunction>::get_instance();
-      if (hip_instance != nullptr) {
-        hip_instance->finalize();
-      }
-#endif
-#ifdef DFTRACER_CUDA_TRACING_ENABLE
-      auto cuda_instance =
-          dftracer::Singleton<dftracer::CUDAFunction>::get_instance();
-      if (cuda_instance != nullptr) {
-        cuda_instance->finalize();
-      }
-#endif
+      if (dftracer_module_hip_stop) dftracer_module_hip_stop();
+      if (dftracer_module_cuda_stop) dftracer_module_cuda_stop();
     }
-#ifdef DFTRACER_PAPI_TRACING_ENABLE
     // Hardware counters are independent of whether I/O interception is bound,
     // so the sampler starts for API-only apps too, not just LD_PRELOAD runs.
-    {
-      auto papi_instance =
-          dftracer::Singleton<dftracer::PAPICounterFunction>::get_instance();
-      if (papi_instance != nullptr) {
-        if (conf->papi_tracing) {
-          papi_instance->initialize();
-        } else {
-          papi_instance->finalize();
-        }
-      }
+    if (conf->papi_tracing) {
+      if (dftracer_module_papi_start) dftracer_module_papi_start();
+    } else {
+      if (dftracer_module_papi_stop) dftracer_module_papi_stop();
     }
-#endif
     if (!this->log_file_prefix.empty())
       setenv("DFTRACER_LOG_FILE", this->log_file_prefix.c_str(), 1);
     if (!this->data_dirs.empty())

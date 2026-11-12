@@ -45,6 +45,10 @@
 #                          (default ${TMPDIR:-/tmp}/$USER/dftracer-wheels)
 #   DFTRACER_WHEEL_CACHE   dependency prefix + ccache reused across runs
 #                          (default $DFTRACER_WHEEL_STATE/cache)
+#   DFTRACER_WHEEL_MOUNTS  extra host:container mounts for the build containers,
+#                          space separated (e.g. a local brahma clone)
+#   DFTRACER_DEPS_MANIFEST manifest build_deps.sh reads instead of
+#                          dependency/manifest.txt (a path in the container)
 #   DFTRACER_VERSION       version stamped into the wheel
 #                          (default: contents of PACKAGE_VERSION)
 #   Any DFTRACER_* CMake toggle you export is NOT forwarded; edit
@@ -263,6 +267,14 @@ if [ "$USE_CACHE" -eq 1 ]; then
   CREATE_ARGS="--volume=$CACHE_DIR/deps:$DEPS_PREFIX"
   CREATE_ARGS="$CREATE_ARGS --volume=$CACHE_DIR/ccache:/root/.ccache"
   CREATE_ARGS="$CREATE_ARGS --volume=$CACHE_DIR/pip:/root/.cache/pip"
+  for _mount in ${DFTRACER_WHEEL_MOUNTS:-}; do
+    CREATE_ARGS="$CREATE_ARGS --volume=$_mount"
+  done
+  # Sites that inspect TLS (LLNL does) sign traffic with their own CA: lend the
+  # containers the host's CA bundle, as infrastructure/ci/podman.sh does.
+  if [ -d /etc/pki/ca-trust/extracted ]; then
+    CREATE_ARGS="$CREATE_ARGS --volume=/etc/pki/ca-trust/extracted:/etc/pki/ca-trust/extracted:ro"
+  fi
   log "cache        : $CACHE_DIR"
 else
   log "cache        : disabled (--no-cache)"
@@ -305,6 +317,12 @@ CIBW_ENV="$CIBW_ENV DFTRACER_BUILD_DEPENDENCIES=0"
 CIBW_ENV="$CIBW_ENV DFTRACER_DEPS_PREFIX=$DEPS_PREFIX"
 CIBW_ENV="$CIBW_ENV DFTRACER_ENABLE_MPI=OFF DFTRACER_ENABLE_HDF5=OFF DFTRACER_DISABLE_HWLOC=ON"
 CIBW_ENV="$CIBW_ENV DFTRACER_ENABLE_TESTS=OFF"
+if [ -d /etc/pki/ca-trust/extracted ]; then
+  # pip and CMake's curl trust their own CA copies unless told otherwise.
+  _bundle=/etc/pki/tls/certs/ca-bundle.crt
+  CIBW_ENV="$CIBW_ENV PIP_CERT=$_bundle SSL_CERT_FILE=$_bundle REQUESTS_CA_BUNDLE=$_bundle CMAKE_TLS_CAINFO=$_bundle"
+fi
+[ -n "${DFTRACER_DEPS_MANIFEST:-}" ] && CIBW_ENV="$CIBW_ENV DFTRACER_DEPS_MANIFEST=$DFTRACER_DEPS_MANIFEST"
 DEPS_CMAKE_ARGS="-DCMAKE_PREFIX_PATH=$DEPS_PREFIX -DDFTRACER_INSTALL_DEPENDENCIES=OFF"
 for pkg in cpp-logger brahma gotcha yaml-cpp libuv libdeflate; do
   DEPS_CMAKE_ARGS="$DEPS_CMAKE_ARGS -D${pkg}_DIR=$DEPS_PREFIX/lib64/cmake/$pkg"

@@ -70,8 +70,19 @@ Activate your Python environment after installing with pip, or add
 
 .. code-block:: bash
 
-    dftracer_install_info          # readable report
-    dftracer_install_info --json   # the same data for scripts
+    dftracer_install_info                 # readable report
+    dftracer_install_info --json          # the same data for scripts
+    dftracer_install_info --composition   # only what dftracer-compose linked
+
+For a composable install (the ``dftracer`` and ``dftracer-modules`` wheels,
+see :doc:`composable_install`), the report starts with a *Composition*
+section, read when the command runs rather than at build time: each module's
+variant and status (``linked``, ``missing``, ``stale``, ``absent``), the
+library release the variant was compiled against, whether it came prebuilt or
+was built on this machine (with the host and time), and every variant the
+install holds. The sections after it describe the core library's own build,
+whose features are all off in a wheel: the modules come from the
+composition.
 
 The report is written at build time, with full paths baked in. It needs only
 Python 3 and its standard library. It does not load the tracer and does not need

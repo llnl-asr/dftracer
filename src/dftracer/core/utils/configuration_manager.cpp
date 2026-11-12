@@ -6,6 +6,7 @@
 
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/datastructure.h>
+#include <dftracer/core/common/module_hooks.h>
 #include <dftracer/core/common/singleton.h>
 #include <dftracer/core/utils/posix_bypass.h>
 #include <fcntl.h>
@@ -905,47 +906,21 @@ void dftracer::ConfigurationManager::populate_metadata(
       << "}";
   meta->insert_or_assign("cfg", dftracer::RawJson(cfg.str()));
 
-  // Compile-time layer availability: what this build supports, regardless of
-  // whether it was exercised this run (see DFTLogger's used-layer bitmask for
-  // that).
+  // Layer availability: what this build supports, regardless of whether it
+  // was exercised this run (see DFTLogger's used-layer bitmask for that). The
+  // optional modules come from the composition the library was linked with.
   std::ostringstream build;
   build << "{"
-        << "\"mpi\":"
-#ifdef DFTRACER_MPI_ENABLE
-        << 1
-#else
-        << 0
-#endif
-        << ",\"hdf5\":"
-#ifdef DFTRACER_HDF5_ENABLE
-        << 1
-#else
-        << 0
-#endif
-        << ",\"hip\":"
-#ifdef DFTRACER_HIP_TRACING_ENABLE
-        << 1
-#else
-        << 0
-#endif
-        << ",\"cuda\":"
-#ifdef DFTRACER_CUDA_TRACING_ENABLE
-        << 1
-#else
-        << 0
-#endif
+        << "\"mpi\":" << (int)dftracer_module_composed("mpi")
+        << ",\"hdf5\":" << (int)dftracer_module_composed("hdf5")
+        << ",\"hip\":" << (int)dftracer_module_composed("hip")
+        << ",\"cuda\":" << (int)dftracer_module_composed("cuda")
         << ",\"finstrument\":"
 #ifdef DFTRACER_FTRACING_ENABLE
         << 1
 #else
         << 0
 #endif
-        << ",\"variorum\":"
-#ifdef DFTRACER_VARIORUM_ENABLE
-        << 1
-#else
-        << 0
-#endif
-        << "}";
+        << ",\"variorum\":" << (int)dftracer_module_composed("variorum") << "}";
   meta->insert_or_assign("build", dftracer::RawJson(build.str()));
 }
