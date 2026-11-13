@@ -67,11 +67,12 @@ def split_cmake_args(value):
     return [item for item in shlex.split(value.replace(";", " ")) if item]
 
 
-def write_compose_hashes(source_dir, install_prefix):
+def write_compose_hashes(source_dir, install_prefix, build_dir):
     """Record the core's source and interface hashes in the installed compose
     tree (tools/ci/source_hash.py), so dftracer-compose links only module
     archives built against the same core headers and knows when a prebuilt
-    core matches this source."""
+    core matches this source. The brahma commit is the build's, as
+    tools/ci/build-module.sh passes it, or the pinned one."""
     tool = Path(source_dir) / "tools" / "ci" / "source_hash.py"
     for libdir in ("lib64", "lib"):
         core = Path(install_prefix) / libdir / "dftracer" / "compose" / "core"
@@ -80,13 +81,26 @@ def write_compose_hashes(source_dir, install_prefix):
     else:
         return
     compiler = os.environ.get("CXX", "c++")
-    for name, args in (("interface_hash", ["interface"]),
-                       ("source_hash", ["core", "--compiler", compiler])):
-        digest = subprocess.run(
+    core_args = ["core", "--compiler", compiler]
+    cache = Path(build_dir) / "CMakeCache.txt"
+    if cache.exists():
+        for line in cache.read_text().splitlines():
+            if line.startswith("DFTRACER_BRAHMA_GIT_TAG:"):
+                tag = line.split("=", 1)[1].strip()
+                if tag:
+                    core_args += ["--brahma", tag]
+                break
+    for name, args in (("interface_hash", ["interface"]), ("source_hash", core_args)):
+        proc = subprocess.run(
             [sys.executable, str(tool), str(source_dir), *args],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        (core / name).write_text(digest + "\n")
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            # Show why: capture_output would otherwise swallow the tool's error.
+            sys.stderr.write(proc.stderr)
+            raise subprocess.CalledProcessError(proc.returncode, proc.args,
+                                                proc.stdout, proc.stderr)
+        (core / name).write_text(proc.stdout.strip() + "\n")
 
 
 def write_preload_config(build_dir, package_dir, install_prefix, external_install=False):
@@ -309,7 +323,7 @@ class CMakeBuild(build_ext):
             ["cmake", "--build", ".", *build_args], cwd=build_temp, check=True
         )
         subprocess.run(["cmake", "--install", "."], cwd=build_temp, check=True)
-        write_compose_hashes(ext.sourcedir, install_prefix)
+        write_compose_hashes(ext.sourcedir, install_prefix, build_temp)
 
         package_dir = extdir / "dftracer"
         editable = self.inplace or getattr(self, "editable_mode", False)

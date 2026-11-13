@@ -15,6 +15,7 @@
 
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/function/generic_function.h>
+#include <dftracer/core/utils/posix_bypass.h>
 #include <rocprofiler-sdk/buffer.h>
 #include <rocprofiler-sdk/buffer_tracing.h>
 #include <rocprofiler-sdk/registration.h>
@@ -90,13 +91,30 @@ class HIPFunction : public dftracer::GenericFunction {
   // /dev/kfd while it sets up the KFD (page migration) services and aborts
   // the whole process when it cannot, so a HIP-enabled DFTracer has to leave
   // rocprofiler alone on a node without one -- a CPU-only node, or a
-  // container started without the device.
-  static bool device_present() { return access("/dev/kfd", R_OK | W_OK) == 0; }
+  // container started without the device. Checked through POSIXBypass: brahma
+  // intercepts access(), and this check is DFTracer's own, not the
+  // application's I/O.
+  static bool device_present() {
+    return dftracer::POSIXBypass::get_instance().access("/dev/kfd",
+                                                        R_OK | W_OK) == 0;
+  }
 
   void initialize() override {
     DFTRACER_LOG_DEBUG("Initializing HIPFunction instance");
     if (!device_present()) {
-      DFTRACER_LOG_INFO("HIP tracing off: no /dev/kfd on this node");
+      if (dftracer::POSIXBypass::get_instance().access("/dev/kfd", F_OK) == 0) {
+        // The GPU is here but this process cannot open it: HIP tracing was
+        // asked for and would produce nothing, so say why where it is seen
+        // (the log macros are compiled out of the release library).
+        dftracer_logging_real_fprintf()(
+            stderr,
+            "[DFTRACER] HIP tracing off: no read and write access to "
+            "/dev/kfd (on most systems, membership of its group, e.g. "
+            "video or render)\n");
+      } else {
+        // A node without an AMD GPU: nothing to trace, nothing to report.
+        DFTRACER_LOG_INFO("HIP tracing off: no /dev/kfd on this node");
+      }
       return;
     }
 

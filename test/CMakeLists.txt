@@ -1533,6 +1533,23 @@ df_add_test(check_core_isolation bash ${CMAKE_CURRENT_SOURCE_DIR}/check_core_iso
 add_test(NAME check_compose
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/check_compose.sh
     ${CMAKE_BINARY_DIR} $<TARGET_FILE:${PROJECT_NAME}_core> ${CMAKE_CURRENT_BINARY_DIR}/compose)
+# dftracer_service finds Variorum when it starts (see check_variorum_runtime.sh).
+if(TARGET ${PROJECT_NAME}_service)
+    add_library(dftracer_test_variorum_08 SHARED variorum/variorum_stub.c)
+    target_compile_definitions(dftracer_test_variorum_08 PRIVATE VARIORUM_STUB_API_08)
+    add_library(dftracer_test_variorum_07 SHARED variorum/variorum_stub.c)
+    add_test(NAME check_variorum_runtime
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/check_variorum_runtime.sh
+        $<TARGET_FILE:${PROJECT_NAME}_service> $<TARGET_FILE:dftracer_test_variorum_08>
+        $<TARGET_FILE:dftracer_test_variorum_07> ${CMAKE_CURRENT_BINARY_DIR}/variorum_runtime)
+endif()
+# dftracer-compose changing an install: settings, staged install, locking,
+# a failed or read-only relink (see py/test_compose_cli.py).
+if(DFTRACER_PYTHON_EXE)
+    add_test(NAME check_compose_cli
+        COMMAND ${DFTRACER_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/py/test_compose_cli.py
+        --build ${CMAKE_BINARY_DIR})
+endif()
 # Relative RPATH entries resolve against the caller's working directory; see check_rpath.sh.
 if(TARGET ${PROJECT_NAME}_service)
     df_add_test(check_service_rpath bash ${CMAKE_CURRENT_SOURCE_DIR}/check_rpath.sh ${CMAKE_BINARY_DIR}/bin/${PROJECT_NAME}_service)

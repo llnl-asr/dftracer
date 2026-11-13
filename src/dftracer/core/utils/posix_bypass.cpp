@@ -42,6 +42,7 @@ void POSIXBypass::initialize() {
   real_readlink_ = reinterpret_cast<readlink_fn>(dlsym(libc, "readlink"));
   real_getcwd_ = reinterpret_cast<getcwd_fn>(dlsym(libc, "getcwd"));
   real_dirfd_ = reinterpret_cast<dirfd_fn>(dlsym(libc, "dirfd"));
+  real_access_ = reinterpret_cast<access_fn>(dlsym(libc, "access"));
   assert(real_open_ != nullptr);
   assert(real_close_ != nullptr);
   assert(real_read_ != nullptr);
@@ -51,6 +52,7 @@ void POSIXBypass::initialize() {
   assert(real_readlink_ != nullptr);
   assert(real_getcwd_ != nullptr);
   assert(real_dirfd_ != nullptr);
+  assert(real_access_ != nullptr);
   initialized_ = true;
 }
 
@@ -81,6 +83,11 @@ char* POSIXBypass::getcwd(char* buf, size_t size) {
 }
 
 int POSIXBypass::dirfd(DIR* dir) { return real_dirfd_(dir); }
+
+int POSIXBypass::access(const char* pathname, int mode) {
+  if (!initialized_) initialize();
+  return real_access_(pathname, mode);
+}
 
 }  // namespace dftracer
 

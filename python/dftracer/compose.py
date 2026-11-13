@@ -45,7 +45,9 @@ dependencies as a source install does.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
+import fcntl
 import json
 import os
 import platform
@@ -133,14 +135,87 @@ def compose(tree: Path, prefix: Path, work: Path, install: bool,
                 step("warning: " + warning.split(" CMake ")[0].split(" -- ")[0].strip())
     if install:
         run(["cmake", "--build", str(build)], work / "compose-build.log")
+        # Into a staging dir first, so a failed or partial install changes
+        # nothing; then each file is moved into place (install_staged).
+        stage = work / "stage"
+        if stage.exists():
+            shutil.rmtree(stage)
+        run(["cmake", "--install", str(build), "--prefix", str(stage)],
+            work / "compose-install.log")
         step(f"installing into {prefix}")
-        run(["cmake", "--install", str(build)], work / "compose-install.log")
+        install_staged(stage, prefix)
     records = []
     for line in (build / "composition.txt").read_text().splitlines():
         parts = line.split()
         if len(parts) == 3:
             records.append((parts[0], parts[1], parts[2]))
     return records
+
+
+def install_staged(stage: Path, prefix: Path) -> None:
+    """Move what `cmake --install` put in `stage` into `prefix`.
+
+    cmake --install deletes the live libdftracer_core.so and writes the new
+    one in its place, so a process starting meanwhile finds it missing or cut
+    short. Here each file is copied next to its destination and renamed over
+    it (os.replace is atomic within a directory): a process sees the old
+    library or the new one, never neither. Processes that have the old one
+    mapped keep its inode. The real files go first, then the symlinks to
+    them, then composition.txt, which describes the result.
+    """
+    files, links = [], []
+    for path in sorted(stage.rglob("*")):
+        if path.is_symlink():
+            links.append(path)
+        elif path.is_file():
+            files.append(path)
+    record = [p for p in files if p.name == "composition.txt"]
+    files = [p for p in files if p.name != "composition.txt"]
+    for path in files + links + record:
+        dest = prefix / path.relative_to(stage)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(f".{dest.name}.dftracer-compose-{os.getpid()}")
+        if tmp.is_symlink() or tmp.exists():
+            tmp.unlink()
+        if path.is_symlink():
+            os.symlink(os.readlink(path), tmp)
+        else:
+            shutil.copy2(path, tmp)
+        os.replace(tmp, dest)
+
+
+def replace_dir(built: Path, dest: Path, scratch: Path, prepare=None) -> None:
+    """Put a copy of `built` at `dest`, replacing what is there.
+
+    The copy is made under a temporary name in `scratch` (on dest's file
+    system, outside the directories the compose project scans), `prepare`
+    runs on it, and only a complete copy is renamed into place; the old one is
+    moved aside first and put back if that rename fails. A failed copy leaves
+    `dest` as it was.
+    """
+    new = Path(tempfile.mkdtemp(prefix=f".{dest.name}-new-", dir=scratch))
+    try:
+        shutil.copytree(built, new, symlinks=True, dirs_exist_ok=True)
+        if prepare is not None:
+            prepare(new)
+    except BaseException:
+        shutil.rmtree(new, ignore_errors=True)
+        raise
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    old = None
+    if dest.exists():
+        old = Path(tempfile.mkdtemp(prefix=f".{dest.name}-old-", dir=scratch))
+        os.rmdir(old)
+        os.rename(dest, old)
+    try:
+        os.rename(new, dest)
+    except BaseException:
+        if old is not None:
+            os.rename(old, dest)
+        shutil.rmtree(new, ignore_errors=True)
+        raise
+    if old is not None:
+        shutil.rmtree(old, ignore_errors=True)
 
 
 def build_from_source(part: str, source: Path, tree: Path, work: Path,
@@ -165,23 +240,27 @@ def build_from_source(part: str, source: Path, tree: Path, work: Path,
     built = next((out / "tree").glob("**/dftracer/compose"))
     origin = {"origin": "source", "built_on": platform.node(),
               "built_at": datetime.datetime.now().isoformat(timespec="seconds")}
+    # Copied in under a temporary name and renamed into place, so a copy that
+    # fails halfway leaves the tree's previous core or variant usable.
+    scratch = tree.parent
     if part == "core":
-        shutil.rmtree(tree / "core")
-        shutil.copytree(built / "core", tree / "core", symlinks=True)
-        (tree / "core" / "origin.json").write_text(json.dumps(origin, indent=2) + "\n")
+        replace_dir(built / "core", tree / "core", scratch,
+                    lambda new: (new / "origin.json").write_text(
+                        json.dumps(origin, indent=2) + "\n"))
         return
-    for variant in (built / "modules" / part).iterdir():
-        dest = tree / "modules" / part / variant.name
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(variant, dest, symlinks=True)
+
+    def mark_origin(new: Path) -> None:
         # Prebuilt variants (the wheels, the CI tree) have no "origin";
         # dftracer_install_info tells the two apart by it.
-        meta = dest / "component.json"
+        meta = new / "component.json"
         if meta.exists():
             data = json.loads(meta.read_text())
             data.update(origin)
             meta.write_text(json.dumps(data, indent=2) + "\n")
+
+    for variant in (built / "modules" / part).iterdir():
+        replace_dir(variant, tree / "modules" / part / variant.name, scratch,
+                    mark_origin)
         step(f"built {part} {variant.name}")
 
 
@@ -193,23 +272,69 @@ def settings_path(tree: Path) -> Path:
 
 
 def load_settings(tree: Path) -> dict:
+    """The saved settings; a file that is not the expected shape (cut short,
+    edited by hand) counts as empty, with a message, rather than an error."""
     path = settings_path(tree)
-    data = {}
+    data: object = {}
     if path.exists():
         try:
             data = json.loads(path.read_text())
         except ValueError:
-            step(f"ignoring unreadable {path}")
-    return {"disabled": sorted(set(data.get("disabled", [])) & set(MODULES)),
-            "variants": {m: v for m, v in data.get("variants", {}).items() if m in MODULES}}
+            data = None
+    disabled = data.get("disabled", []) if isinstance(data, dict) else None
+    variants = data.get("variants", {}) if isinstance(data, dict) else None
+    if (not isinstance(disabled, list) or not isinstance(variants, dict)
+            or not all(isinstance(m, str) for m in disabled)
+            or not all(isinstance(v, str) for v in variants.values())):
+        step(f"ignoring unreadable {path} (--reset removes it)")
+        disabled, variants = [], {}
+    return {"disabled": sorted(set(disabled) & set(MODULES)),
+            "variants": {m: v for m, v in variants.items() if m in MODULES}}
 
 
 def save_settings(tree: Path, settings: dict) -> None:
+    """Write through a temporary file and a rename, so the file is the old
+    settings or the new ones, never cut short."""
     path = settings_path(tree)
     if not settings["disabled"] and not settings["variants"]:
         path.unlink(missing_ok=True)
         return
-    path.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}")
+    tmp.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
+# --- Changing the install ----------------------------------------------------
+
+def check_writable(tree: Path) -> None:
+    """Stop before any build when this install cannot be changed: compose
+    writes the tree (source builds), the library directory and the settings."""
+    libdir = tree.parent.parent
+    dirs = [tree, tree / "core", tree / "modules", tree.parent, libdir]
+    denied = [str(d) for d in dirs if d.exists() and not os.access(d, os.W_OK)]
+    if denied:
+        raise SystemExit(
+            "dftracer-compose: cannot change this install, no write access to "
+            + ", ".join(denied) + ". Run it as the install's owner, or install "
+            "DFTracer where you can write (a virtual environment, pip install "
+            "--user) and compose that.")
+
+
+@contextlib.contextmanager
+def compose_lock(tree: Path):
+    """Hold <libdir>/dftracer/.compose.lock for the whole run: two composes of
+    one install would otherwise build and replace the same files at once."""
+    path = tree.parent / ".compose.lock"
+    with open(path, "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            step(f"waiting for another dftracer-compose of this install ({path})")
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def parse_modules(value: str, flag: str) -> set[str]:
@@ -344,9 +469,19 @@ def main(argv: list[str] | None = None) -> int:
 
     prefix = args.prefix.resolve()
     tree = find_compose_dir(prefix)
-    saved = load_settings(tree)
     if args.status:
-        return print_status(tree, saved)
+        return print_status(tree, load_settings(tree))
+    if args.check:
+        return _run(args, prefix, tree)
+    # A run that changes the install: stop now if it cannot, and hold the
+    # lock from reading the settings to saving them.
+    check_writable(tree)
+    with compose_lock(tree):
+        return _run(args, prefix, tree)
+
+
+def _run(args: argparse.Namespace, prefix: Path, tree: Path) -> int:
+    saved = load_settings(tree)
     settings = edit_settings(saved, args, tree)
     forced = parse_from_source(args.from_source)
     off = forced & set(settings["disabled"])
@@ -356,8 +491,9 @@ def main(argv: list[str] | None = None) -> int:
     work = Path(tempfile.mkdtemp(prefix="dftracer-compose-"))
     try:
         status = _main(args, prefix, tree, forced, work, settings)
-        # An edit sticks once the library it describes is installed.
-        if not args.check and settings != saved:
+        # An edit sticks once the library it describes is installed; --reset
+        # always writes, which also clears an unreadable file.
+        if not args.check and (settings != saved or args.reset):
             save_settings(tree, settings)
             step(f"settings saved ({settings_path(tree)}): "
                  + describe_settings(settings))

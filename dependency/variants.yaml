@@ -68,6 +68,17 @@ modules:
     # CUDA releases; the module is built against each one's CUPTI.
     cuda: ["11.8", "12.4", "12.8"]
 
+# SHA-256 of each downloaded release tarball the deps image builds from,
+# checked before it is unpacked (the same digests spack's packages pin).
+# variants.py check fails when a listed release has none.
+checksums:
+  papi:
+    "5.6.0": "49b7293f9ca2d74d6d80bd06b5c4be303663123267b4ac0884cbcae4c914dc47"
+    "6.0.0.1": "3cd7ed50c65b0d21d66e46d0ba34cd171178af4bbf9d94e693915c1aca1e287f"
+    "7.0.1": "c105da5d8fea7b113b0741a943d467a06c98db959ce71bdd9a50b9f03eecc43e"
+    "7.1.0": "5818afb6dba3ece57f51e65897db5062f8e3464e6ed294b654ebf34c3991bc4f"
+    "7.2.0": "a9bff89ccf39915d729e08ae0a0c6a71ce0ebbe98411e9a2eb3c83c8db0af39c"
+
 # Releases a module is compiled against in CI but not shipped, to show the
 # source builds beyond the one release each variant is built from: another
 # patch release of a shipped series (variants are major.minor, so it would
