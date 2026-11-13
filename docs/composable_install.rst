@@ -127,11 +127,21 @@ output goes to log files. The steps are:
    hwloc, rocprofiler-sdk and CUPTI headers) and writes the variant keys;
 #. *build* (only for ``missing`` or ``stale`` modules, and for those named
    with ``--from-source``): ``build-module.sh`` from the shipped sources,
-   one module at a time, into the tree;
+   one module at a time; each part is copied into the tree under a
+   temporary name and renamed into place, so one that fails to copy leaves
+   the tree's previous part usable;
 #. *link*: build ``libdftracer_core.so`` and ``libdftracer_core_dbg.so``
    from the core archives, the chosen variants and the static C++ runtime;
-#. *install*: replace the libraries in ``lib64`` and write
-   ``lib64/dftracer/composition.txt``.
+#. *install*: install into a staging directory, then move each file into
+   ``lib64`` with a rename, ``lib64/dftracer/composition.txt`` last. A
+   process starting meanwhile finds the old library or the new one, never
+   neither; one that already has the library loaded keeps the old copy.
+
+Before any of this, ``dftracer-compose`` checks that it can write the
+install (the tree, ``lib64`` and the settings) and stops with a message if
+not: compose an install you own, such as one in a virtual environment. It
+holds a lock (``lib64/dftracer/.compose.lock``) for the whole run, so a
+second ``dftracer-compose`` of the same install waits for the first.
 
 When everything is prebuilt this takes 15 to 20 seconds; each module built
 from source adds one to two minutes. ``--keep`` keeps the work directory
@@ -232,8 +242,10 @@ keeps them too.
 
 A disabled module is recorded as ``off``, and ``dftracer_install_info`` shows
 it that way. An edit is saved only once the library it describes is
-installed: if the relink fails, the settings and the installed library stay
-as they were. A variant chosen with ``--variant`` still links this machine's
+installed: if the link or the staged install fails, the settings and the
+installed library stay as they were. The settings file is written through a
+temporary file; one that cannot be read (cut short, edited into another
+shape) is ignored with a message, and ``--reset`` removes it. A variant chosen with ``--variant`` still links this machine's
 library; when that library would need another variant, ``dftracer-compose``
 warns (``linking mpi-craympich-9.1 as asked, but this machine's library is
 mpi-craympich-8.1``), since the module may then wrap functions the library
@@ -268,6 +280,22 @@ MPICH release each Cray release derives from, with Cray's version macro
 (``CRAY_MPICH_VERSION``) supplied; every function DFTracer's Cray MPICH
 interfaces wrap is declared by that MPICH. They are tested against Cray MPICH
 8.1.33 and 9.0.1 on Tuolumne.
+
+Variorum
+--------
+
+Node power from `Variorum <https://github.com/LLNL/variorum>`_ needs no
+variant and no compose step: ``dftracer_service`` loads ``libvariorum.so``
+when it starts, so the wheel's service reads power on any machine that has
+Variorum 0.8 or later (the release that added ``variorum_get_power_json``;
+0.6 and 0.7 name it differently). Name the library with
+``DFTRACER_VARIORUM_LIBRARY=/path/to/libvariorum.so``; otherwise the service
+loads the first ``libvariorum.so`` the loader finds, which on a system that
+ships a Variorum package (TOSS 4 does, in ``/lib``) is that one, ahead of
+``LD_LIBRARY_PATH``. Without Variorum the service runs as before, with no
+power records. Variorum decides which power domains it can read (CPU, GPU,
+memory) when it is built, and a distribution's build often reads none, so
+name the Variorum built for the machine.
 
 Troubleshooting
 ===============

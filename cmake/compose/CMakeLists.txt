@@ -248,7 +248,7 @@ foreach(_suffix "" "_dbg")
   dftracer_compose_library(${_target}
     BASE "${_root}/core/libdftracer_core_base${_suffix}.a"
     MODULES ${_modules}
-    MODULE_NAMES ${_names}
+    MODULE_NAMES ${_names} ${DFTRACER_CORE_BUILT_WITH}
     LIBRARIES ${_links} ${_core_link} ${_runtime}
     LANGUAGE ${_language})
   # Instrumentation the core was built with (coverage, sanitizers): empty for

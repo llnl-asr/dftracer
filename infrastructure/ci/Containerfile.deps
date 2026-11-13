@@ -88,11 +88,13 @@ RUN . /opt/spack/share/spack/setup-env.sh \
 # PAPI 5 builds its bundled libpfm4 with -Werror, and GCC 14 warns where the
 # compilers of its day did not (format-truncation); DBG holds those flags.
 # --no-same-owner: the tarballs carry ICL's uids, which rootless podman
-# cannot chown to.
-COPY papi-versions.txt /opt/deps-context/
-RUN for v in $(cat /opt/deps-context/papi-versions.txt); do \
-      curl -sSfL "https://icl.utk.edu/projects/papi/downloads/papi-$v.tar.gz" \
-        | tar xz --no-same-owner -C /tmp \
+# cannot chown to. Each tarball is checked against its SHA-256 in
+# variants.yaml (checksums.papi) before it is unpacked.
+COPY papi-tarballs.txt /opt/deps-context/
+RUN while read -r v sum <&3; do \
+      curl -sSfL -o "/tmp/papi-$v.tar.gz" "https://icl.utk.edu/projects/papi/downloads/papi-$v.tar.gz" \
+      && echo "$sum  /tmp/papi-$v.tar.gz" | sha256sum -c - \
+      && tar xzf "/tmp/papi-$v.tar.gz" --no-same-owner -C /tmp && rm -f "/tmp/papi-$v.tar.gz" \
       && cd "/tmp/papi-$v/src" \
       && CFLAGS="-O2 -fcommon" ./configure --prefix="/opt/papi-$v" \
            --with-tls=__thread --with-virtualtimer=clock_thread_cputime_id >/dev/null \
@@ -100,7 +102,7 @@ RUN for v in $(cat /opt/deps-context/papi-versions.txt); do \
       && make -j"${BUILD_JOBS:-$(nproc)}" ${dbg:+"$dbg"} >/dev/null \
       && make install >/dev/null \
       && cd / && rm -rf "/tmp/papi-$v" || exit 1; \
-    done
+    done 3</opt/deps-context/papi-tarballs.txt
 
 # GPU stacks: headers and link libraries of each release, side by side. EPEL
 # carries an unrelated older rocm-device-libs, so it is left out here.

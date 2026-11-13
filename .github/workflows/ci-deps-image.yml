@@ -55,7 +55,7 @@ jobs:
             python $v spack-group $g > "$ctx/spack-$g.txt"
           done
           python $v coverage-specs > "$ctx/coverage-mpi.txt"
-          python $v papi-versions > "$ctx/papi-versions.txt"
+          python $v papi-tarballs > "$ctx/papi-tarballs.txt"
           python $v rocm-repos > "$ctx/rocm.repo"
           python $v gpu-packages > "$ctx/gpu-packages.txt"
           cp infrastructure/ci/Containerfile.deps tools/ci/spack_externals.py "$ctx/"

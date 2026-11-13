@@ -48,6 +48,10 @@ class POSIXBypass {
   ssize_t readlink(const char* path, char* buf, size_t bufsize);
   char* getcwd(char* buf, size_t size);
   int dirfd(DIR* dir);
+  // Not one of the intercepted hot paths: resolves libc itself when called
+  // before initialize() (rocprofiler calls rocprofiler_configure on its own,
+  // before DFTracerCore::initialize).
+  int access(const char* pathname, int mode);
 
  private:
   POSIXBypass() = default;
@@ -65,6 +69,7 @@ class POSIXBypass {
   using readlink_fn = ssize_t (*)(const char*, char*, size_t);
   using getcwd_fn = char* (*)(char*, size_t);
   using dirfd_fn = int (*)(DIR*);
+  using access_fn = int (*)(const char*, int);
 
   open_fn real_open_ = nullptr;
   close_fn real_close_ = nullptr;
@@ -75,6 +80,7 @@ class POSIXBypass {
   readlink_fn real_readlink_ = nullptr;
   getcwd_fn real_getcwd_ = nullptr;
   dirfd_fn real_dirfd_ = nullptr;
+  access_fn real_access_ = nullptr;
 };
 
 }  // namespace dftracer

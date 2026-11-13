@@ -6,7 +6,7 @@
                                     hdf5-serial, hdf5-parallel, other)
     variants.py coverage-specs      MPIs and HDF5s built only to compile
                                     against (variants.yaml coverage:), last layer
-    variants.py papi-versions       PAPI releases, built from ICL's tarballs
+    variants.py papi-tarballs       PAPI releases and their tarballs' SHA-256
     variants.py rocm-repos          one dnf repo file per ROCm release
     variants.py gpu-packages        versioned ROCm and CUDA packages to install
     variants.py matrix              the module variants, as a GitHub matrix (JSON)
@@ -98,7 +98,7 @@ def spack_groups(cfg: dict) -> dict[str, list[str]]:
 
     PAPI is not among them: spack's papi package looks up a rocp_sdk variant
     that only PAPI 7.2+ has, so it cannot build 6.0 or 7.1. PAPI has no
-    dependencies and builds from ICL's tarballs instead (papi-versions).
+    dependencies and builds from ICL's tarballs instead (papi-tarballs).
     """
     mods = cfg["modules"]
     groups: dict[str, list[str]] = {
@@ -157,8 +157,11 @@ def cmd_spack_group(cfg: dict, group: str) -> None:
         print(spec)
 
 
-def cmd_papi_versions(cfg: dict) -> None:
-    print(" ".join(cfg["modules"]["papi"]))
+def cmd_papi_tarballs(cfg: dict) -> None:
+    """One "<version> <sha256>" line per PAPI release."""
+    sums = cfg.get("checksums", {}).get("papi", {})
+    for version in cfg["modules"]["papi"]:
+        print(version, sums[version])
 
 
 def cmd_rocm_repos(cfg: dict) -> None:
@@ -166,7 +169,9 @@ def cmd_rocm_repos(cfg: dict) -> None:
         print(
             f"[rocm-{release}]\nname=ROCm {release}\n"
             f"baseurl=https://repo.radeon.com/rocm/rhel8/{release}/main\n"
-            "enabled=1\ngpgcheck=0\n"
+            "enabled=1\ngpgcheck=1\n"
+            # AMD's package signing key: dnf checks every package against it.
+            "gpgkey=https://repo.radeon.com/rocm/rocm.gpg.key\n"
         )
 
 
@@ -287,6 +292,11 @@ def cmd_check(cfg: dict) -> int:
         if (impl, version) not in built:
             print(f"FAIL hdf5 {abi}: {impl}@{version} is not in modules.mpi")
             status = 1
+    sums = cfg.get("checksums", {}).get("papi", {})
+    for version in cfg["modules"]["papi"]:
+        if not re.fullmatch(r"[0-9a-f]{64}", str(sums.get(version, ""))):
+            print(f"FAIL papi {version}: no SHA-256 under checksums.papi in variants.yaml")
+            status = 1
     keys = [job["variant"] for job in matrix(cfg)]
     dups = sorted({k for k in keys if keys.count(k) > 1})
     if dups:
@@ -300,7 +310,7 @@ def cmd_check(cfg: dict) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("command", choices=[
-        "spack-env", "spack-group", "coverage-specs", "papi-versions",
+        "spack-env", "spack-group", "coverage-specs", "papi-tarballs",
         "rocm-repos", "gpu-packages", "matrix", "check"])
     parser.add_argument("group", nargs="?")
     args = parser.parse_args()
@@ -310,8 +320,8 @@ def main() -> int:
     if args.command == "spack-group":
         cmd_spack_group(cfg, args.group)
         return 0
-    if args.command == "papi-versions":
-        cmd_papi_versions(cfg)
+    if args.command == "papi-tarballs":
+        cmd_papi_tarballs(cfg)
         return 0
     {"spack-env": cmd_spack_env, "coverage-specs": cmd_coverage_specs,
      "rocm-repos": cmd_rocm_repos,

@@ -267,17 +267,19 @@ if [ "$USE_CACHE" -eq 1 ]; then
   CREATE_ARGS="--volume=$CACHE_DIR/deps:$DEPS_PREFIX"
   CREATE_ARGS="$CREATE_ARGS --volume=$CACHE_DIR/ccache:/root/.ccache"
   CREATE_ARGS="$CREATE_ARGS --volume=$CACHE_DIR/pip:/root/.cache/pip"
-  for _mount in ${DFTRACER_WHEEL_MOUNTS:-}; do
-    CREATE_ARGS="$CREATE_ARGS --volume=$_mount"
-  done
-  # Sites that inspect TLS (LLNL does) sign traffic with their own CA: lend the
-  # containers the host's CA bundle, as infrastructure/ci/podman.sh does.
-  if [ -d /etc/pki/ca-trust/extracted ]; then
-    CREATE_ARGS="$CREATE_ARGS --volume=/etc/pki/ca-trust/extracted:/etc/pki/ca-trust/extracted:ro"
-  fi
   log "cache        : $CACHE_DIR"
 else
   log "cache        : disabled (--no-cache)"
+fi
+# Not part of the cache, so mounted with or without it: the caller's extra
+# mounts (a local brahma clone, say) and, at sites that inspect TLS (LLNL
+# does) with their own CA, the host's CA bundle, as infrastructure/ci/podman.sh
+# does; the PIP_CERT/SSL_CERT_FILE variables below point into it.
+for _mount in ${DFTRACER_WHEEL_MOUNTS:-}; do
+  CREATE_ARGS="$CREATE_ARGS --volume=$_mount"
+done
+if [ -d /etc/pki/ca-trust/extracted ]; then
+  CREATE_ARGS="$CREATE_ARGS --volume=/etc/pki/ca-trust/extracted:/etc/pki/ca-trust/extracted:ro"
 fi
 
 VENV="$STATE_DIR/cibw-venv"

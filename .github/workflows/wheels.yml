@@ -45,8 +45,10 @@ on:
 permissions:
   contents: read
 
+# A fixed prefix, as in modules.yml: under workflow_call github.workflow is
+# the caller's name, shared with the other workflows it calls.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: wheels-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

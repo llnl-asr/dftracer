@@ -3,6 +3,10 @@
 earlier can be reused instead of compiling again.
 
     source_hash.py <root> core|<module> [--compiler <cxx>] [--brahma <tag>]
+
+--brahma defaults to the brahma commit dependency/CMakeLists.txt pins, the
+one a build links unless DFTRACER_BRAHMA_GIT_TAG says otherwise, so every
+caller hashes a default build the same way.
     source_hash.py <root> interface
 
 The interface hash covers only what decides how the core's classes look to a
@@ -22,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -98,6 +103,16 @@ def source_hash(root: Path, part: str, compiler: str, brahma: str) -> str:
     return digest.hexdigest()
 
 
+def pinned_brahma(root: Path) -> str:
+    """The DFTRACER_BRAHMA_GIT_TAG default in dependency/CMakeLists.txt."""
+    text = (root / "dependency" / "CMakeLists.txt").read_text()
+    m = re.search(r'set\(DFTRACER_BRAHMA_GIT_TAG\s+"([^"]+)"', text)
+    if not m:
+        raise SystemExit("source_hash.py: no DFTRACER_BRAHMA_GIT_TAG default in "
+                         "dependency/CMakeLists.txt")
+    return m.group(1)
+
+
 def compiler_version(cxx: str) -> str:
     try:
         out = subprocess.run([cxx, "--version"], capture_output=True, text=True,
@@ -112,13 +127,15 @@ def main() -> int:
     parser.add_argument("root", type=Path)
     parser.add_argument("part", choices=sorted(MODULE_SOURCES) + ["interface"])
     parser.add_argument("--compiler", default="c++")
-    parser.add_argument("--brahma", default="")
+    parser.add_argument("--brahma", default="",
+                        help="brahma commit linked (default: the pinned one)")
     args = parser.parse_args()
     if args.part == "interface":
         print(source_hash(args.root.resolve(), "interface", "", ""))
     else:
-        print(source_hash(args.root.resolve(), args.part,
-                          compiler_version(args.compiler), args.brahma))
+        root = args.root.resolve()
+        print(source_hash(root, args.part, compiler_version(args.compiler),
+                          args.brahma or pinned_brahma(root)))
     return 0
 
 

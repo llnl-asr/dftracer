@@ -1319,6 +1319,12 @@ else()
         endif()
         get_property(DFTRACER_MODULES GLOBAL PROPERTY DFTRACER_MODULES)
         string(REPLACE ";" "," _dftracer_module_list "${DFTRACER_MODULES}")
+        # Optional parts of this install outside the compose modules, named in
+        # the composition too so the trace's "build" metadata reports them.
+        # dftracer_service's Variorum collector loads libvariorum (0.8 or
+        # later) when the service starts, so every build -- a wheel included
+        # -- can read node power on a machine that has it.
+        set(_dftracer_built_with variorum)
         message(STATUS "[DFTRACER] composed modules: ${_dftracer_module_list}")
 
         # libdftracer_core: linked from the core archive and every module's.
@@ -1331,7 +1337,7 @@ else()
         dftracer_compose_library(${PROJECT_NAME}_core
                 BASE ${PROJECT_NAME}_core_base
                 MODULES ${_dftracer_module_archives}
-                MODULE_NAMES ${DFTRACER_MODULES})
+                MODULE_NAMES ${DFTRACER_MODULES} ${_dftracer_built_with})
         add_library(dftracer::dftracer_core ALIAS ${PROJECT_NAME}_core)
         target_compile_definitions(${PROJECT_NAME}_core PUBLIC
                 DFTRACER_LOGGER_LEVEL_ERROR ${DFTRACER_BRAHMA_DEFINITIONS})
@@ -1340,7 +1346,7 @@ else()
         dftracer_compose_library(${PROJECT_NAME}_core_dbg
                 BASE ${PROJECT_NAME}_core_base_dbg
                 MODULES ${_dftracer_module_archives_dbg}
-                MODULE_NAMES ${DFTRACER_MODULES})
+                MODULE_NAMES ${DFTRACER_MODULES} ${_dftracer_built_with})
         add_library(dftracer::dftracer_core_dbg ALIAS ${PROJECT_NAME}_core_dbg)
         target_compile_definitions(${PROJECT_NAME}_core_dbg PUBLIC ${DFTRACER_BRAHMA_DEFINITIONS})
         target_link_libraries(${PROJECT_NAME}_core_dbg PUBLIC ${DEPENDENCY_LIB} ${DFTRACER_CPP_LOGGER_LIB})
@@ -1575,6 +1581,7 @@ set(DFTRACER_COMPOSE_DEFINITIONS "@DFTRACER_BRAHMA_DEFINITIONS@")
 set(DFTRACER_CORE_LINK "@_dftracer_core_link@")
 set(DFTRACER_CORE_LINK_DBG "@_dftracer_core_link_dbg@")
 set(DFTRACER_CORE_LINK_OPTIONS "@_dftracer_core_link_options@")
+set(DFTRACER_CORE_BUILT_WITH "@_dftracer_built_with@")
 ]] @ONLY)
         install(FILES ${_dftracer_compose_build}/core/core.cmake
                 COMPONENT dftracer_compose DESTINATION ${DFTRACER_COMPOSE_DIR}/core)

@@ -34,8 +34,11 @@ on:
 permissions:
   contents: read
 
+# A fixed prefix: run through workflow_call (prerelease.yml,
+# python-publish.yml), github.workflow is the caller's name, which wheels.yml
+# called from the same workflow would share.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: modules-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -54,14 +57,19 @@ jobs:
         run: |
           python -m pip install pyyaml
           python tools/ci/variants.py check
-          image="${{ vars.DFTRACER_CI_DEPS_IMAGE || 'docker.io/hdevarajan92/dftracer-ci' }}:$(tools/ci/deps-image-tag.sh)"
+          repo="${{ vars.DFTRACER_CI_DEPS_IMAGE || 'docker.io/hdevarajan92/dftracer-ci' }}"
+          image="$repo:$(tools/ci/deps-image-tag.sh)"
           # Stop here, not in every job's pull, when this tree's image was
           # never pushed (variants.yaml or Containerfile.deps changed).
-          if ! docker manifest inspect "$image" >/dev/null 2>&1; then
+          if ! manifest=$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' 2>/dev/null); then
             echo "::error::$image is not pushed. Build and push it: infrastructure/ci/podman.sh deps-image && infrastructure/ci/podman.sh deps-push"
             exit 1
           fi
-          echo "image=$image" >> "$GITHUB_OUTPUT"
+          # Every job runs the image by digest, so a tag pushed again while
+          # the run is going cannot hand later jobs a different image.
+          digest=$(printf '%s' "$manifest" | python -c 'import json, sys; print(json.load(sys.stdin)["digest"])')
+          echo "image=$repo@$digest" >> "$GITHUB_OUTPUT"
+          echo "deps image: $image = $repo@$digest"
           echo "matrix=$(python tools/ci/variants.py matrix)" >> "$GITHUB_OUTPUT"
 
   core:
