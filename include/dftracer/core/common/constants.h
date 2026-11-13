@@ -13,6 +13,7 @@
 #define DFTRACER_GOTCHA_PRIORITY "DFTRACER_GOTCHA_PRIORITY"
 #define DFTRACER_LOG_LEVEL "DFTRACER_LOG_LEVEL"
 #define DFTRACER_TIME_METRIC "DFTRACER_TIME_METRIC"
+#define DFTRACER_TSC_CLOCK "DFTRACER_TSC_CLOCK"
 #define DFTRACER_LOG_FILE "DFTRACER_LOG_FILE"
 #define DFTRACER_INIT "DFTRACER_INIT"
 #define DFTRACER_INIT_COUNT "DFTRACER_INIT_COUNT"
@@ -50,6 +51,7 @@
 #define DFTRACER_PC_CONSUMER_MIN_THREADS "DFTRACER_PC_CONSUMER_MIN_THREADS"
 #define DFTRACER_PC_CONSUMER_TICK_MS "DFTRACER_PC_CONSUMER_TICK_MS"
 #define DFTRACER_PC_FLUSH_MS "DFTRACER_PC_FLUSH_MS"
+#define DFTRACER_PC_HOLD_MS "DFTRACER_PC_HOLD_MS"
 #define DFTRACER_PC_COMPRESSION_LEVEL "DFTRACER_PC_COMPRESSION_LEVEL"
 #define DFTRACER_PC_ROLLOVER_MB "DFTRACER_PC_ROLLOVER_MB"
 #define DFTRACER_ALL_FILES "all"
@@ -72,7 +74,7 @@ static const uint64_t DFT_SHM_SEGMENT_MAGIC =
     0x314d485352544644ULL;  // "DFTRSHM1"
 // Bump on any change to the segment layout, the record framing, or the
 // meaning of a ShmSegmentState / ShmRecordState / ShmRecordKind value.
-static const uint32_t DFT_SHM_ABI_VERSION = 5;
+static const uint32_t DFT_SHM_ABI_VERSION = 7;
 static const size_t DFT_SHM_CACHE_LINE = 64;
 // Records start on, and are sized in multiples of, this many bytes.
 static const uint32_t DFT_SHM_RECORD_ALIGN = 16;
@@ -115,6 +117,10 @@ static const uint64_t DFT_SHM_CONTROL_WAIT_NS = 5000000000ULL;
 // segment is accepting and the service process alive). Once it is not, the
 // producer's events go to its spill file instead of a ring nobody drains.
 static const uint64_t DFT_SHM_LIVENESS_CHECK_NS = 100000000ULL;
+// A thread makes that check once per this many events, or sooner once its
+// events' times have moved on by DFT_SHM_LIVENESS_CHECK_NS; a service found
+// gone by any thread stops every thread's next event.
+static const uint32_t DFT_SHM_LIVENESS_EVERY = 64;
 // Service threads draining the ring; each takes whole blocks. The service
 // runs between MIN and THREADS of them, sized each tick to the arrival rate
 // plus the backlog it must work off within CATCHUP; it sheds one thread after
@@ -127,6 +133,14 @@ static const uint32_t DFT_SHM_CONSUMER_DOWN_TICKS = 10;
 // The service takes over a producer's block held unpublished this long, and
 // writes out a drain thread's partial chunk once it is this old.
 static const uint32_t DFT_SHM_DEFAULT_FLUSH_MS = 1000;
+// Published blocks wait in the ring, so their JSON and gzip run at stop and
+// not beside the application, until the oldest is HOLD_MS old or they fill
+// HOLD_RING_PERCENT of the ring. HOLD_MS 0 drains them at once.
+static const uint32_t DFT_SHM_DEFAULT_HOLD_MS = 60000;
+static const uint32_t DFT_SHM_HOLD_RING_PERCENT = 50;
+// Nice value of the service's drain threads while the application runs: they
+// use the cores it leaves idle. The drain at stop runs at normal priority.
+static const int DFT_SHM_DRAIN_NICE = 19;
 // JSON a drain thread collects before compressing it into one gzip member.
 static const size_t DFT_SHM_DEFAULT_CHUNK_SIZE = 4u << 20;
 // gzip level (libdeflate) for those members: the service compresses the whole

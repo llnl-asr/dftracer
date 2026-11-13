@@ -5,12 +5,17 @@
 #include <dftracer/core/common/tracer_scope.h>
 #include <dftracer/core/ipc/event_codec.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstring>
+#include <exception>
 #include <new>
+#include <vector>
 template <>
 std::shared_ptr<dftracer::LocalBufferManager>
     dftracer::Singleton<dftracer::LocalBufferManager>::instance = nullptr;
@@ -34,6 +39,17 @@ static_assert(DFTRACER_SERIALIZATION_EVENT_MAX <= 0xffff,
               "a record's size is a u16");
 // Room past a block's chunk_size for the record that crosses it.
 constexpr size_t kBlockSlack = DFTRACER_SERIALIZATION_EVENT_MAX + kRecordHead;
+// Threads that render the deferred blocks at exit. With many ranks on a node
+// the cores are busy already, and each one holds a compressor and a block.
+constexpr size_t kMaxRenderThreads = 8;
+
+size_t render_threads(size_t blocks) {
+  cpu_set_t set;
+  size_t cpus = 1;
+  if (sched_getaffinity(0, sizeof(set), &set) == 0)
+    cpus = static_cast<size_t>(CPU_COUNT(&set));
+  return std::max<size_t>(1, std::min({blocks, cpus, kMaxRenderThreads}));
+}
 
 // The calling thread's buffer, and the epoch it was handed out in. Trivially
 // destructible, so a lookup is one TLS read with no init guard;
@@ -138,15 +154,20 @@ void LocalBufferManager::reset_in_child() {
 // reach the file in any order.
 void LocalBufferManager::compress_and_store(GzipCompression& compressor,
                                             char* block, size_t size) {
-  {
-    DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(COMPRESSION));
-    size = compressor.compress(block, size);
-  }
-  if (size > 0) {
-    DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(STORE));
-    std::lock_guard<std::mutex> write_lock(write_mtx);
-    this->writer->write(block, size, true);
-  }
+  size = compress_member(compressor, block, size);
+  if (size > 0) store_member(block, size);
+}
+
+size_t LocalBufferManager::compress_member(GzipCompression& compressor,
+                                           char* block, size_t size) {
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(COMPRESSION));
+  return compressor.compress(block, size);
+}
+
+void LocalBufferManager::store_member(const char* member, size_t size) {
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(STORE));
+  std::lock_guard<std::mutex> write_lock(write_mtx);
+  this->writer->write(member, size, true);
 }
 
 LocalBufferManager::ThreadBuffer* LocalBufferManager::thread_buffer() {
@@ -313,6 +334,7 @@ void LocalBufferManager::submit(ThreadBuffer* tb) {
 }
 
 void LocalBufferManager::release_deferred() {
+  if (release_deferred_parallel()) return;
   for (;;) {
     ThreadBuffer* tb;
     {
@@ -354,6 +376,95 @@ void LocalBufferManager::submit_now(ThreadBuffer* tb) {
   if (--busy == 0 && queue.empty()) idle_cv.notify_all();
 }
 
+bool LocalBufferManager::release_deferred_parallel() {
+  if (is_ready() || this->config->aggregation_enable) return false;
+  struct Job {
+    ThreadBuffer* tb;
+    Block in;
+    std::vector<Block> members;
+  };
+  std::vector<Job> jobs;
+  {
+    std::unique_lock<std::mutex> lock(queue_mtx);
+    if (deferred.size() < 2 || writer_stop || getpid() != writer_pid)
+      return false;
+    // Blocks the writer holds are older than the deferred ones of their
+    // thread, which take the next pending block: let it finish first.
+    while (!queue.empty() || busy != deferred.size())
+      idle_cv.wait_for(lock, std::chrono::milliseconds(1));
+    for (ThreadBuffer* tb : deferred) jobs.push_back({tb, {}, {}});
+    deferred.clear();
+  }
+  for (Job& job : jobs) {
+    std::lock_guard<SpinMutex> lock(job.tb->mtx);
+    job.in = job.tb->pending.front();
+    job.tb->pending.pop_front();
+  }
+  std::atomic<size_t> next{0};
+  // Catches everything: the helpers run it against this frame's locals, so
+  // it must not unwind past the joins below.
+  auto work = [&]() noexcept {
+    try {
+      GzipCompression compressor;
+      compressor.initialize(chunk_size + kBlockSlack);
+      compact::Decoder decoder;
+      for (size_t i; (i = next.fetch_add(1)) < jobs.size();) {
+        Job& job = jobs[i];
+        auto keep = [this, &job, &compressor](char*& data, size_t size) {
+          size = compress_member(compressor, data, size);
+          if (size == 0) return;
+          char* member = static_cast<char*>(malloc(size));
+          if (member == nullptr) {
+            // Out of order rather than lost.
+            store_member(data, size);
+            return;
+          }
+          std::memcpy(member, data, size);
+          job.members.push_back({member, size});
+        };
+        render_block(*job.tb, decoder, job.in, keep);
+      }
+    } catch (const std::exception& e) {
+      DFTRACER_LOG_ERROR("Rendering deferred blocks failed: %s", e.what());
+    }
+  };
+  const size_t threads = render_threads(jobs.size());
+  DFTRACER_LOG_DEBUG("Rendering %zu deferred blocks on %zu threads",
+                     jobs.size(), threads);
+  std::vector<pthread_t> helpers;
+  {
+    // Like the writer, the helpers take no signals.
+    sigset_t all, old;
+    sigfillset(&all);
+    pthread_sigmask(SIG_SETMASK, &all, &old);
+    while (helpers.size() + 1 < threads) {
+      pthread_t tid;
+      if (pthread_create(
+              &tid, nullptr,
+              [](void* fn) -> void* {
+                (*static_cast<decltype(work)*>(fn))();
+                return nullptr;
+              },
+              &work) != 0)
+        break;
+      helpers.push_back(tid);
+    }
+    pthread_sigmask(SIG_SETMASK, &old, nullptr);
+  }
+  work();
+  for (pthread_t tid : helpers) pthread_join(tid, nullptr);
+  for (Job& job : jobs) {
+    for (const Block& member : job.members) {
+      store_member(member.data, member.size);
+      free(member.data);
+    }
+  }
+  std::lock_guard<std::mutex> lock(queue_mtx);
+  busy -= jobs.size();
+  if (busy == 0 && queue.empty()) idle_cv.notify_all();
+  return true;
+}
+
 void LocalBufferManager::render_and_store(GzipCompression& compressor,
                                           ThreadBuffer& tb) {
   std::lock_guard<std::mutex> render(tb.render_mtx);
@@ -364,24 +475,34 @@ void LocalBufferManager::render_and_store(GzipCompression& compressor,
     in = tb.pending.front();
     tb.pending.pop_front();
   }
-  // JSON lines into a block of their own, written each time it fills.
+  auto flush = [this, &compressor](char*& data, size_t size) {
+    compress_and_store(compressor, data, size);
+  };
+  render_block(tb, tb.decoder, in, flush);
+}
+
+template <class Flush>
+void LocalBufferManager::render_block(ThreadBuffer& tb,
+                                      compact::Decoder& decoder, Block in,
+                                      Flush& flush) {
+  // JSON lines into a block of their own, flushed each time it fills.
   struct Lines : Aggregator::RowSink {
-    Lines(LocalBufferManager& m, GzipCompression& c)
-        : self(m), compressor(c), data(m.take_block()) {}
+    Lines(LocalBufferManager& m, Flush& f)
+        : self(m), flush_block(f), data(m.take_block()) {}
     char* row() override { return data + pos; }
     void wrote(size_t size) override {
       pos += size;
       if (pos > self.chunk_size) flush();
     }
     void flush() {
-      if (pos > 0) self.compress_and_store(compressor, data, pos);
+      if (pos > 0) flush_block(data, pos);
       pos = 0;
     }
     LocalBufferManager& self;
-    GzipCompression& compressor;
+    Flush& flush_block;
     char* data;
     size_t pos = 0;
-  } out(*this, compressor);
+  } out(*this, flush);
   if (out.data == nullptr) {
     give_block(in.data);
     return;
@@ -391,7 +512,7 @@ void LocalBufferManager::render_and_store(GzipCompression& compressor,
   const bool selective = this->config->aggregation_type ==
                          AggregationType::AGGREGATION_TYPE_SELECTIVE;
   ipc::DecodedEvent event;
-  tb.decoder.reset();
+  decoder.reset();
   for (size_t at = 0; at + kRecordHead <= in.size;) {
     uint16_t size;
     std::memcpy(&size, in.data + at, sizeof(size));
@@ -404,7 +525,7 @@ void LocalBufferManager::render_and_store(GzipCompression& compressor,
       continue;
     }
     const auto* bytes = reinterpret_cast<const uint8_t*>(payload);
-    if (kind == RecordKind::COMPACT ? !tb.decoder.event(bytes, size, event)
+    if (kind == RecordKind::COMPACT ? !decoder.event(bytes, size, event)
                                     : !ipc::decode_event(bytes, size, event))
       continue;
     if (aggregate && (event.head.flags & SHM_EVENT_NO_AGGREGATE) == 0 &&

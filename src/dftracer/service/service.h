@@ -80,6 +80,7 @@ class DFTracerService {
         options.tick_ms = conf->pc_consumer_tick_ms;
         options.flush_ns =
             static_cast<uint64_t>(conf->pc_flush_ms) * 1000000ULL;
+        options.hold_ns = static_cast<uint64_t>(conf->pc_hold_ms) * 1000000ULL;
         options.node_file = conf->log_file;
         options.hostname_hash = hostname_hash;
         options.compression_level = conf->pc_compression_level;

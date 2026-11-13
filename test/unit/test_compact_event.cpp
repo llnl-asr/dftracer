@@ -4,6 +4,7 @@
 #include <dftracer/core/common/event_draft.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -60,9 +61,145 @@ void check_head(const ipc::DecodedEvent& d, const Event& e) {
   DFT_CHECK(d.head.flags == e.flags);
 }
 
+// Events sent by their shape decode to the same fields as events sent in
+// full: shapes that alternate, share keys, clash in the table, change a
+// key's type, have no call site or are broken by a dynamic or replaced key.
+void test_shapes() {
+  const TraceEventType data = static_cast<TraceEventType>(3);
+  compact::Encoder enc;
+  Block block;
+  std::vector<Event> events;
+  std::vector<EventDraft> drafts;
+  drafts.reserve(1024);
+  const auto add_event = [&](const Event& e) {
+    events.push_back(e);
+    add(block, enc, e, drafts.back());
+  };
+  char dynamic_name[16];
+  static char seek_site, read_site, write_site, region_site, op_sites[100];
+  for (int i = 0; i < 200; ++i) {
+    const TimeResolution t = 1000 + 10 * i;
+    drafts.emplace_back();
+    EventDraft& seek = drafts.back();
+    seek.set_site(&seek_site);
+    seek.set(StaticKey{"fhash"}, uint64_t{0xb0b77bd7});
+    seek.set(StaticKey{"offset"}, int64_t{4096} * i, MetadataType::MT_VALUE);
+    seek.set(StaticKey{"whence"}, 0, MetadataType::MT_VALUE);
+    seek.set(StaticKey{"ret"}, int64_t{4096} * i, MetadataType::MT_VALUE);
+    // Every third pair from another thread, so both head forms occur.
+    add_event(
+        {2 * i, "lseek64", "POSIX", data, t, 1, 7, i % 3 == 0 ? 9u : 8u, 0});
+    drafts.emplace_back();
+    EventDraft& rw = drafts.back();
+    rw.set_site(i % 2 == 0 ? &read_site : &write_site);
+    rw.set(StaticKey{"fhash"}, uint64_t{0xb0b77bd7});
+    rw.set(StaticKey{"count"}, size_t{4096}, MetadataType::MT_VALUE);
+    rw.set(StaticKey{"ret"}, i % 7 == 0 ? int64_t{-1} : int64_t{4096},
+           MetadataType::MT_VALUE);
+    add_event({2 * i + 1, i % 2 == 0 ? "read" : "write", "POSIX", data, t + 2,
+               3, 7, 8, 0});
+  }
+  // A name built at run time in one buffer, from no call site.
+  for (int i = 0; i < 4; ++i) {
+    std::snprintf(dynamic_name, sizeof(dynamic_name), "region%d", i % 2);
+    drafts.emplace_back();
+    drafts.back().set(StaticKey{"level"}, i, MetadataType::MT_VALUE);
+    drafts.back().set(StaticKey{"fname"},
+                      std::string("/tmp/f") + std::to_string(i % 2));
+    add_event({500 + i, dynamic_name, "APP", data, 5000, 1, 7, 8, 0});
+  }
+  // The same key with another MetadataType, a dynamic key and a replaced
+  // key; each must keep its own fields.
+  for (int i = 0; i < 3; ++i) {
+    drafts.emplace_back();
+    drafts.back().set_site(&region_site);
+    drafts.back().set(StaticKey{"level"}, i, MetadataType::MT_KEY);
+    drafts.back().set(StaticKey{"fname"}, std::string("/tmp/f0"));
+    add_event({600 + i, "region0", "APP", data, 6000, 1, 7, 8, 0});
+    drafts.emplace_back();
+    drafts.back().set_site(&region_site);
+    drafts.back().set(StaticKey{"level"}, i, MetadataType::MT_VALUE);
+    drafts.back().set(StaticKey{"fname"}, std::string("/tmp/f0"));
+    add_event({605 + i, "region0", "APP", data, 6000, 1, 7, 8, 0});
+    drafts.emplace_back();
+    drafts.back().set_site(&region_site);
+    drafts.back().set(StaticKey{"level"}, uint64_t(i), MetadataType::MT_VALUE);
+    drafts.back().set(StaticKey{"fname"}, std::string("/tmp/f0"));
+    add_event({607 + i, "region0", "APP", data, 6000, 1, 7, 8, 0});
+    drafts.emplace_back();
+    drafts.back().set_site(&region_site);
+    drafts.back().set(StaticKey{"level"}, i, MetadataType::MT_VALUE);
+    drafts.back().set(std::string_view("dyn"), 1.5);
+    add_event({610 + i, "region0", "APP", data, 6000, 1, 7, 8, 0});
+    drafts.emplace_back();
+    drafts.back().set_site(&region_site);
+    drafts.back().set(StaticKey{"level"}, i, MetadataType::MT_VALUE);
+    drafts.back().set(StaticKey{"fname"}, std::string("/tmp/f0"));
+    drafts.back().set(StaticKey{"level"}, i + 10, MetadataType::MT_VALUE);
+    add_event({620 + i, "region0", "APP", data, 6000, 1, 7, 8, 0});
+  }
+  // More shapes than the table holds, twice over.
+  for (int round = 0; round < 2; ++round) {
+    for (int k = 0; k < 100; ++k) {
+      drafts.emplace_back();
+      drafts.back().set_site(&op_sites[k]);
+      drafts.back().set(StaticKey{"fhash"}, uint64_t(k));
+      events.push_back(
+          {700 + k, "op" + std::to_string(k), "HDF5", data, 7000, 1, 7, 8, 0});
+      add(block, enc, events.back(), drafts.back());
+    }
+  }
+
+  // A repeated read or lseek takes its shape id, head and values only.
+  DFT_CHECK(block.ends[5] - block.ends[4] <= 12);
+
+  compact::Decoder dec;
+  ipc::DecodedEvent out;
+  size_t at = 0;
+  for (size_t i = 0; i < events.size(); ++i) {
+    DFT_CHECK(dec.event(block.bytes.data() + at, block.ends[i] - at, out));
+    check_head(out, events[i]);
+    at = block.ends[i];
+    // Encode the draft alone in full and compare the args.
+    compact::Encoder full;
+    Block one;
+    EventDraft& d = drafts[i];
+    add(one, full, events[i], d);
+    compact::Decoder alone;
+    ipc::DecodedEvent want;
+    DFT_CHECK(alone.event(one.bytes.data(), one.ends[0], want));
+    DFT_CHECK(out.values.size() == want.values.size());
+    DFT_CHECK(out.head.meta_count == want.head.meta_count);
+    for (size_t k = 0; k < want.values.size(); ++k) {
+      const ipc::DecodedValue& a = out.values[k];
+      const ipc::DecodedValue& b = want.values[k];
+      DFT_CHECK(a.key == b.key && a.tag == b.tag && a.mtype == b.mtype);
+      DFT_CHECK(a.i == b.i && a.u == b.u && a.s == b.s);
+      DFT_CHECK(a.d == b.d);
+    }
+  }
+
+  // A new block starts with no shapes: a site sent by its shape before is
+  // sent in full again and decodes alone.
+  enc.reset();
+  Block next;
+  add(next, enc, events[4], drafts[4]);
+  add(next, enc, events[6], drafts[6]);
+  DFT_CHECK(next.ends[1] - next.ends[0] <= 16);
+  compact::Decoder fresh;
+  DFT_CHECK(fresh.event(next.bytes.data(), next.ends[0], out));
+  check_head(out, events[4]);
+  DFT_CHECK(out.values.size() == 4 && out.values[1].i == 4096 * 2);
+  DFT_CHECK(fresh.event(next.bytes.data() + next.ends[0],
+                        next.ends[1] - next.ends[0], out));
+  check_head(out, events[6]);
+  DFT_CHECK(out.values.size() == 4 && out.values[1].i == 4096 * 3);
+}
+
 }  // namespace
 
 int main() {
+  test_shapes();
   compact::Encoder enc;
   Block block;
   std::vector<Event> events;

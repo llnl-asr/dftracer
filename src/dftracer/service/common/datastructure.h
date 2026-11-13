@@ -1,6 +1,7 @@
 #ifndef DFTRACER_SERVER_COMMON_DATASTRUCTURE
 #define DFTRACER_SERVER_COMMON_DATASTRUCTURE
 
+#include <dftracer/core/buffer/compact_event.h>
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
@@ -113,7 +114,7 @@ struct NetworkMetrics {
 struct alignas(DFT_SHM_CACHE_LINE) DrainStats {
   uint64_t blocks = 0;
   uint64_t bytes = 0;
-  uint64_t records[SHM_KIND_GOODBYE + 1] = {};
+  uint64_t records[SHM_KIND_COMPACT + 1] = {};
   uint64_t malformed = 0;
   uint64_t taken = 0;  // blocks taken over from their producers
   uint64_t uncommitted =
@@ -171,6 +172,9 @@ struct DrainOptions {
   // A producer's unpublished block is taken over, and a drain thread's chunk
   // written, once this old.
   uint64_t flush_ns = DFT_SHM_DEFAULT_FLUSH_MS * 1000000ULL;
+  // Published blocks wait in the ring until the oldest is this old (0: drain
+  // at once); see DFT_SHM_DEFAULT_HOLD_MS.
+  uint64_t hold_ns = 0;
   // The node's trace file. Empty: decode and count only (benchmarks).
   std::string node_file;
   std::string hostname_hash;
@@ -190,6 +194,11 @@ struct DrainScratch {
   ipc::DecodedHello hello;
   // The interned strings of the block being replayed (SHM_EVENT_INTERNED).
   ipc::InternTable intern;
+  // The COMPACT records of the block being replayed. After one fails to
+  // decode, the block's later ones may refer to what it held: they are
+  // counted as malformed too.
+  compact::Decoder compact;
+  bool compact_ok = true;
   // NUL-terminated copies of the METADATA and RECORD strings the serializer
   // takes as char*. DATA and COUNTER records need none (log_packed_event).
   std::string name, value, record_name;

@@ -30,8 +30,22 @@ namespace compact {
  *           (length << 1 | 1) + bytes, which takes the next id
  *
  * Numbers are LEB128 varints; index, start, pid, tid and values are zigzag
- * changes from the previous event. All state starts over with each block, so
- * a block decodes alone.
+ * changes from the previous event. With kSameSource in the flags, index is
+ * one past the previous event's and pid and tid are the same; the three are
+ * left out. All state starts
+ * over with each block, so a block decodes alone.
+ *
+ * An event from an interceptor's call site whose args all have StaticKeys
+ * (EventDraft::shaped()) is sent by its shape: the name, category and the
+ * tag, type and key of each entry.
+ * The first event of a shape in a block is a full EVENT with kShapeNew in
+ * its flags, and takes the next shape id. A later event of the shape is
+ *
+ *   SHAPED  u8 type | u8 flags | shape id | index | start | duration | pid |
+ *           tid | one value for each entry of the shape
+ *
+ * with kShaped in its flags. Its INT and UINT values are changes from the
+ * value at the same entry of the previous event of the shape.
  */
 inline uint8_t* put_varint(uint8_t* p, uint64_t v) {
   while (v >= 0x80) {
@@ -50,8 +64,28 @@ inline uint64_t unzigzag(uint64_t v) { return (v >> 1) ^ (0 - (v & 1)); }
 constexpr uint32_t kTrackedValues = 256;
 // Largest varint plus the head bytes of an entry or event field.
 constexpr size_t kVarintMax = 10;
+// Flag bits of this encoding only; the decoder clears them.
+constexpr uint8_t kSameSource = 0x20;
+constexpr uint8_t kShapeNew = 0x40;
+constexpr uint8_t kShaped = 0x80;
+static_assert(((kSameSource | kShapeNew | kShaped) &
+               (SHM_EVENT_INC_METADATA | SHM_EVENT_HAS_METADATA |
+                SHM_EVENT_NO_AGGREGATE | SHM_EVENT_INTERNED)) == 0,
+              "shape flags clash with ShmEventFlags");
 
 class Encoder {
+  static constexpr uint32_t kShapes = 64;
+  struct Shape {
+    uint32_t block = 0;  // the block_ it was made in; another is stale
+    uint32_t id;
+    uint64_t used;
+    const void* site;
+    uint64_t sig;
+    uint16_t count;
+    uint32_t heads[EventDraft::kShapeKeys];
+    uint64_t last[EventDraft::kShapeKeys];
+  };
+
  public:
   Encoder() { reset(); }
   void reset() {
@@ -60,6 +94,9 @@ class Encoder {
     std::memset(values_, 0, sizeof(values_));
     next_id_ = 0;
     index_ = start_ = pid_ = tid_ = 0;
+    ++block_;
+    next_shape_ = 0;
+    tick_ = 0;
   }
 
   /** An upper bound of what event() writes for these fields. */
@@ -74,56 +111,151 @@ class Encoder {
    * Writes an event with the args of `args` (null for none) at `out`, which
    * has room for bound(); returns its size.
    */
-  size_t event(uint8_t* out, int index, std::string_view name,
-               std::string_view category, TraceEventType type,
-               TimeResolution start, TimeResolution duration,
-               const EventDraft* args, ProcessID pid, ThreadID tid,
-               uint8_t flags) {
+  __attribute__((always_inline)) size_t event(
+      uint8_t* out, int index, std::string_view name, std::string_view category,
+      TraceEventType type, TimeResolution start, TimeResolution duration,
+      const EventDraft* args, ProcessID pid, ThreadID tid, uint8_t flags) {
+    Shape* fresh = nullptr;
+    if (args != nullptr && args->shaped()) {
+      const uint32_t h = shape_slot(args->site());
+      Shape* a = &shapes_[h];
+      Shape* b = &shapes_[h ^ 1];
+      if (matches(*a, *args))
+        return shaped(out, *a, index, type, start, duration, *args, pid, tid,
+                      flags);
+      if (matches(*b, *args))
+        return shaped(out, *b, index, type, start, duration, *args, pid, tid,
+                      flags);
+      fresh = a->block != block_   ? a
+              : b->block != block_ ? b
+              : a->used <= b->used ? a
+                                   : b;
+    }
+    return full(out, index, name, category, type, start, duration, args, pid,
+                tid, flags, fresh);
+  }
+
+ private:
+  // The EVENT form; with `fresh`, it also defines that shape.
+  __attribute__((noinline)) size_t
+  full(uint8_t* out, int index, std::string_view name,
+       std::string_view category, TraceEventType type, TimeResolution start,
+       TimeResolution duration, const EventDraft* args, ProcessID pid,
+       ThreadID tid, uint8_t flags, Shape* fresh) {
+    if (fresh != nullptr) flags |= kShapeNew;
     uint8_t* p = out;
     *p++ = static_cast<uint8_t>(type);
     *p++ = flags;
-    p = put_varint(p, zigzag(static_cast<uint64_t>(index) - index_));
-    p = put_varint(p, zigzag(start - start_));
-    p = put_varint(p, duration);
-    p = put_varint(p, zigzag(static_cast<uint64_t>(pid) - pid_));
-    p = put_varint(p, zigzag(tid - tid_));
-    index_ = static_cast<uint64_t>(index);
-    start_ = start;
-    pid_ = static_cast<uint64_t>(pid);
-    tid_ = tid;
+    p = head(p, out + 1, index, start, duration, pid, tid);
     uint32_t id;
     p = string(p, name.data(), ipc::short_len(name), id, 0);
     p = string(p, category.data(), ipc::short_len(category), id, 1);
     const uint16_t count = args != nullptr ? args->count() : 0;
     p = put_varint(p, count);
-    const uint8_t* at = args != nullptr ? args->data() : nullptr;
+    const EventDraft::Entry* es = args != nullptr ? args->entries() : nullptr;
     for (uint16_t i = 0; i < count; ++i) {
-      const EventDraft::Entry e = EventDraft::entry_at(at);
-      at += e.size;
-      *p++ = static_cast<uint8_t>(e.tag | (static_cast<uint8_t>(e.mtype) << 3));
-      p = string(p, e.key.data(), e.key.size(), id, 2 + 2 * i);
-      if (e.tag == SHM_VALUE_STRING || e.tag == SHM_VALUE_RAW_JSON) {
+      const EventDraft::Entry& e = es[i];
+      *p++ = static_cast<uint8_t>(e.tag() |
+                                  (static_cast<uint8_t>(e.mtype()) << 3));
+      p = string(p, e.key, e.key_len(), id, 2 + 2 * i);
+      if (e.is_string()) {
         uint32_t value_id;
-        p = string(p, reinterpret_cast<const char*>(e.value), e.value_len,
-                   value_id, 3 + 2 * i);
-      } else if (e.tag == SHM_VALUE_DOUBLE) {
-        std::memcpy(p, e.value, 8);
+        p = string(p, e.str, e.value_len, value_id, 3 + 2 * i);
+      } else if (e.tag() == SHM_VALUE_DOUBLE) {
+        std::memcpy(p, &e.bits, 8);
         p += 8;
       } else {
-        uint64_t v;
-        std::memcpy(&v, e.value, sizeof(v));
+        const uint64_t v = e.bits;
         uint64_t last = 0;
         if (id < kTrackedValues) {
           last = values_[id];
           values_[id] = v;
         }
         p = put_varint(p, zigzag(v - last));
+        if (fresh != nullptr) fresh->last[i] = v;
+      }
+    }
+    if (fresh != nullptr) define(*fresh, *args);
+    return static_cast<size_t>(p - out);
+  }
+
+  __attribute__((always_inline)) uint8_t* head(uint8_t* p, uint8_t* flags,
+                                               int index, TimeResolution start,
+                                               TimeResolution duration,
+                                               ProcessID pid, ThreadID tid) {
+    const uint64_t i = static_cast<uint64_t>(index);
+    const uint64_t pr = static_cast<uint64_t>(pid);
+    if (((i ^ (index_ + 1)) | (pr ^ pid_) | (tid ^ tid_)) == 0) {
+      *flags |= kSameSource;
+      p = put_varint(p, zigzag(start - start_));
+      p = put_varint(p, duration);
+      index_ = i;
+    } else {
+      p = put_varint(p, zigzag(i - index_));
+      p = put_varint(p, zigzag(start - start_));
+      p = put_varint(p, duration);
+      p = put_varint(p, zigzag(pr - pid_));
+      p = put_varint(p, zigzag(tid - tid_));
+      index_ = i;
+      pid_ = pr;
+      tid_ = tid;
+    }
+    start_ = start;
+    return p;
+  }
+
+  static uint32_t shape_slot(const void* site) {
+    const uint64_t h =
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(site)) *
+        0x9e3779b97f4a7c15ull;
+    return static_cast<uint32_t>(h >> 58) & (kShapes - 1);
+  }
+
+  bool matches(const Shape& s, const EventDraft& args) const {
+    const uint16_t count = args.count();
+    return s.block == block_ && s.site == args.site() && s.count == count &&
+           s.sig == args.sig();
+  }
+
+  void define(Shape& s, const EventDraft& args) {
+    s.block = block_;
+    s.id = next_shape_++;
+    s.used = ++tick_;
+    s.site = args.site();
+    s.sig = args.sig();
+    s.count = args.count();
+    const EventDraft::Entry* es = args.entries();
+    for (uint16_t i = 0; i < s.count; ++i) s.heads[i] = es[i].head;
+  }
+
+  size_t shaped(uint8_t* out, Shape& s, int index, TraceEventType type,
+                TimeResolution start, TimeResolution duration,
+                const EventDraft& args, ProcessID pid, ThreadID tid,
+                uint8_t flags) {
+    s.used = ++tick_;
+    uint8_t* p = out;
+    *p++ = static_cast<uint8_t>(type);
+    *p++ = static_cast<uint8_t>(flags | kShaped);
+    p = put_varint(p, s.id);
+    p = head(p, out + 1, index, start, duration, pid, tid);
+    const EventDraft::Entry* es = args.entries();
+    for (uint16_t i = 0; i < s.count; ++i) {
+      const EventDraft::Entry& e = es[i];
+      const ShmValueTag tag = static_cast<ShmValueTag>(s.heads[i] & 0xff);
+      if (tag == SHM_VALUE_STRING || tag == SHM_VALUE_RAW_JSON) {
+        uint32_t value_id;
+        p = string(p, e.str, e.value_len, value_id, 3 + 2 * i);
+      } else if (tag == SHM_VALUE_DOUBLE) {
+        std::memcpy(p, &e.bits, 8);
+        p += 8;
+      } else {
+        p = put_varint(p, zigzag(e.bits - s.last[i]));
+        s.last[i] = e.bits;
       }
     }
     return static_cast<size_t>(p - out);
   }
 
- private:
   static constexpr uint32_t kSlots = 64;
   // Fields (name, category, then key and value of each arg) whose string
   // from the previous event is checked first.
@@ -170,10 +302,11 @@ class Encoder {
                                                  size_t n, uint32_t& id,
                                                  uint32_t position) {
     if (position < kPositions) {
-      const Slot& last = last_[position];
-      if (last.len == n && last.bytes != nullptr && same(last.bytes, s, n)) {
-        id = last.id;
-        return put_varint(p, static_cast<uint64_t>(id) << 1);
+      for (const Slot& last : last_[position]) {
+        if (last.len == n && last.bytes != nullptr && same(last.bytes, s, n)) {
+          id = last.id;
+          return put_varint(p, static_cast<uint64_t>(id) << 1);
+        }
       }
     }
     return string_slow(p, s, n, id, position);
@@ -181,26 +314,38 @@ class Encoder {
   __attribute__((noinline)) uint8_t* string_slow(uint8_t* p, const char* s,
                                                  size_t n, uint32_t& id,
                                                  uint32_t position) {
-    Slot* last = position < kPositions ? &last_[position] : nullptr;
+    Slot* last = position < kPositions ? last_[position] : nullptr;
     Slot& slot = slots_[slot_of(s, n)];
     if (slot.bytes != nullptr && slot.len == n && same(slot.bytes, s, n)) {
       id = slot.id;
-      if (last != nullptr) *last = slot;
+      remember(last, slot);
       return put_varint(p, static_cast<uint64_t>(id) << 1);
     }
     id = next_id_++;
     p = put_varint(p, (static_cast<uint64_t>(n) << 1) | 1);
     if (n != 0) std::memcpy(p, s, n);
     slot = Slot{p, static_cast<uint32_t>(n), id};
-    if (last != nullptr) *last = slot;
+    remember(last, slot);
     return p + n;
+  }
+  static void remember(Slot* last, const Slot& slot) {
+    if (last == nullptr) return;
+    last[1] = last[0];
+    last[0] = slot;
   }
 
   Slot slots_[kSlots];
-  Slot last_[kPositions];
+  // Two strings per position, so events that alternate (lseek and read in
+  // IOR) still take the fast path.
+  Slot last_[kPositions][2];
   uint64_t values_[kTrackedValues];
   uint32_t next_id_ = 0;
   uint64_t index_ = 0, start_ = 0, pid_ = 0, tid_ = 0;
+  // Two ways per hash: shapes_[h] and shapes_[h ^ 1].
+  Shape shapes_[kShapes];
+  uint32_t block_ = 0;
+  uint32_t next_shape_ = 0;
+  uint64_t tick_ = 0;
 };
 
 class Decoder {
@@ -208,6 +353,8 @@ class Decoder {
   Decoder() { reset(); }
   void reset() {
     strings_.clear();
+    shapes_.clear();
+    shape_values_.clear();
     std::memset(values_, 0, sizeof(values_));
     index_ = start_ = pid_ = tid_ = 0;
   }
@@ -220,21 +367,35 @@ class Decoder {
     ipc::EventHead& h = out.head;
     h = ipc::EventHead{};
     h.type = *p_++;
-    h.flags = *p_++;
+    const uint8_t flags = *p_++;
+    h.flags =
+        static_cast<uint8_t>(flags & ~(kSameSource | kShapeNew | kShaped));
     uint64_t v;
-    if (!varint(v)) return false;
-    index_ += unzigzag(v);
-    if (!varint(v)) return false;
-    start_ += unzigzag(v);
-    if (!varint(h.duration)) return false;
-    if (!varint(v)) return false;
-    pid_ += unzigzag(v);
-    if (!varint(v)) return false;
-    tid_ += unzigzag(v);
+    uint64_t shape_id = 0;
+    if ((flags & kShaped) != 0 &&
+        (!varint(shape_id) || shape_id >= shapes_.size()))
+      return false;
+    if ((flags & kSameSource) != 0) {
+      ++index_;
+      if (!varint(v)) return false;
+      start_ += unzigzag(v);
+      if (!varint(h.duration)) return false;
+    } else {
+      if (!varint(v)) return false;
+      index_ += unzigzag(v);
+      if (!varint(v)) return false;
+      start_ += unzigzag(v);
+      if (!varint(h.duration)) return false;
+      if (!varint(v)) return false;
+      pid_ += unzigzag(v);
+      if (!varint(v)) return false;
+      tid_ += unzigzag(v);
+    }
     h.index = static_cast<int32_t>(index_);
     h.start_time = start_;
     h.process_id = static_cast<int32_t>(pid_);
     h.thread_id = tid_;
+    if ((flags & kShaped) != 0) return shaped(shapes_[shape_id], out);
     uint32_t id;
     if (!string(out.name, id) || !string(out.category, id)) return false;
     h.name_len = static_cast<uint16_t>(out.name.size());
@@ -280,10 +441,69 @@ class Decoder {
       }
       out.values.push_back(d);
     }
+    if ((flags & kShapeNew) != 0) {
+      shapes_.push_back(Shape{out.name, out.category, shape_values_.size(),
+                              out.values.size()});
+      for (ipc::DecodedValue d : out.values) {
+        if (d.tag == SHM_VALUE_INT) d.u = static_cast<uint64_t>(d.i);
+        shape_values_.push_back(d);
+      }
+    }
     return true;
   }
 
  private:
+  // A shape's entries are shape_values_[first, first + count), with the last
+  // INT or UINT value of each in its u.
+  struct Shape {
+    std::string_view name;
+    std::string_view category;
+    size_t first;
+    size_t count;
+  };
+
+  bool shaped(const Shape& shape, ipc::DecodedEvent& out) {
+    out.name = shape.name;
+    out.category = shape.category;
+    out.head.name_len = static_cast<uint16_t>(shape.name.size());
+    out.head.category_len = static_cast<uint16_t>(shape.category.size());
+    out.head.meta_count = static_cast<uint16_t>(shape.count);
+    out.values.clear();
+    out.values.reserve(shape.count);
+    for (size_t i = 0; i < shape.count; ++i) {
+      ipc::DecodedValue& last = shape_values_[shape.first + i];
+      ipc::DecodedValue d{};
+      d.tag = last.tag;
+      d.mtype = last.mtype;
+      d.key = last.key;
+      switch (d.tag) {
+        case SHM_VALUE_INT:
+        case SHM_VALUE_UINT: {
+          uint64_t v;
+          if (!varint(v)) return false;
+          last.u += unzigzag(v);
+          if (d.tag == SHM_VALUE_INT)
+            d.i = static_cast<int64_t>(last.u);
+          else
+            d.u = last.u;
+          break;
+        }
+        case SHM_VALUE_DOUBLE:
+          if (end_ - p_ < 8) return false;
+          std::memcpy(&d.d, p_, 8);
+          p_ += 8;
+          break;
+        default: {
+          uint32_t value_id;
+          if (!string(d.s, value_id)) return false;
+          break;
+        }
+      }
+      out.values.push_back(d);
+    }
+    return true;
+  }
+
   bool varint(uint64_t& out) {
     uint64_t v = 0;
     for (int shift = 0; shift < 64 && p_ < end_; shift += 7) {
@@ -317,6 +537,8 @@ class Decoder {
   const uint8_t* p_ = nullptr;
   const uint8_t* end_ = nullptr;
   std::vector<std::string_view> strings_;
+  std::vector<Shape> shapes_;
+  std::vector<ipc::DecodedValue> shape_values_;
   uint64_t values_[kTrackedValues];
   uint64_t index_ = 0, start_ = 0, pid_ = 0, tid_ = 0;
 };

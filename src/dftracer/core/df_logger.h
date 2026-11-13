@@ -21,6 +21,7 @@
 #include <dftracer/core/utils/fs_info.h>
 #include <dftracer/core/utils/md5.h>
 #include <dftracer/core/utils/posix_bypass.h>
+#include <dftracer/core/utils/tsc_clock.h>
 #include <dftracer/core/utils/utils.h>
 #include <libgen.h>
 #include <sys/time.h>
@@ -190,6 +191,7 @@ class DFTLogger {
     dftracer_tid = config->tids;
     throw_error = config->throw_error;
     min_duration_ns_ = config->min_duration_ns;
+    dftracer::TscClock::start(config->tsc_clock);
     switch (config->time_metric) {
       case TimeMetricType::TIME_METRIC_NS:
         ns_per_unit_ = 1;
@@ -482,27 +484,10 @@ class DFTLogger {
 
   inline TimeResolution get_time() {
     DFTRACER_LOG_DEBUG("DFTLogger.get_time");
-    struct timeval tv{};
-    gettimeofday(&tv, NULL);
-    TimeResolution t;
-    switch (config->time_metric) {
-      case TimeMetricType::TIME_METRIC_NS:
-        t = (TimeResolution)tv.tv_sec * 1000000000ULL +
-            (TimeResolution)tv.tv_usec * 1000ULL;
-        break;
-      case TimeMetricType::TIME_METRIC_MS:
-        t = (TimeResolution)tv.tv_sec * 1000ULL +
-            (TimeResolution)tv.tv_usec / 1000ULL;
-        break;
-      case TimeMetricType::TIME_METRIC_SEC:
-        t = (TimeResolution)tv.tv_sec;
-        break;
-      case TimeMetricType::TIME_METRIC_US:
-      default:
-        t = (TimeResolution)tv.tv_sec * 1000000ULL + (TimeResolution)tv.tv_usec;
-        break;
-    }
-    return t;
+    const TimeResolution us = dftracer::TscClock::now_us();
+    if (__builtin_expect(ns_per_unit_ == 1000ULL, 1)) return us;
+    if (ns_per_unit_ == 1) return us * 1000ULL;
+    return us / (ns_per_unit_ / 1000ULL);
   }
 
   // Records this process's MPI rank once MPI is up. The MPI module asks MPI
@@ -834,6 +819,20 @@ class DFTLogger {
     DFT_LOGGER_UPDATE(fhash);                                              \
   }
 
+// The interceptor's own static object, so the encoder can send its events
+// by their shape (EventDraft::shaped()). Its END names the event
+// __FUNCTION__, so the site also fixes the name.
+#define DFT_LOGGER_SITE() \
+  static char dft_site;   \
+  if (metadata != nullptr) metadata->set_site(&dft_site)
+
+// An is_traced() hash, from DFTLogger::get_hash(): always HASH_OUTPUT hex
+// digits, so its length needs no strlen.
+#define DFT_LOGGER_UPDATE_FHASH(value)         \
+  if (metadata != nullptr)                     \
+    metadata->set(dftracer::StaticKey{#value}, \
+                  std::string_view((value), HASH_OUTPUT));
+
 // With DFTRACER_ENABLE_PROFILING, the two halves of an interceptor are timed
 // as its layer's capture phase (the real call between them is not), and the
 // end half counts the event; an untraced call is timed as "filtered".
@@ -847,8 +846,9 @@ class DFTLogger {
   TimeResolution start_time = 0;                                          \
   dftracer::DraftScope dft_draft(trace&& this->logger->include_metadata); \
   dftracer::EventDraft* metadata = dft_draft.get();                       \
+  DFT_LOGGER_SITE();                                                      \
   if (trace) {                                                            \
-    DFT_LOGGER_UPDATE(fhash);                                             \
+    DFT_LOGGER_UPDATE_FHASH(fhash);                                       \
     this->logger->enter_event();                                          \
     start_time = this->logger->get_time();                                \
   }                                                                       \
@@ -861,14 +861,17 @@ class DFTLogger {
   TimeResolution start_time = 0;                                          \
   dftracer::DraftScope dft_draft(trace&& this->logger->include_metadata); \
   dftracer::EventDraft* metadata = dft_draft.get();                       \
+  DFT_LOGGER_SITE();                                                      \
   if (trace) {                                                            \
     this->logger->enter_event();                                          \
     start_time = this->logger->get_time();                                \
   }                                                                       \
   DFTRACER_PROFILE_END(dft_profile_start,                                 \
                        DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), false);
-#define DFT_LOGGER_END_AS(name)                                           \
+#define DFT_LOGGER_LOG_END(name, site_fixes_name)                         \
   if (trace) {                                                            \
+    if (!(site_fixes_name) && metadata != nullptr)                        \
+      metadata->set_site(nullptr);                                        \
     DFTRACER_PROFILE_BEGIN(dft_profile_end);                              \
     TimeResolution end_time = this->logger->get_time();                   \
     this->logger->log(std::string_view(name), std::string_view(CATEGORY), \
@@ -878,6 +881,8 @@ class DFTLogger {
     DFTRACER_PROFILE_END(dft_profile_end,                                 \
                          DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), true);     \
   }
-#define DFT_LOGGER_END() DFT_LOGGER_END_AS(__FUNCTION__)
+// A name other than __FUNCTION__ is not fixed by the site.
+#define DFT_LOGGER_END_AS(name) DFT_LOGGER_LOG_END(name, false)
+#define DFT_LOGGER_END() DFT_LOGGER_LOG_END(__FUNCTION__, true)
 
 #endif  // DFTRACER_GENERIC_LOGGER_H

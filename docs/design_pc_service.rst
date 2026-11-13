@@ -523,6 +523,12 @@ Kind                Payload
 ``METADATA``        name, value, record name, type, tid, is_string
 ``RECORD``          record name, fields, type, tid
 ``GOODBYE``         final index, dropped-event count
+``COMPACT``         one DATA event in the compact form of
+                    ``core/buffer/compact_event.h``: an event of an interceptor
+                    whose args all have fixed keys is sent as a shape id and
+                    its values. It refers to the strings, values and shapes of
+                    the ``COMPACT`` records before it in its block, so the
+                    service decodes a block's records in order (ABI 6)
 ``PAD``             none (block tail filler)
 ==================  ============================================================
 
@@ -959,6 +965,7 @@ Variable                                    Default                 Meaning
 ``DFTRACER_PC_MAX_WORKERS``                 cores/4                 ceiling on pool tasks in flight
 ``DFTRACER_PC_STREAM_QUEUE``                8                       slices buffered per stream
 ``DFTRACER_PC_FLUSH_MS``                    1000                    take over a held block; write a partial chunk
+``DFTRACER_PC_HOLD_MS``                     60000                   leave published blocks in the ring this long, or until half full (0: drain at once)
 ``DFTRACER_PC_COMPRESSION_LEVEL``           1                       gzip level of the node trace (speed over ratio)
 ``DFTRACER_PC_DRAIN_TIMEOUT_MS``            10000                   shutdown drain bound
 ==========================================  ======================  ===========================================

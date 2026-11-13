@@ -352,7 +352,7 @@ inline void encode_event_entries(ByteWriter& w, int index,
   w.put(head);
   w.put_bytes(name.data(), head.name_len);
   w.put_bytes(category.data(), head.category_len);
-  if (args != nullptr) w.put_bytes(args->data(), args->size());
+  if (args != nullptr) args->write_wire(w);
 }
 
 inline void encode_metadata_event(ByteWriter& w, ConstEventNameType name,

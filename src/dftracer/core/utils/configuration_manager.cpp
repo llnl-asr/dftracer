@@ -143,6 +143,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
       gotcha_priority(1),
       logger_level(cpplogger::CPP_LOGGER_ERROR),
       time_metric(TimeMetricType::TIME_METRIC_US),
+      tsc_clock(true),
       io(true),
       posix(true),
       stdio(true),
@@ -178,6 +179,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
       pc_consumer_min_threads(DFT_SHM_DEFAULT_CONSUMER_MIN_THREADS),
       pc_consumer_tick_ms(DFT_SHM_DEFAULT_CONSUMER_TICK_MS),
       pc_flush_ms(DFT_SHM_DEFAULT_FLUSH_MS),
+      pc_hold_ms(DFT_SHM_DEFAULT_HOLD_MS),
       pc_compression_level(DFT_SHM_DEFAULT_COMPRESSION_LEVEL),
       pc_rollover_mb(DFT_SHM_DEFAULT_ROLLOVER_MB),
       aggregation_inclusion_rules(),
@@ -445,6 +447,10 @@ dftracer::ConfigurationManager::ConfigurationManager()
   }
   DFTRACER_LOG_DEBUG("ConfigurationManager.time_metric %s",
                      to_string(this->time_metric).c_str());
+  const char* env_tsc_clock = getenv(DFTRACER_TSC_CLOCK);
+  if (env_tsc_clock != nullptr) {
+    this->tsc_clock = env_flag(env_tsc_clock);
+  }
   const char* env_enable = getenv(DFTRACER_ENABLE);
   if (env_flag(env_enable)) {
     this->enable = true;
@@ -511,6 +517,9 @@ dftracer::ConfigurationManager::ConfigurationManager()
       if (env_pc_flush != nullptr)
         this->pc_flush_ms = strtoul(env_pc_flush, nullptr, 10);
       if (this->pc_flush_ms == 0) this->pc_flush_ms = 1;
+      const char* env_pc_hold = getenv(DFTRACER_PC_HOLD_MS);
+      if (env_pc_hold != nullptr)
+        this->pc_hold_ms = strtoul(env_pc_hold, nullptr, 10);
       const char* env_pc_level = getenv(DFTRACER_PC_COMPRESSION_LEVEL);
       if (env_pc_level != nullptr)
         this->pc_compression_level = atoi(env_pc_level);

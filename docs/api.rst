@@ -80,6 +80,8 @@ Any other value turns it off, where a default of 1 applies.
    DFTRACER_LOG_LEVEL               STRING  Logging level within DFTracer ``ERROR``/``WARN``/``INFO``/``DEBUG`` (default ``ERROR``).
    DFTRACER_TIME_METRIC             STRING  Time scale used for event timestamps ``US``/``NS``/``MS``/``SEC`` (default ``US``).
                                             Also emitted as a ``time_metric`` metadata event so it is recorded in every trace.
+   DFTRACER_TSC_CLOCK               INT     Read timestamps from the CPU time-stamp counter when the kernel clock source is ``tsc`` (default: 1).
+                                            Set to ``0`` to read every timestamp with ``gettimeofday``.
    DFTRACER_BIND_SIGNALS            INT     Install DFTracer signal and exception handlers (default: 0).
                                             When set to ``1``, DFTracer registers handlers for the following signals:
                                             ``SIGSEGV`` (segmentation fault), ``SIGABRT`` (abort / assertion failure),
@@ -100,6 +102,9 @@ Any other value turns it off, where a default of 1 applies.
    DFTRACER_DEFER_BUFFER_SIZE       INT     Bytes of full thread buffers that wait in memory before they are compressed
                                             (default 67108864). Compression then runs at a flush, at exit or when this is
                                             full, not while the application runs. 0 compresses each buffer when it fills.
+   DFTRACER_PC_HOLD_MS              INT     Producer/consumer mode: how long the service leaves published events in the ring
+                                            before it writes them (default 60000). It also writes them once they fill half
+                                            the ring, and at stop. 0 writes them at once, beside the application.
    DFTRACER_TRACE_INTERVAL_MS       INT     Setup the interval for trace collection (default 10).
    DFTRACER_MIN_DURATION_NS         INT     Skip events shorter than this many ns, before they are serialized or aggregated:
                                             a skipped event is in neither the trace nor any aggregated row. The duration is

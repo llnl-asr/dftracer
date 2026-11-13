@@ -160,6 +160,15 @@ class LocalBufferManager : public BufferManager {
   bool close_block_locked(ThreadBuffer* tb, char** empty);
   // Renders the oldest pending block of `tb` into JSON lines and writes them.
   void render_and_store(GzipCompression& compressor, ThreadBuffer& tb);
+  // Renders `in` into JSON lines and hands each full block of them to
+  // `flush(char*& data, size_t size)`. Takes `in.data` back to the free list.
+  template <class Flush>
+  void render_block(ThreadBuffer& tb, compact::Decoder& decoder, Block in,
+                    Flush& flush);
+  // Compresses `size` bytes of `block` in place; returns the member's size.
+  static size_t compress_member(GzipCompression& compressor, char* block,
+                                size_t size);
+  void store_member(const char* member, size_t size);
   // Writes every thread's open aggregation intervals into the buffer.
   void drain_thread_aggregators(bool all, ProcessID process_id);
   void compress_and_store(GzipCompression& compressor, char* block,
@@ -184,6 +193,12 @@ class LocalBufferManager : public BufferManager {
   void submit_now(ThreadBuffer* tb);
   // Hands every deferred block to submit_now().
   void release_deferred();
+  // At finalize with no aggregation: renders the deferred blocks on several
+  // threads and writes them in their order, since the work held back during
+  // the run would otherwise run on one core. With aggregation a thread's
+  // events must be folded in order, and the trace it writes is small. False
+  // when it does not apply.
+  bool release_deferred_parallel();
   void write_inline(ThreadBuffer* tb);
   // Waits until every submitted block is written; with `stop`, ends the
   // writer thread too.

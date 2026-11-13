@@ -535,6 +535,18 @@ void test_take_over() {
   RingProducer busy(ring, pid, 12);
   put(busy, 100);
   busy.flush();  // block 1, published
+  ParallelBlockClaimer::Oldest oldest;
+  DFT_CHECK(claimer.ready_blocks(&oldest) == 1);
+  DFT_CHECK(oldest.seq == 1 &&
+            oldest.claim_ns == ring.block(1).claim_ns.load());
+  {
+    // Freed before the fork below, so the child holds no heap of it.
+    std::vector<uint32_t> pids;
+    claimer.pending_pids(pids);
+    DFT_CHECK(pids == std::vector<uint32_t>{pid});
+  }
+  // Old enough, but not before `below`.
+  DFT_CHECK(!claimer.take_over(seq, monotonic_ns(), owner, 0));
   DFT_CHECK(claimer.claim(seq) && seq == 1);
   DFT_CHECK(ring.block(seq).owner_tid.load() == 12);
   DFT_CHECK(values_of(ring, seq, false) == std::vector<uint32_t>{100});

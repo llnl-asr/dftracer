@@ -5,6 +5,7 @@
 #include <dftracer/service/common/datastructure.h>
 #include <signal.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <memory>
 #include <mutex>
@@ -64,14 +65,19 @@ class ClientTable {
    * Remove and return the processes that are finished: said GOODBYE, or are
    * gone without one, more than `grace_ns` ago. The grace lets the blocks of
    * their other threads, published or taken over after the GOODBYE, still
-   * reach the same lanes.
+   * reach the same lanes. Processes in `keep` (sorted) are left alone.
    */
-  std::vector<std::shared_ptr<ClientProcess>> take_finished(uint64_t now_ns,
-                                                            uint64_t grace_ns) {
+  std::vector<std::shared_ptr<ClientProcess>> take_finished(
+      uint64_t now_ns, uint64_t grace_ns,
+      const std::vector<uint32_t>& keep = {}) {
     std::vector<std::shared_ptr<ClientProcess>> done;
     std::lock_guard<std::mutex> lock(mtx_);
     for (auto it = processes_.begin(); it != processes_.end();) {
       ClientProcess& p = *it->second;
+      if (std::binary_search(keep.begin(), keep.end(), p.pid)) {
+        ++it;
+        continue;
+      }
       const uint64_t seen = p.last_seen_ns.load(std::memory_order_relaxed);
       bool finished;
       {
