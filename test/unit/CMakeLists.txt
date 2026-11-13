@@ -65,14 +65,25 @@ add_executable(test_event_draft test_event_draft.cpp)
 target_link_libraries(test_event_draft ${PROJECT_NAME}_core_dbg)
 add_dependencies(test_event_draft ${PROJECT_NAME}_core_dbg)
 
+add_executable(test_tsc_clock test_tsc_clock.cpp)
+target_link_libraries(test_tsc_clock ${PROJECT_NAME}_core_dbg pthread)
+add_dependencies(test_tsc_clock ${PROJECT_NAME}_core_dbg)
+
 add_executable(test_compact_event test_compact_event.cpp)
 target_link_libraries(test_compact_event ${PROJECT_NAME}_core_dbg)
 add_dependencies(test_compact_event ${PROJECT_NAME}_core_dbg)
+
+add_executable(test_gzip_compression test_gzip_compression.cpp)
+target_link_libraries(test_gzip_compression ${PROJECT_NAME}_core_dbg)
+add_dependencies(test_gzip_compression ${PROJECT_NAME}_core_dbg)
 
 # Test the shared-memory event ring (core/ipc, header-only). rt: shm_open lives
 # in librt before glibc 2.34.
 add_executable(test_ring test_ring.cpp)
 target_link_libraries(test_ring pthread rt)
+
+# Where the service runs, beside its clients (service/pipeline, header-only).
+add_executable(test_cpu_placer test_cpu_placer.cpp)
 
 # The lock-free FILE* table of the STDIO interceptors (header-only).
 add_executable(test_file_handle_table test_file_handle_table.cpp)
@@ -101,6 +112,10 @@ set_common_properties(${test_name})
 
 set(test_name unit_test_regression)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_regression)
+set_common_properties(${test_name})
+
+set(test_name unit_test_cpu_placer)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_cpu_placer)
 set_common_properties(${test_name})
 
 set(test_name unit_test_service)
@@ -139,8 +154,16 @@ set(test_name unit_test_event_draft)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_event_draft)
 set_common_properties(${test_name})
 
+set(test_name unit_test_tsc_clock)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_tsc_clock)
+set_common_properties(${test_name})
+
 set(test_name unit_test_compact_event)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_compact_event)
+set_common_properties(${test_name})
+
+set(test_name unit_test_gzip_compression)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_gzip_compression)
 set_common_properties(${test_name})
 
 # Existing mmap test

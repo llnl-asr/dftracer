@@ -3,9 +3,14 @@
 
 #include <dftracer/core/ipc/shm_layout.h>
 #include <sched.h>
+#include <sys/auxv.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 
@@ -111,20 +116,19 @@ class RingProducer {
    * room; commit(r, written) then shrinks the record to what was written, or
    * cancel(r) gives the room back. Same rules otherwise as try_reserve.
    */
-  Result try_reserve_upto(size_t min_payload, size_t max_payload,
-                          ShmRecordKind kind, Reservation& out,
-                          size_t& capacity) {
+  __attribute__((always_inline)) Result try_reserve_upto(size_t min_payload,
+                                                         size_t max_payload,
+                                                         ShmRecordKind kind,
+                                                         Reservation& out,
+                                                         size_t& capacity) {
     const uint32_t block_size = ring_.block_size();
     const uint32_t min_length =
         align_record(sizeof(RecordHeader) + min_payload);
-    if (min_length > block_size) return Result::TOO_LARGE;
-    for (;;) {
-      if (data_ == nullptr || used_ + min_length > block_size) {
-        publish();
-        if (!claim()) return Result::FULL;
-      }
-      if (begin_write()) break;
-      drop();
+    if (__builtin_expect(data_ == nullptr || used_ + min_length > block_size ||
+                             !begin_write(),
+                         0)) {
+      const Result r = open_block(min_length);
+      if (r != Result::OK) return r;
     }
     // Record lengths are multiples of the alignment, so the room left is
     // too; cap it to the largest record and to `max_payload`.
@@ -217,6 +221,49 @@ class RingProducer {
   uint64_t taken_blocks() const { return taken_; }
 
  private:
+  // try_reserve_upto's slow path: a block with `min_length` free, marked
+  // WRITING. A held block with room left is one the service took over.
+  __attribute__((noinline)) Result open_block(uint32_t min_length) {
+    if (min_length > ring_.block_size()) return Result::TOO_LARGE;
+    if (data_ != nullptr && used_ + min_length <= ring_.block_size()) drop();
+    for (;;) {
+      if (data_ == nullptr || used_ + min_length > ring_.block_size()) {
+        publish();
+        if (!claim()) return Result::FULL;
+      }
+      if (begin_write()) return Result::OK;
+      drop();
+    }
+  }
+
+  // Maps the block's pages into this process with one call: on its first
+  // lap each page would otherwise fault on its first write. Only whole pages
+  // inside the block, so nothing outside the reserved blocks is allocated.
+  // A raw syscall and getauxval, not madvise and sysconf: the tracer must not
+  // call functions it intercepts, and the service has no POSIXBypass. errno
+  // is kept for the application.
+  static void populate(uint8_t* data, size_t size) {
+#if defined(__linux__)
+    static constexpr int kPopulateWrite = 23;  // MADV_POPULATE_WRITE, 5.14
+    static std::atomic<bool> unsupported{false};
+    if (unsupported.load(std::memory_order_relaxed)) return;
+    static const uintptr_t page = getauxval(AT_PAGESZ);
+    const uintptr_t from =
+        (reinterpret_cast<uintptr_t>(data) + page - 1) & ~(page - 1);
+    const uintptr_t to =
+        (reinterpret_cast<uintptr_t>(data) + size) & ~(page - 1);
+    if (to <= from) return;
+    const int saved = errno;
+    if (syscall(SYS_madvise, from, to - from, kPopulateWrite) != 0 &&
+        errno == EINVAL)
+      unsupported.store(true, std::memory_order_relaxed);
+    errno = saved;
+#else
+    (void)data;
+    (void)size;
+#endif
+  }
+
   static size_t align_down(size_t bytes) {
     return bytes & ~static_cast<size_t>(DFT_SHM_RECORD_ALIGN - 1);
   }
@@ -255,6 +302,7 @@ class RingProducer {
                           std::memory_order_release);
         block_ = &block;
         data_ = ring_.block_data(seq);
+        populate(data_, ring_.block_size());
         used_ = 0;
         return true;
       }

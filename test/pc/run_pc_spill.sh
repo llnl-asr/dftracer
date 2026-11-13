@@ -19,18 +19,24 @@ WARMUP=1000
 rm -rf "$WORK" && mkdir -p "$WORK"
 export DFTRACER_SERVICE_SHM=/dftracer-spill-$$
 LOG=$WORK/run
-# The smallest ring, drained by one thread, against unpaced producers.
+# A small ring (16 blocks of 64 KiB), drained by one thread, against unpaced
+# producers. The service is paused while they run, so the ring fills and the
+# rest spills on any machine. With 1 MiB blocks the ring held every event.
 env DFTRACER_ENABLE=1 DFTRACER_ENABLE_PC_MODE=1 DFTRACER_ENABLE_AGGREGATION=0 \
-  DFTRACER_PC_BLOCKS=16 DFTRACER_PC_CONSUMER_THREADS=1 \
+  DFTRACER_PC_BLOCKS=16 DFTRACER_PC_BLOCK_SIZE=65536 \
+  DFTRACER_PC_CONSUMER_THREADS=1 \
   DFTRACER_PC_CONSUMER_MIN_THREADS=1 DFTRACER_PC_ROLLOVER_MB=0.25 \
   DFTRACER_LOG_FILE="$LOG" "$SERVICE" start || exit 1
+SERVICE_PID=$(cat "$LOG"_*.pid) || exit 1
+kill -STOP "$SERVICE_PID" || exit 1
 for p in $(seq 1 $PROCS); do
   env DFTRACER_ENABLE=1 DFTRACER_INIT=FUNCTION DFTRACER_DATA_DIR=all \
     DFTRACER_ENABLE_AGGREGATION=0 DFTRACER_ENABLE_PC_MODE=1 \
-    DFTRACER_LOG_FILE="$LOG" "$BENCH" --threads=1 --seconds=1 \
+    DFTRACER_LOG_FILE="$LOG" "$BENCH" --threads=1 --ops=50000 \
     --warmup=$WARMUP --meta=1 --payload=160 >"$WORK/p$p.csv" 2>"$WORK/p$p.err" &
 done
 wait
+kill -CONT "$SERVICE_PID"
 DFTRACER_ENABLE=1 DFTRACER_LOG_FILE="$LOG" "$SERVICE" stop >/dev/null
 for _ in $(seq 600); do
   [ -e "/dev/shm$DFTRACER_SERVICE_SHM" ] || break

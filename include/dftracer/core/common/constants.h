@@ -13,6 +13,7 @@
 #define DFTRACER_GOTCHA_PRIORITY "DFTRACER_GOTCHA_PRIORITY"
 #define DFTRACER_LOG_LEVEL "DFTRACER_LOG_LEVEL"
 #define DFTRACER_TIME_METRIC "DFTRACER_TIME_METRIC"
+#define DFTRACER_TSC_CLOCK "DFTRACER_TSC_CLOCK"
 #define DFTRACER_LOG_FILE "DFTRACER_LOG_FILE"
 #define DFTRACER_INIT "DFTRACER_INIT"
 #define DFTRACER_INIT_COUNT "DFTRACER_INIT_COUNT"
@@ -32,7 +33,6 @@
 #define DFTRACER_AGGREGATION_FILE "DFTRACER_AGGREGATION_FILE"
 #define DFTRACER_BIND_SIGNALS "DFTRACER_BIND_SIGNALS"
 #define DFTRACER_WRITE_BUFFER_SIZE "DFTRACER_WRITE_BUFFER_SIZE"
-#define DFTRACER_DEFER_BUFFER_SIZE "DFTRACER_DEFER_BUFFER_SIZE"
 #define DFTRACER_TRACE_INTERVAL_MS "DFTRACER_TRACE_INTERVAL_MS"
 #define DFTRACER_MIN_DURATION_NS "DFTRACER_MIN_DURATION_NS"
 #define DFTRACER_LIBUV_THREADS "DFTRACER_LIBUV_THREADS"
@@ -52,6 +52,7 @@
 #define DFTRACER_PC_FLUSH_MS "DFTRACER_PC_FLUSH_MS"
 #define DFTRACER_PC_COMPRESSION_LEVEL "DFTRACER_PC_COMPRESSION_LEVEL"
 #define DFTRACER_PC_ROLLOVER_MB "DFTRACER_PC_ROLLOVER_MB"
+#define DFTRACER_PC_SERVICE_CPUS "DFTRACER_PC_SERVICE_CPUS"
 #define DFTRACER_ALL_FILES "all"
 #define DFTRACER_DEFAULT_LOG_FILE "./trace"
 #define DFTRACER_DEFAULT_AGGREGATION_RULE "dur < 100"
@@ -72,12 +73,16 @@ static const uint64_t DFT_SHM_SEGMENT_MAGIC =
     0x314d485352544644ULL;  // "DFTRSHM1"
 // Bump on any change to the segment layout, the record framing, or the
 // meaning of a ShmSegmentState / ShmRecordState / ShmRecordKind value.
-static const uint32_t DFT_SHM_ABI_VERSION = 5;
+static const uint32_t DFT_SHM_ABI_VERSION = 1;
 static const size_t DFT_SHM_CACHE_LINE = 64;
 // Records start on, and are sized in multiples of, this many bytes.
 static const uint32_t DFT_SHM_RECORD_ALIGN = 16;
 // The data area starts on a page boundary.
 static const size_t DFT_SHM_DATA_ALIGN = 4096;
+// Spill files producers announce in the segment (SpillRegistry): how many,
+// and the longest path, with its terminating zero, that fits.
+static const uint32_t DFT_SHM_SPILL_SLOTS = 1024;
+static const uint32_t DFT_SHM_SPILL_PATH = 508;
 // BlockControl::committed is epoch << 32 | block_size once the block is
 // published; a drain thread claims it by setting this bit.
 static const uint64_t DFT_SHM_BLOCK_CLAIMED = 1ULL << 31;
@@ -115,6 +120,10 @@ static const uint64_t DFT_SHM_CONTROL_WAIT_NS = 5000000000ULL;
 // segment is accepting and the service process alive). Once it is not, the
 // producer's events go to its spill file instead of a ring nobody drains.
 static const uint64_t DFT_SHM_LIVENESS_CHECK_NS = 100000000ULL;
+// A thread makes that check once per this many events, or sooner once its
+// events' times have moved on by DFT_SHM_LIVENESS_CHECK_NS; a service found
+// gone by any thread stops every thread's next event.
+static const uint32_t DFT_SHM_LIVENESS_EVERY = 64;
 // Service threads draining the ring; each takes whole blocks. The service
 // runs between MIN and THREADS of them, sized each tick to the arrival rate
 // plus the backlog it must work off within CATCHUP; it sheds one thread after
@@ -127,10 +136,19 @@ static const uint32_t DFT_SHM_CONSUMER_DOWN_TICKS = 10;
 // The service takes over a producer's block held unpublished this long, and
 // writes out a drain thread's partial chunk once it is this old.
 static const uint32_t DFT_SHM_DEFAULT_FLUSH_MS = 1000;
+// Nice value of the service's drain threads while the application runs: they
+// use the cores it leaves idle. The drain at stop runs at normal priority.
+static const int DFT_SHM_DRAIN_NICE = 19;
+// The service reserves this much of the ring's shared memory before it is
+// ready, so it starts fast, and the rest right after in steps of
+// DFT_SHM_RESERVE_STEP_BYTES.
+static const uint64_t DFT_SHM_RESERVE_FIRST_BYTES = 64ULL << 20;
+static const uint64_t DFT_SHM_RESERVE_STEP_BYTES = 16ULL << 20;
 // JSON a drain thread collects before compressing it into one gzip member.
 static const size_t DFT_SHM_DEFAULT_CHUNK_SIZE = 4u << 20;
-// gzip level (libdeflate) for those members: the service compresses the whole
-// node's trace, so speed over ratio.
+// gzip level for those members, as zlib counts it (GzipCompression maps it
+// to ISA-L's): the service compresses the whole node's trace, so speed over
+// ratio.
 static const int DFT_SHM_DEFAULT_COMPRESSION_LEVEL = 1;
 // The node trace rolls over to <log_file>_<host>-<n>.pfw.gz once this much
 // compressed data is in it (0: never), so a reader on a parallel filesystem

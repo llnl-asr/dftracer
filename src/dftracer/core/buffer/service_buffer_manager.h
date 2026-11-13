@@ -73,6 +73,12 @@ class ServiceBufferManager : public BufferManager {
                       TimeResolution start_time, TimeResolution duration,
                       const dftracer::EventDraft* args, ProcessID process_id,
                       ThreadID tid) override;
+  bool log_site_event(const dftracer::SiteEvent& e) override;
+  ServiceBufferManager* as_service() override { return this; }
+  // log_site_event() for callers in service_buffer_manager.cpp, inlined.
+  // With `slot_tid`, the thread id is the calling thread's, taken from its
+  // slot, in place of e.tid.
+  inline bool log_site_inline(const dftracer::SiteEvent& e, bool slot_tid);
   void log_record(ConstEventNameType record_name,
                   const dftracer::Metadata* fields, TraceEventType type,
                   ProcessID process_id, ThreadID tid) override;
@@ -114,8 +120,25 @@ class ServiceBufferManager : public BufferManager {
   // it stays readable afterwards: exit handlers (the preload finalizer's
   // "end" event, atexit, static destructors) still log on that thread.
   static thread_local bool tl_exited;
+  // tl_ref's slot while tl_ref lives. Trivially initialized, so reading it
+  // needs no TLS init call, unlike tl_ref.
+  static thread_local Slot* tl_slot;
 
   Slot* acquire_slot();
+  Slot* acquire_slot_slow();
+  // The slot's own thread enters and leaves it around each use. False if the
+  // slot is dead (abandoned across fork()).
+  bool enter(Slot* slot);
+  void leave(Slot* slot);
+  // Any other thread claims a slot to use it. Waits until `deadline_ns`
+  // (0: not at all) for the slot's thread to leave; false if it did not or
+  // the slot is dead.
+  bool claim(Slot* slot, uint64_t deadline_ns);
+  // claim() in two steps, so one fence can cover many slots: set `claim`,
+  // fence_all(), then await_claim() each slot (false: it was not claimed).
+  bool fence_all();
+  bool await_claim(Slot* slot, bool fenced, uint64_t deadline_ns);
+  void unclaim(Slot* slot);
   Slot* register_slot();
   // A slot added to slots_, not tied to any thread.
   std::shared_ptr<Slot> create_slot();
@@ -127,6 +150,19 @@ class ServiceBufferManager : public BufferManager {
   // False if the record is not in the ring.
   template <typename Encode>
   bool emit(ShmRecordKind kind, Encode&& encode);
+  // True while the slot's thread skips the ring after finding it full.
+  static bool spilling(Slot* slot);
+  // service_alive(), asked once per DFT_SHM_LIVENESS_EVERY events of a
+  // thread, or sooner once `now` (an event time) is DFT_SHM_LIVENESS_CHECK_NS
+  // past its last ask.
+  bool alive(Slot* slot, TimeResolution now);
+  // A DATA event as one SHM_KIND_COMPACT record, encoded straight into the
+  // ring. False, with nothing written, if the ring has no room right away.
+  bool emit_compact(int index, std::string_view event_name,
+                    std::string_view category, TraceEventType type,
+                    TimeResolution start_time, TimeResolution duration,
+                    const dftracer::EventDraft* args, ProcessID process_id,
+                    ThreadID tid, uint8_t flags);
   // emit() for a control record (hello, goodbye, app name, rank): no spill
   // file can hold one, so it waits longer, and a loss is counted apart.
   template <typename Encode>
@@ -152,6 +188,11 @@ class ServiceBufferManager : public BufferManager {
   uint64_t full_wait_ns_ = 0;
   uint8_t event_flags_ = 0;  // ShmEventFlags of every event this process sends
   std::atomic<uint64_t> generation_{1};
+  // Slots are entered with plain stores; claim() pays for the fence with
+  // membarrier(). False where membarrier is missing: both sides then CAS.
+  bool fenced_ = false;
+  TimeResolution liveness_units_ =
+      1;  // DFT_SHM_LIVENESS_CHECK_NS in events' unit
 
   std::mutex slots_mtx_;
   std::vector<std::shared_ptr<Slot>> slots_;

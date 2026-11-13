@@ -1,12 +1,15 @@
+#include <dftracer/core/buffer/compact_event.h>
 #include <dftracer/core/buffer/service_buffer_manager.h>
 #include <dftracer/core/common/event_draft.h>
 #include <dftracer/core/common/event_types.h>
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/profiler.h>
 #include <dftracer/core/common/singleton.h>
+#include <dftracer/core/df_logger.h>
 #include <dftracer/core/utils/configuration_manager.h>
 #include <dftracer/core/utils/posix_bypass.h>
 #include <fcntl.h>
+#include <linux/membarrier.h>
 #include <signal.h>
 #include <sys/file.h>
 #include <sys/syscall.h>
@@ -35,21 +38,17 @@ struct ServiceBufferManager::ThreadRef {
   std::shared_ptr<Slot> slot;
 
   ~ThreadRef() {
+    tl_slot = nullptr;
     tl_exited = true;
     if (owner == nullptr || slot == nullptr) return;
     Slot* s = slot.get();
-    uint32_t expected = SHM_SLOT_IDLE;
-    while (!s->state.compare_exchange_weak(expected, SHM_SLOT_BUSY,
-                                           std::memory_order_acquire,
-                                           std::memory_order_relaxed)) {
-      if (expected == SHM_SLOT_DEAD) return;  // abandoned across fork()
-      expected = SHM_SLOT_IDLE;
-      ipc::cpu_relax();
-    }
+    if (!owner->enter(s)) return;  // abandoned across fork()
     if (s->producer) s->producer->flush();
     owner->retired_pushed_.fetch_add(s->pushed.load(std::memory_order_relaxed),
                                      std::memory_order_relaxed);
+    // Without membarrier the dead mark is what leaves the slot.
     s->state.store(SHM_SLOT_DEAD, std::memory_order_release);
+    if (owner->fenced_) owner->leave(s);
     std::lock_guard<std::mutex> lock(owner->slots_mtx_);
     auto& slots = owner->slots_;
     slots.erase(std::remove(slots.begin(), slots.end(), slot), slots.end());
@@ -58,6 +57,8 @@ struct ServiceBufferManager::ThreadRef {
 
 thread_local ServiceBufferManager::ThreadRef ServiceBufferManager::tl_ref;
 thread_local bool ServiceBufferManager::tl_exited = false;
+thread_local ServiceBufferManager::Slot* ServiceBufferManager::tl_slot =
+    nullptr;
 
 ServiceBufferManager::ServiceBufferManager() {}
 
@@ -69,12 +70,14 @@ ServiceBufferManager::create_slot() {
   slot->generation = generation_.load(std::memory_order_acquire);
   // Once per thread: the service keeps one aggregation lane per producer
   // thread, keyed by this id.
+  slot->tid = static_cast<ThreadID>(syscall(SYS_gettid));
   slot->producer = std::make_unique<ipc::RingProducer>(
       region_->ring(), static_cast<uint32_t>(owner_pid_),
-      static_cast<uint32_t>(syscall(SYS_gettid)));
+      static_cast<uint32_t>(slot->tid));
   // Encoded into as a buffer (ByteWriter::Buffer): sized once, grown only
   // for a record larger than it.
   slot->scratch.resize(4096);
+  slot->encoder = std::make_unique<compact::Encoder>();
   std::lock_guard<std::mutex> lock(slots_mtx_);
   slots_.push_back(slot);
   return slot;
@@ -83,24 +86,34 @@ ServiceBufferManager::create_slot() {
 ServiceBufferManager::Slot* ServiceBufferManager::register_slot() {
   tl_ref.owner = this;
   tl_ref.slot = create_slot();
-  return tl_ref.slot.get();
+  tl_slot = tl_ref.slot.get();
+  return tl_slot;
 }
 
-ServiceBufferManager::Slot* ServiceBufferManager::acquire_slot() {
+inline __attribute__((always_inline)) ServiceBufferManager::Slot*
+ServiceBufferManager::acquire_slot() {
+  Slot* fast = tl_slot;
+  if (__builtin_expect(
+          fast != nullptr &&
+              fast->generation == generation_.load(std::memory_order_relaxed),
+          1)) {
+    enter(fast);
+    return fast;
+  }
+  return acquire_slot_slow();
+}
+
+ServiceBufferManager::Slot* ServiceBufferManager::acquire_slot_slow() {
   if (tl_exited) {
     // This thread's slot is gone; tl_ref must not be touched again.
     orphan_mtx_.lock();
     if (orphan_ == nullptr ||
-        orphan_->generation != generation_.load(std::memory_order_relaxed))
+        orphan_->generation != generation_.load(std::memory_order_relaxed)) {
       orphan_ = create_slot();
-    Slot* s = orphan_.get();
-    uint32_t expected = SHM_SLOT_IDLE;
-    while (!s->state.compare_exchange_weak(expected, SHM_SLOT_BUSY,
-                                           std::memory_order_acquire,
-                                           std::memory_order_relaxed)) {
-      expected = SHM_SLOT_IDLE;
-      ipc::cpu_relax();
+      orphan_->orphan = true;
     }
+    Slot* s = orphan_.get();
+    enter(s);
     return s;
   }
   Slot* s = tl_ref.slot.get();
@@ -108,21 +121,93 @@ ServiceBufferManager::Slot* ServiceBufferManager::acquire_slot() {
       s->generation != generation_.load(std::memory_order_relaxed)) {
     s = register_slot();
   }
-  // Only this thread and an occasional flush_idle() ever touch the word, so
-  // this is an uncontended CAS on a line this thread already owns.
+  enter(s);
+  return s;
+}
+
+inline __attribute__((always_inline)) void ServiceBufferManager::release_slot(
+    Slot* slot) {
+  leave(slot);
+  if (slot->orphan) orphan_mtx_.unlock();
+}
+
+// Only the slot's thread enters it, once per event, and another thread claims
+// it only to flush at the end. So the entering side does plain stores, and the
+// claiming side makes them visible with membarrier() before it reads `busy`.
+inline __attribute__((always_inline)) bool ServiceBufferManager::enter(
+    Slot* s) {
+  if (!fenced_) {
+    uint32_t expected = SHM_SLOT_IDLE;
+    while (!s->state.compare_exchange_weak(expected, SHM_SLOT_BUSY,
+                                           std::memory_order_acquire,
+                                           std::memory_order_relaxed)) {
+      if (expected == SHM_SLOT_DEAD) return false;
+      expected = SHM_SLOT_IDLE;
+      ipc::cpu_relax();
+    }
+    return true;
+  }
+  if (s->state.load(std::memory_order_relaxed) == SHM_SLOT_DEAD) return false;
+  for (;;) {
+    s->busy.store(1, std::memory_order_relaxed);
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    if (s->claim.load(std::memory_order_acquire) == 0) return true;
+    s->busy.store(0, std::memory_order_release);
+    while (s->claim.load(std::memory_order_acquire) != 0) ipc::cpu_relax();
+  }
+}
+
+inline __attribute__((always_inline)) void ServiceBufferManager::leave(
+    Slot* s) {
+  if (!fenced_) {
+    s->state.store(SHM_SLOT_IDLE, std::memory_order_release);
+    return;
+  }
+  s->busy.store(0, std::memory_order_release);
+}
+
+bool ServiceBufferManager::claim(Slot* s, uint64_t deadline_ns) {
+  if (fenced_) {
+    s->claim.store(1, std::memory_order_relaxed);
+    return await_claim(s, fence_all(), deadline_ns);
+  }
   uint32_t expected = SHM_SLOT_IDLE;
   while (!s->state.compare_exchange_weak(expected, SHM_SLOT_BUSY,
                                          std::memory_order_acquire,
                                          std::memory_order_relaxed)) {
+    if (expected == SHM_SLOT_DEAD || ipc::monotonic_ns() >= deadline_ns)
+      return false;
     expected = SHM_SLOT_IDLE;
     ipc::cpu_relax();
   }
-  return s;
+  return true;
 }
 
-void ServiceBufferManager::release_slot(Slot* slot) {
-  slot->state.store(SHM_SLOT_IDLE, std::memory_order_release);
-  if (tl_exited) orphan_mtx_.unlock();
+bool ServiceBufferManager::fence_all() {
+  return syscall(SYS_membarrier, MEMBARRIER_CMD_PRIVATE_EXPEDITED, 0, 0) == 0;
+}
+
+// Unless every thread has passed a full barrier (`fenced`), `busy` may still
+// read 0 while the slot's thread is inside: then leave the slot alone.
+bool ServiceBufferManager::await_claim(Slot* s, bool fenced,
+                                       uint64_t deadline_ns) {
+  bool ok = fenced;
+  while (ok && s->busy.load(std::memory_order_acquire) != 0) {
+    if (ipc::monotonic_ns() >= deadline_ns) ok = false;
+    ipc::cpu_relax();
+  }
+  if (ok && s->state.load(std::memory_order_acquire) != SHM_SLOT_DEAD)
+    return true;
+  s->claim.store(0, std::memory_order_release);
+  return false;
+}
+
+void ServiceBufferManager::unclaim(Slot* s) {
+  if (!fenced_) {
+    s->state.store(SHM_SLOT_IDLE, std::memory_order_release);
+    return;
+  }
+  s->claim.store(0, std::memory_order_release);
 }
 
 bool ServiceBufferManager::push(Slot* slot, ShmRecordKind kind, size_t bytes,
@@ -139,6 +224,28 @@ bool ServiceBufferManager::push(Slot* slot, ShmRecordKind kind, size_t bytes,
   slot->pushed.store(slot->pushed.load(std::memory_order_relaxed) + 1,
                      std::memory_order_relaxed);
   return true;
+}
+
+// Once a thread found the ring full it spills, in-process, without encoding
+// for the ring, until it is time to try the ring again.
+inline __attribute__((always_inline)) bool ServiceBufferManager::spilling(
+    Slot* slot) {
+  if (slot->spill_until_ns == 0) return false;
+  if (ipc::monotonic_ns() < slot->spill_until_ns) return true;
+  slot->spill_until_ns = 0;
+  return false;
+}
+
+inline __attribute__((always_inline)) bool ServiceBufferManager::alive(
+    Slot* slot, TimeResolution now) {
+  if (service_gone_.load(std::memory_order_relaxed)) return false;
+  if (slot->alive_skip != 0 && now - slot->alive_at < liveness_units_) {
+    --slot->alive_skip;
+    return true;
+  }
+  slot->alive_skip = DFT_SHM_LIVENESS_EVERY - 1;
+  slot->alive_at = now;
+  return service_alive();
 }
 
 bool ServiceBufferManager::service_alive() {
@@ -171,18 +278,15 @@ bool ServiceBufferManager::service_alive() {
 
 template <typename Encode>
 bool ServiceBufferManager::emit(ShmRecordKind kind, Encode&& encode) {
-  if (region_ == nullptr || !service_alive()) return false;
-  // Once this thread found the ring full it spills, in-process, without
-  // encoding for the ring, until it is time to try the ring again.
-  thread_local uint64_t spill_until_ns = 0;
-  if (spill_until_ns != 0) {
-    if (ipc::monotonic_ns() < spill_until_ns) return false;
-    spill_until_ns = 0;
-  }
+  if (region_ == nullptr) return false;
   // Profiled as: store = getting the slot, reserving and publishing the
   // record; serialization = the binary encoding in between.
   DFTRACER_PROFILE_BEGIN(store_frame);
   Slot* slot = acquire_slot();
+  if (!service_alive() || spilling(slot)) {
+    release_slot(slot);
+    return false;
+  }
   bool pushed = false;
   // Straight into the ring: reserve what the block has left, encode into it,
   // and commit what the record took. A record that does not fit there ends
@@ -232,9 +336,59 @@ bool ServiceBufferManager::emit(ShmRecordKind kind, Encode&& encode) {
     }
     pushed = push(slot, kind, bytes, full_wait_ns_);
   }
+  if (!pushed)
+    slot->spill_until_ns = ipc::monotonic_ns() + DFT_SHM_SPILL_RETRY_NS;
   release_slot(slot);
   DFTRACER_PROFILE_END(store_frame, DFTRACER_PROFILE_PHASE(STORE), true);
-  if (!pushed) spill_until_ns = ipc::monotonic_ns() + DFT_SHM_SPILL_RETRY_NS;
+  return pushed;
+}
+
+bool ServiceBufferManager::emit_compact(
+    int index, std::string_view event_name, std::string_view category,
+    TraceEventType type, TimeResolution start_time, TimeResolution duration,
+    const dftracer::EventDraft* args, ProcessID process_id, ThreadID tid,
+    uint8_t flags) {
+  if (region_ == nullptr) return false;
+  const size_t bound = compact::Encoder::bound(event_name, category, args);
+  if (bound + sizeof(ipc::RecordHeader) > DFT_SHM_MAX_RECORD_LENGTH)
+    return false;
+  DFTRACER_PROFILE_BEGIN(store_frame);
+  Slot* slot = acquire_slot();
+  if (!alive(slot, start_time) || spilling(slot)) {
+    release_slot(slot);
+    return false;
+  }
+  ipc::RingProducer& producer = *slot->producer;
+  ipc::Reservation r;
+  size_t capacity = 0;
+  bool pushed = false;
+  // A block with less than `bound` left is published, so the event is
+  // encoded once, into the block whose earlier records it refers to.
+  if (producer.try_reserve_upto(bound, bound + DFT_SHM_RECORD_ALIGN,
+                                SHM_KIND_COMPACT, r,
+                                capacity) == ipc::RingProducer::Result::OK) {
+    if (capacity < bound) {
+      producer.cancel(r);
+    } else {
+      if (slot->encoder_block != producer.block_serial()) {
+        slot->encoder->reset();
+        slot->encoder_block = producer.block_serial();
+      }
+      size_t bytes;
+      {
+        DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(SERIALIZATION));
+        bytes = slot->encoder->event(r.payload, index, event_name, category,
+                                     type, start_time, duration, args,
+                                     process_id, tid, flags);
+      }
+      producer.commit(r, bytes);
+      slot->pushed.store(slot->pushed.load(std::memory_order_relaxed) + 1,
+                         std::memory_order_relaxed);
+      pushed = true;
+    }
+  }
+  release_slot(slot);
+  DFTRACER_PROFILE_END(store_frame, DFTRACER_PROFILE_PHASE(STORE), true);
   return pushed;
 }
 
@@ -275,6 +429,13 @@ LocalBufferManager* ServiceBufferManager::spill_manager() {
   auto& posix = POSIXBypass::get_instance();
   spill_lock_fd_ = posix.open(spill_file_.c_str(), O_RDONLY | O_CLOEXEC);
   if (spill_lock_fd_ >= 0) flock(spill_lock_fd_, LOCK_EX);
+  if (region_ != nullptr &&
+      !region_->ring().announce_spill(spill_file_.c_str(), spill_file_.size()))
+    std::fprintf(stderr,
+                 "[DFTRACER] producer/consumer mode: pid %d: no room to "
+                 "announce %s to the service; it takes the file in only if "
+                 "this process's HELLO reached the ring\n",
+                 owner_pid_, spill_file_.c_str());
   if (!app_name.empty()) manager->set_app_name(app_name.c_str());
   if (rank >= 0) manager->set_rank(rank);
   spill_ = std::move(manager);
@@ -349,6 +510,24 @@ int ServiceBufferManager::initialize(const char* filename,
     service_gone_.store(false, std::memory_order_relaxed);
   }
   owner_pid_ = pid;
+  // Registered per process, so again in a forked child.
+  fenced_ = syscall(SYS_membarrier, MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED,
+                    0, 0) == 0;
+  switch (config->time_metric) {
+    case TimeMetricType::TIME_METRIC_NS:
+      liveness_units_ = DFT_SHM_LIVENESS_CHECK_NS;
+      break;
+    case TimeMetricType::TIME_METRIC_MS:
+      liveness_units_ = DFT_SHM_LIVENESS_CHECK_NS / 1000000ULL;
+      break;
+    case TimeMetricType::TIME_METRIC_SEC:
+      liveness_units_ = 1;
+      break;
+    case TimeMetricType::TIME_METRIC_US:
+    default:
+      liveness_units_ = DFT_SHM_LIVENESS_CHECK_NS / 1000ULL;
+      break;
+  }
   log_file_ = filename == nullptr ? "" : filename;
   spill_file_ = spill_file_for(log_file_);
   hostname_hash_ = hostname_hash == nullptr ? "" : hostname_hash;
@@ -414,14 +593,10 @@ void ServiceBufferManager::flush_idle(uint64_t max_age_ns) {
   const uint64_t now = ipc::monotonic_ns();
   std::lock_guard<std::mutex> lock(slots_mtx_);
   for (auto& slot : slots_) {
-    uint32_t expected = SHM_SLOT_IDLE;
-    if (!slot->state.compare_exchange_strong(expected, SHM_SLOT_BUSY,
-                                             std::memory_order_acquire,
-                                             std::memory_order_relaxed)) {
-      continue;  // logging right now, or gone; it publishes on its own
-    }
+    // Logging right now, or gone: it publishes on its own.
+    if (!claim(slot.get(), 0)) continue;
     if (slot->producer) slot->producer->flush_if_older(now, max_age_ns);
-    slot->state.store(SHM_SLOT_IDLE, std::memory_order_release);
+    unclaim(slot.get());
   }
 }
 
@@ -434,20 +609,20 @@ void ServiceBufferManager::flush() {
 void ServiceBufferManager::flush_all(uint64_t wait_ns) {
   const uint64_t deadline = ipc::monotonic_ns() + wait_ns;
   std::lock_guard<std::mutex> lock(slots_mtx_);
+  // One barrier for every slot rather than one per claim().
+  bool fenced = false;
+  if (fenced_) {
+    for (auto& slot : slots_) slot->claim.store(1, std::memory_order_relaxed);
+    fenced = fence_all();
+  }
   for (auto& slot : slots_) {
     // A thread inside a log call holds its slot for a few hundred ns: wait
     // for it rather than leave its block for the service to take over.
-    uint32_t expected = SHM_SLOT_IDLE;
-    while (!slot->state.compare_exchange_weak(expected, SHM_SLOT_BUSY,
-                                              std::memory_order_acquire,
-                                              std::memory_order_relaxed)) {
-      if (expected == SHM_SLOT_DEAD || ipc::monotonic_ns() > deadline) break;
-      expected = SHM_SLOT_IDLE;
-      ipc::cpu_relax();
-    }
-    if (expected != SHM_SLOT_IDLE) continue;
+    if (fenced_ ? !await_claim(slot.get(), fenced, deadline)
+                : !claim(slot.get(), deadline))
+      continue;
     if (slot->producer) slot->producer->flush();
-    slot->state.store(SHM_SLOT_IDLE, std::memory_order_release);
+    unclaim(slot.get());
   }
 }
 
@@ -490,6 +665,11 @@ void ServiceBufferManager::log_data_event(
       event_flags_ |
       (dftracer::event_type_aggregatable(type) ? 0 : SHM_EVENT_NO_AGGREGATE) |
       (args != nullptr ? SHM_EVENT_HAS_METADATA : 0));
+  // A full ring, or an event too large for the compact form, takes the
+  // DATA path, which waits for room and else spills.
+  if (emit_compact(index, event_name, category, type, start_time, duration,
+                   args, process_id, tid, flags))
+    return;
   if (emit(SHM_KIND_DATA, [&](ipc::ByteWriter& w) {
         ipc::encode_event_entries(w, index, event_name, category, type,
                                   start_time, duration, args, process_id, tid,
@@ -500,6 +680,75 @@ void ServiceBufferManager::log_data_event(
     m.log_data_event(index, event_name, category, type, start_time, duration,
                      args, process_id, tid);
   });
+}
+
+bool ServiceBufferManager::log_site_event(const dftracer::SiteEvent& e) {
+  return log_site_inline(e, false);
+}
+
+inline __attribute__((always_inline)) bool
+ServiceBufferManager::log_site_inline(const dftracer::SiteEvent& e,
+                                      bool slot_tid) {
+  if (!is_ready() || region_ == nullptr) return false;
+  const dftracer::SiteInfo& info = *e.info;
+  const size_t bound = info.bound;
+  if (bound + sizeof(ipc::RecordHeader) > DFT_SHM_MAX_RECORD_LENGTH)
+    return false;
+  // Phases are counted only for an event logged here: a miss is counted by
+  // the log_data_event() that follows.
+  DFTRACER_PROFILE_BEGIN(buffer_frame);
+  const uint8_t flags = static_cast<uint8_t>(
+      event_flags_ |
+      (dftracer::event_type_aggregatable(info.type) ? 0
+                                                    : SHM_EVENT_NO_AGGREGATE) |
+      SHM_EVENT_HAS_METADATA);
+  DFTRACER_PROFILE_BEGIN(store_frame);
+  Slot* slot = acquire_slot();
+  if (!alive(slot, e.start_time) || spilling(slot)) {
+    release_slot(slot);
+    DFTRACER_PROFILE_END(store_frame, DFTRACER_PROFILE_PHASE(STORE), false);
+    DFTRACER_PROFILE_END(buffer_frame, DFTRACER_PROFILE_PHASE(BUFFER), false);
+    return false;
+  }
+  ipc::RingProducer& producer = *slot->producer;
+  ipc::Reservation r;
+  size_t capacity = 0;
+  bool pushed = false;
+  if (producer.try_reserve_upto(bound, bound + DFT_SHM_RECORD_ALIGN,
+                                SHM_KIND_COMPACT, r,
+                                capacity) == ipc::RingProducer::Result::OK) {
+    size_t bytes = 0;
+    if (capacity >= bound && slot->encoder_block == producer.block_serial()) {
+      DFTRACER_PROFILE_BEGIN(encode_frame);
+      dftracer::SiteEvent se = e;
+      if (slot_tid) se.tid = slot->orphan ? df_gettid() : slot->tid;
+      bytes = slot->encoder->site_event(r.payload, se, flags);
+      if (bytes != 0) {
+        DFTRACER_PROFILE_END(encode_frame,
+                             DFTRACER_PROFILE_PHASE(SERIALIZATION), true);
+      } else {
+        DFTRACER_PROFILE_END(encode_frame,
+                             DFTRACER_PROFILE_PHASE(SERIALIZATION), false);
+      }
+    }
+    if (bytes == 0) {
+      producer.cancel(r);
+    } else {
+      producer.commit(r, bytes);
+      slot->pushed.store(slot->pushed.load(std::memory_order_relaxed) + 1,
+                         std::memory_order_relaxed);
+      pushed = true;
+    }
+  }
+  release_slot(slot);
+  if (pushed) {
+    DFTRACER_PROFILE_END(store_frame, DFTRACER_PROFILE_PHASE(STORE), true);
+    DFTRACER_PROFILE_END(buffer_frame, DFTRACER_PROFILE_PHASE(BUFFER), true);
+  } else {
+    DFTRACER_PROFILE_END(store_frame, DFTRACER_PROFILE_PHASE(STORE), false);
+    DFTRACER_PROFILE_END(buffer_frame, DFTRACER_PROFILE_PHASE(BUFFER), false);
+  }
+  return pushed;
 }
 
 void ServiceBufferManager::log_counter_event(
@@ -557,3 +806,21 @@ void ServiceBufferManager::log_metadata_event(ConstEventNameType name,
 }
 
 }  // namespace dftracer
+
+void DFTLogger::log_site_service(const dftracer::SiteInfo& info,
+                                 TimeResolution start_time,
+                                 TimeResolution duration,
+                                 const dftracer::EventDraft::Entry* args) {
+  const int index = increment_index();
+  if (__builtin_expect(!mpi_event, 0) && dftracer_module_mpi_rank != nullptr)
+    handle_mpi(dftracer_tid ? df_gettid() : 0);
+  if (this->buffer_manager == nullptr) return;
+  // The thread id comes from the thread's ring slot, which keeps it.
+  dftracer::SiteEvent e{
+      &info, index, start_time, duration, args, this->process_id, 0};
+  if (!site_sink_->log_site_inline(e, dftracer_tid)) {
+    e.tid = dftracer_tid ? df_gettid() : 0;
+    log_site_draft(e);
+  }
+  note_logged(info.type);
+}

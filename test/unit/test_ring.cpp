@@ -145,6 +145,19 @@ void test_layout_and_open() {
   DFT_CHECK(client->ring().block_count() == 8);
   DFT_CHECK(client->ring().block_size() == 4096);
 
+  // A spill file announced by a producer is seen by the service, even with
+  // no record in the ring.
+  const std::string spill = "/tmp/run-1234-spill.pfw.gz";
+  DFT_CHECK(client->ring().announce_spill(spill.c_str(), spill.size()));
+  DFT_CHECK(!client->ring().announce_spill("", 0));
+  const std::string too_long(DFT_SHM_SPILL_PATH, 'x');
+  DFT_CHECK(!client->ring().announce_spill(too_long.c_str(), too_long.size()));
+  std::vector<std::string> seen;
+  owner->ring().for_each_spill([&](const char* path, uint32_t length) {
+    seen.emplace_back(path, length);
+  });
+  DFT_CHECK(seen.size() == 1 && seen[0] == spill);
+
   // A segment from another ABI is refused rather than misread.
   owner->ring().header()->abi_version = DFT_SHM_ABI_VERSION + 1;
   DFT_CHECK(ShmRegion::open(name) == nullptr);
@@ -269,6 +282,36 @@ void test_full_ring() {
             RingProducer::Result::OK);
   writer.commit(r);
   DFT_CHECK(ring.header()->head.load() == 3);
+}
+
+// A ring reserved in part reads as full past the reserved blocks, and takes
+// more once reserve() arms them.
+void test_partial_reserve() {
+  auto region = ShmRegion::create(segment_name("partial"), 8, 4096, 2);
+  const RingView& ring = region->ring();
+  DFT_CHECK(region->reserved_blocks() == 2);
+  RingProducer writer(ring, 1);
+  Reservation r;
+  const auto fill = [&]() {
+    uint64_t accepted = 0;
+    while (writer.try_reserve(1000, SHM_KIND_RAW, r) ==
+           RingProducer::Result::OK) {
+      writer.commit(r);
+      ++accepted;
+      DFT_CHECK(accepted < 100);
+    }
+    return accepted;
+  };
+  // Four records fill a 4 KiB block (see test_full_ring).
+  DFT_CHECK(fill() == 8);
+  DFT_CHECK(ring.header()->head.load() == 2);
+  DFT_CHECK(region->reserve(5) && region->reserved_blocks() == 5);
+  DFT_CHECK(fill() == 12);
+  DFT_CHECK(ring.header()->head.load() == 5);
+  DFT_CHECK(region->reserve(100) && region->reserved_blocks() == 8);
+  DFT_CHECK(fill() == 12);
+  DFT_CHECK(ring.header()->head.load() == 8);
+  DFT_CHECK(region->reserve(8));
 }
 
 // As produce(), the way the PC producer writes events: reserve what the
@@ -597,6 +640,53 @@ void test_take_over() {
   DFT_CHECK(claimer.backlog_blocks() == 0);
 }
 
+// A held block that `head` is about to reach on the next lap is taken over
+// however young it is, so it does not stop every producer.
+void test_take_over_near_lap() {
+  auto region = ShmRegion::create(segment_name("nearlap"), 8, 4096);
+  const RingView& ring = region->ring();
+  const uint32_t pid = static_cast<uint32_t>(getpid());
+  ParallelBlockClaimer claimer(ring);
+  uint64_t seq;
+  uint32_t owner;
+
+  RingProducer quiet(ring, pid, 21);
+  put(quiet, 1);  // block 0, held
+  RingProducer busy(ring, pid, 22);
+  for (uint32_t b = 1; b <= 6; ++b) {  // blocks 1..6, published and drained
+    put(busy, 100 + b);
+    busy.flush();
+    DFT_CHECK(claimer.claim(seq) && seq == b);
+    claimer.release(seq);
+  }
+  // head is 7, and block 0 comes back at 8: two claims away.
+  DFT_CHECK(!claimer.take_over(seq, 0, owner));
+  DFT_CHECK(!claimer.take_over(seq, 0, owner, 1));
+  DFT_CHECK(claimer.take_over(seq, 0, owner, 2));
+  DFT_CHECK(seq == 0 && owner == pid);
+  DFT_CHECK(values_of(ring, seq, true) == std::vector<uint32_t>{1});
+  claimer.release(seq);
+
+  // A live producer in the middle of a record keeps its block, even near
+  // the lap.
+  RingProducer writing(ring, pid, 23);
+  put(writing, 200);  // block 7, head 8
+  Reservation open;
+  DFT_CHECK(writing.try_reserve(4, SHM_KIND_RAW, open) ==
+            RingProducer::Result::OK);
+  DFT_CHECK(!claimer.take_over(seq, 0, owner, 8));
+  writing.commit(open);
+  writing.flush();
+  DFT_CHECK(claimer.claim(seq) && seq == 7);
+  claimer.release(seq);
+
+  // The ring laps over block 0, and the quiet producer loses nothing.
+  put(busy, 108);
+  busy.flush();  // block 0, second lap
+  put(quiet, 2);
+  DFT_CHECK(quiet.taken_blocks() == 1);
+}
+
 // The service shrinks its ring to the shared memory there is: fewer blocks,
 // then smaller ones, never below the minimum.
 void test_fit_geometry() {
@@ -684,10 +774,12 @@ int main() {
   test_single_record_and_flush();
   test_too_large_and_exact_fit();
   test_full_ring();
+  test_partial_reserve();
   test_many_threads();
   test_parallel_consumers();
   test_consumer_scaler();
   test_take_over();
+  test_take_over_near_lap();
   test_fit_geometry();
   test_reserve_upto();
   test_many_threads_upto();

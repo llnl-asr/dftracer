@@ -196,7 +196,8 @@ endif()
 # commit not yet released) for testing dftracer against it.
 set(DFTRACER_BRAHMA_GIT_REPOSITORY "https://github.com/llnl-asr/brahma.git" CACHE STRING
     "Git repository brahma is built from")
-set(DFTRACER_BRAHMA_GIT_TAG "f1f4bc4d7ea36ebef715a851220322b23ba8dbc9" CACHE STRING "Tag, branch or commit of brahma to build")
+# TODO(ray): change this when we bump version
+set(DFTRACER_BRAHMA_GIT_TAG "13fbb8da52abbe9a8aaa256626e0e0b86e85e872" CACHE STRING "Tag, branch or commit of brahma to build")
 set(_brahma_variants_dir "${CMAKE_INSTALL_PREFIX}/brahma-variants")
 find_package(brahma 5.1.1 QUIET)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/modules/DFTracerBrahmaCheck.cmake)
@@ -308,8 +309,6 @@ endif()
 dftracer_install_external_project(pybind11 2.12.0 "pybind11" https://github.com/pybind/pybind11.git v2.12.0 ${CMAKE_INSTALL_PREFIX} "-DPYBIND11_TEST=OFF")
 
 dftracer_install_external_project(libuv 1.52.1 "libuv" https://github.com/libuv/libuv.git v1.52.1 ${CMAKE_INSTALL_PREFIX} "-DLIBUV_BUILD_TESTS=OFF")
-# libdeflate compresses the gzip members of every trace.
-dftracer_install_external_project(libdeflate 1.9 "libdeflate" https://github.com/ebiggers/libdeflate.git v1.24 ${CMAKE_INSTALL_PREFIX} "-DLIBDEFLATE_BUILD_STATIC_LIB=OFF;-DLIBDEFLATE_BUILD_GZIP=OFF;-DLIBDEFLATE_BUILD_TESTS=OFF;-DCMAKE_INSTALL_LIBDIR=lib64")
 
 # Boost: only headers are needed (Boost.Interprocess maps the shared-memory
 # event ring between traced processes and dftracer_service), so the release

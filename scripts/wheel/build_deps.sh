@@ -138,9 +138,6 @@ dep_args() {
     libuv)
       echo "-DLIBUV_BUILD_TESTS=OFF;-DLIBUV_BUILD_BENCH=OFF"
       ;;
-    libdeflate)
-      echo "-DLIBDEFLATE_BUILD_STATIC_LIB=OFF;-DLIBDEFLATE_BUILD_GZIP=OFF;-DLIBDEFLATE_BUILD_TESTS=OFF"
-      ;;
     brahma)
       # brahma's fetch_package() tries find_package() first, and gotcha and
       # cpp-logger are installed in $PREFIX by now, so nothing is fetched.
@@ -196,7 +193,7 @@ done <"$MANIFEST"
 # script runs. Link configs installed elsewhere into that location.
 mkdir -p "$PREFIX/lib64/cmake"
 args="-DCMAKE_PREFIX_PATH=$PREFIX -DDFTRACER_INSTALL_DEPENDENCIES=OFF"
-for pkg in cpp-logger brahma gotcha yaml-cpp libuv libdeflate; do
+for pkg in cpp-logger brahma gotcha yaml-cpp libuv; do
   want="$PREFIX/lib64/cmake/$pkg"
   if [ ! -d "$want" ]; then
     dir="$(find "$PREFIX" -mindepth 2 -maxdepth 5 -type d -name "$pkg" -path '*cmake*' 2>/dev/null | head -1)"

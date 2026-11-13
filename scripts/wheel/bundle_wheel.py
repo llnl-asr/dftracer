@@ -54,7 +54,6 @@ DEP_PATTERNS = (
     "libgotcha.so*",
     "libuv.so*",
     "libyaml-cpp.so*",
-    "libdeflate.so*",
 )
 
 

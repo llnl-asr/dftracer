@@ -104,6 +104,13 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
   dftracer_add_c_flags(CMAKE_C_FLAGS -mtls-dialect=gnu2)
 endif ()
 
+# Calls inside a library go straight to its own functions, not through the
+# PLT, and can be inlined. Nothing interposes dftracer's own symbols: it
+# intercepts calls through GOTCHA, not by symbol interposition.
+dftracer_add_cxx_flags(CMAKE_CXX_FLAGS -fno-semantic-interposition
+  -fvisibility-inlines-hidden)
+dftracer_add_c_flags(CMAKE_C_FLAGS -fno-semantic-interposition)
+
 if (${GLIBC_VERSION} VERSION_GREATER_EQUAL "2.19")
   # to suppress usleep() warning
   add_definitions(-D_DEFAULT_SOURCE)

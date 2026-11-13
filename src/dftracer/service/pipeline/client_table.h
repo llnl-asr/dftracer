@@ -5,6 +5,7 @@
 #include <dftracer/service/common/datastructure.h>
 #include <signal.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <memory>
 #include <mutex>
@@ -96,6 +97,19 @@ class ClientTable {
     for (auto& entry : processes_) all.push_back(std::move(entry.second));
     processes_.clear();
     return all;
+  }
+
+  /** The pids of the processes seen, but `except`, in order. */
+  std::vector<uint32_t> pids(uint32_t except) {
+    std::vector<uint32_t> out;
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      out.reserve(processes_.size());
+      for (const auto& entry : processes_)
+        if (entry.first != except) out.push_back(entry.first);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
   }
 
  private:

@@ -9,8 +9,12 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstring>
+#include <exception>
 #include <new>
+#include <vector>
 template <>
 std::shared_ptr<dftracer::LocalBufferManager>
     dftracer::Singleton<dftracer::LocalBufferManager>::instance = nullptr;
@@ -30,11 +34,12 @@ constexpr size_t kMaxQueued = 2;
 constexpr size_t kMaxFreeBlocks = 8;
 // A record's size and kind, ahead of its payload.
 constexpr size_t kRecordHead = sizeof(uint16_t) + sizeof(uint8_t);
+static_assert(compact::Decoder::kNoShape == ShapeLines::kNoShape,
+              "a decoder's no-shape is the renderer's");
 static_assert(DFTRACER_SERIALIZATION_EVENT_MAX <= 0xffff,
               "a record's size is a u16");
 // Room past a block's chunk_size for the record that crosses it.
 constexpr size_t kBlockSlack = DFTRACER_SERIALIZATION_EVENT_MAX + kRecordHead;
-
 // The calling thread's buffer, and the epoch it was handed out in. Trivially
 // destructible, so a lookup is one TLS read with no init guard;
 // SlotReaper releases the buffer at thread exit.
@@ -129,7 +134,6 @@ void LocalBufferManager::reset_in_child() {
   writer_started = false;
   writer_stop = false;
   busy = 0;
-  deferred.clear();
   writer_compressor.reset();
   discard_thread_buffers();
 }
@@ -138,15 +142,20 @@ void LocalBufferManager::reset_in_child() {
 // reach the file in any order.
 void LocalBufferManager::compress_and_store(GzipCompression& compressor,
                                             char* block, size_t size) {
-  {
-    DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(COMPRESSION));
-    size = compressor.compress(block, size);
-  }
-  if (size > 0) {
-    DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(STORE));
-    std::lock_guard<std::mutex> write_lock(write_mtx);
-    this->writer->write(block, size, true);
-  }
+  size = compress_member(compressor, block, size);
+  if (size > 0) store_member(block, size);
+}
+
+size_t LocalBufferManager::compress_member(GzipCompression& compressor,
+                                           char* block, size_t size) {
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(COMPRESSION));
+  return compressor.compress(block, size);
+}
+
+void LocalBufferManager::store_member(const char* member, size_t size) {
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(STORE));
+  std::lock_guard<std::mutex> write_lock(write_mtx);
+  this->writer->write(member, size, true);
 }
 
 LocalBufferManager::ThreadBuffer* LocalBufferManager::thread_buffer() {
@@ -244,8 +253,6 @@ void LocalBufferManager::discard_thread_buffers() {
   {
     std::lock_guard<std::mutex> lock(queue_mtx);
     queue.clear();
-    busy -= deferred.size();
-    deferred.clear();
   }
   for (char* block : blocks) give_block(block);
 }
@@ -260,18 +267,6 @@ char* LocalBufferManager::take_block() {
     }
   }
   return static_cast<char*>(malloc(chunk_size + kBlockSlack));
-}
-
-void LocalBufferManager::prefault_block() {
-  const size_t size = chunk_size + kBlockSlack;
-  char* block = static_cast<char*>(malloc(size));
-  if (block == nullptr) return;
-  // Not sysconf(): it is intercepted and would be traced. A step at or below
-  // the page size touches every page.
-  constexpr size_t kPage = 4096;
-  for (size_t at = 0; at < size; at += kPage)
-    reinterpret_cast<volatile char*>(block)[at] = 0;
-  give_block(block);
 }
 
 void LocalBufferManager::give_block(char* block) {
@@ -291,41 +286,6 @@ void LocalBufferManager::reserve_block() {
 }
 
 void LocalBufferManager::submit(ThreadBuffer* tb) {
-  {
-    std::lock_guard<std::mutex> lock(queue_mtx);
-    if (!writer_stop && max_deferred > 0 && getpid() == writer_pid) {
-      deferred.push_back(tb);
-      if (deferred.size() <= max_deferred) {
-        // The block the thread takes next was never touched; fault it in on
-        // the writer thread, which is idle while blocks are deferred.
-        if (!writer_started && is_ready()) start_writer_locked();
-        if (writer_started) {
-          queue.push_back(nullptr);
-          queue_cv.notify_one();
-        }
-        return;
-      }
-      tb = deferred.front();
-      deferred.pop_front();
-    }
-  }
-  submit_now(tb);
-}
-
-void LocalBufferManager::release_deferred() {
-  for (;;) {
-    ThreadBuffer* tb;
-    {
-      std::lock_guard<std::mutex> lock(queue_mtx);
-      if (deferred.empty()) return;
-      tb = deferred.front();
-      deferred.pop_front();
-    }
-    submit_now(tb);
-  }
-}
-
-void LocalBufferManager::submit_now(ThreadBuffer* tb) {
   {
     std::lock_guard<std::mutex> lock(queue_mtx);
     if (writer_stop) {
@@ -364,24 +324,34 @@ void LocalBufferManager::render_and_store(GzipCompression& compressor,
     in = tb.pending.front();
     tb.pending.pop_front();
   }
-  // JSON lines into a block of their own, written each time it fills.
+  auto flush = [this, &compressor](char*& data, size_t size) {
+    compress_and_store(compressor, data, size);
+  };
+  render_block(tb, tb.decoder, in, flush);
+}
+
+template <class Flush>
+void LocalBufferManager::render_block(ThreadBuffer& tb,
+                                      compact::Decoder& decoder, Block in,
+                                      Flush& flush) {
+  // JSON lines into a block of their own, flushed each time it fills.
   struct Lines : Aggregator::RowSink {
-    Lines(LocalBufferManager& m, GzipCompression& c)
-        : self(m), compressor(c), data(m.take_block()) {}
+    Lines(LocalBufferManager& m, Flush& f)
+        : self(m), flush_block(f), data(m.take_block()) {}
     char* row() override { return data + pos; }
     void wrote(size_t size) override {
       pos += size;
       if (pos > self.chunk_size) flush();
     }
     void flush() {
-      if (pos > 0) self.compress_and_store(compressor, data, pos);
+      if (pos > 0) flush_block(data, pos);
       pos = 0;
     }
     LocalBufferManager& self;
-    GzipCompression& compressor;
+    Flush& flush_block;
     char* data;
     size_t pos = 0;
-  } out(*this, compressor);
+  } out(*this, flush);
   if (out.data == nullptr) {
     give_block(in.data);
     return;
@@ -391,7 +361,8 @@ void LocalBufferManager::render_and_store(GzipCompression& compressor,
   const bool selective = this->config->aggregation_type ==
                          AggregationType::AGGREGATION_TYPE_SELECTIVE;
   ipc::DecodedEvent event;
-  tb.decoder.reset();
+  decoder.reset();
+  tb.lines.reset();
   for (size_t at = 0; at + kRecordHead <= in.size;) {
     uint16_t size;
     std::memcpy(&size, in.data + at, sizeof(size));
@@ -404,7 +375,7 @@ void LocalBufferManager::render_and_store(GzipCompression& compressor,
       continue;
     }
     const auto* bytes = reinterpret_cast<const uint8_t*>(payload);
-    if (kind == RecordKind::COMPACT ? !tb.decoder.event(bytes, size, event)
+    if (kind == RecordKind::COMPACT ? !decoder.event(bytes, size, event)
                                     : !ipc::decode_event(bytes, size, event))
       continue;
     if (aggregate && (event.head.flags & SHM_EVENT_NO_AGGREGATE) == 0 &&
@@ -419,7 +390,9 @@ void LocalBufferManager::render_and_store(GzipCompression& compressor,
         continue;
       }
     }
-    out.wrote(this->serializer->data(out.row(), event));
+    const size_t shape =
+        kind == RecordKind::COMPACT ? decoder.shape() : ShapeLines::kNoShape;
+    out.wrote(this->serializer->data(out.row(), event, tb.lines, shape));
   }
   out.flush();
   give_block(out.data);
@@ -488,17 +461,13 @@ void LocalBufferManager::run_writer() {
     queue.pop_front();
     ++busy;
     lock.unlock();
-    if (tb != nullptr)
-      render_and_store(own, *tb);
-    else
-      prefault_block();
+    render_and_store(own, *tb);
     lock.lock();
     if (--busy == 0 && queue.empty()) idle_cv.notify_all();
   }
 }
 
 void LocalBufferManager::drain_writer(bool stop) {
-  release_deferred();
   std::unique_lock<std::mutex> lock(queue_mtx);
   idle_cv.wait(lock, [this] { return queue.empty() && busy == 0; });
   if (!stop) return;
@@ -583,8 +552,6 @@ int LocalBufferManager::initialize(const char* filename,
   chunk_size = std::min(this->config->write_buffer_size, kMaxThreadChunk);
   {
     std::lock_guard<std::mutex> lock(queue_mtx);
-    max_deferred =
-        chunk_size == 0 ? 0 : this->config->defer_buffer_size / chunk_size;
     writer_stop = false;
     writer_pid = getpid();
   }
@@ -689,6 +656,30 @@ void LocalBufferManager::log_data_event(
                             category, type, start_time, duration, args,
                             process_id, tid, flags);
   });
+}
+
+bool LocalBufferManager::log_site_event(const dftracer::SiteEvent& e) {
+  const dftracer::SiteInfo& info = *e.info;
+  if (!is_ready() || info.bound > DFTRACER_SERIALIZATION_EVENT_MAX)
+    return false;
+  // Counted only for an event logged here: a miss is counted by the
+  // log_data_event() that follows.
+  DFTRACER_PROFILE_BEGIN(buffer_frame);
+  const uint8_t flags =
+      static_cast<uint8_t>(event_flags(info.type) | SHM_EVENT_HAS_METADATA);
+  bool logged = false;
+  append(RecordKind::COMPACT, [&](char* out, ThreadBuffer& tb) -> size_t {
+    const size_t n =
+        tb.encoder.site_event(reinterpret_cast<uint8_t*>(out), e, flags);
+    logged = n != 0;
+    return n;
+  });
+  if (logged) {
+    DFTRACER_PROFILE_END(buffer_frame, DFTRACER_PROFILE_PHASE(BUFFER), true);
+  } else {
+    DFTRACER_PROFILE_END(buffer_frame, DFTRACER_PROFILE_PHASE(BUFFER), false);
+  }
+  return logged;
 }
 
 void LocalBufferManager::log_counter_event(

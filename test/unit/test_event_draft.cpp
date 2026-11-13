@@ -20,10 +20,21 @@ struct Arg {
   std::string value;
 };
 
+struct Bytes {
+  std::vector<uint8_t> out;
+  void put_bytes(const void* data, size_t n) {
+    const auto* p = static_cast<const uint8_t*>(data);
+    out.insert(out.end(), p, p + n);
+  }
+};
+
 std::vector<Arg> args_of(const EventDraft& d) {
   std::vector<Arg> out;
-  const uint8_t* p = d.data();
-  const uint8_t* end = p + d.size();
+  Bytes bytes;
+  d.write_wire(bytes);
+  DFT_CHECK(bytes.out.size() == d.size());
+  const uint8_t* p = bytes.out.data();
+  const uint8_t* end = p + bytes.out.size();
   while (p < end) {
     uint16_t key_len;
     std::memcpy(&key_len, p + 2, sizeof(key_len));

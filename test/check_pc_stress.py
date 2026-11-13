@@ -47,6 +47,16 @@ def main():
             errors.append(f"{what}: got {got}, want {want}")
 
     expect("unparsable lines", bad, 0)
+    # Each thread's events reach the file in the order it made them.
+    last_id, unordered = {}, 0
+    for e in events:
+        i, t = e.get("id"), (e.get("pid"), e.get("tid"))
+        if i is None:
+            continue
+        if t in last_id and i <= last_id[t]:
+            unordered += 1
+        last_id[t] = i
+    expect("events out of order within a thread", unordered, 0)
     # One FH record per path, however often it is hashed.
     dup = [p for p, n in collections.Counter(fh_paths).items() if n > 1]
     expect("paths with more than one FH record", dup, [])

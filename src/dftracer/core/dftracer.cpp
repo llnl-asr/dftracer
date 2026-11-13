@@ -243,8 +243,9 @@ void DFTracer::finalize() {
       TimeResolution end_time = dftracer_core->get_time();
       dftracer::DraftScope draft(metadata != nullptr);
       if (metadata != nullptr) draft.get()->set_all(*metadata);
-      dftracer_core->log(name, cat, type, start_time, end_time - start_time,
-                         draft.get());
+      const TimeResolution duration =
+          end_time > start_time ? end_time - start_time : 0;
+      dftracer_core->log(name, cat, type, start_time, duration, draft.get());
     } else if (event_type == DF_METADATA_EVENT) {
       // With fields, a record named after the region; without, the
       // key/value pair (name, cat).

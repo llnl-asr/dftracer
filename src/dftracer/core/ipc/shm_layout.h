@@ -111,8 +111,13 @@ class RingView {
            ~(DFT_SHM_CACHE_LINE - 1);
   }
 
-  static size_t data_offset(uint32_t block_count) {
+  static size_t spill_offset(uint32_t block_count) {
     size_t end = control_offset() + sizeof(BlockControl) * block_count;
+    return (end + DFT_SHM_CACHE_LINE - 1) & ~(DFT_SHM_CACHE_LINE - 1);
+  }
+
+  static size_t data_offset(uint32_t block_count) {
+    size_t end = spill_offset(block_count) + sizeof(SpillRegistry);
     return (end + DFT_SHM_DATA_ALIGN - 1) & ~(DFT_SHM_DATA_ALIGN - 1);
   }
 
@@ -138,13 +143,14 @@ class RingView {
   }
 
   /**
-   * Initialize a freshly created segment (service side only). Every block is
-   * armed for its first lap (epoch 1), `head` and `tail` start at 0, and the
+   * Initialize a freshly created segment (service side only). The first
+   * `armed_blocks` blocks are armed for their first lap (epoch 1); the rest
+   * read as full until arm_first_lap(). `head` and `tail` start at 0, and the
    * state is left at INITIALIZING; the caller flips it to ACCEPTING once it
    * is ready to drain.
    */
-  static RingView format(void* base, uint32_t block_count,
-                         uint32_t block_size) {
+  static RingView format(void* base, uint32_t block_count, uint32_t block_size,
+                         uint32_t armed_blocks = UINT32_MAX) {
     auto* header = static_cast<SegmentHeader*>(base);
     std::memset(base, 0, data_offset(block_count));
     header->magic = DFT_SHM_SEGMENT_MAGIC;
@@ -159,7 +165,8 @@ class RingView {
     header->spilled.store(0, std::memory_order_relaxed);
     RingView view(base);
     for (uint32_t i = 0; i < block_count; ++i) {
-      view.blocks_[i].armed.store(view.epoch(i), std::memory_order_relaxed);
+      view.blocks_[i].armed.store(i < armed_blocks ? view.epoch(i) : 0,
+                                  std::memory_order_relaxed);
       view.blocks_[i].claim_ns.store(0, std::memory_order_relaxed);
       view.blocks_[i].owner_pid.store(0, std::memory_order_relaxed);
       view.blocks_[i].owner_tid.store(0, std::memory_order_relaxed);
@@ -174,6 +181,8 @@ class RingView {
       : header_(static_cast<SegmentHeader*>(base)),
         blocks_(reinterpret_cast<BlockControl*>(static_cast<uint8_t*>(base) +
                                                 control_offset())),
+        spills_(reinterpret_cast<SpillRegistry*>(
+            static_cast<uint8_t*>(base) + spill_offset(header_->block_count))),
         data_(static_cast<uint8_t*>(base) + data_offset(header_->block_count)),
         block_count_(header_->block_count),
         block_size_(header_->block_size),
@@ -197,10 +206,42 @@ class RingView {
   uint32_t epoch(uint64_t seq) const {
     return static_cast<uint32_t>(seq >> block_shift_) + 1;
   }
+  /** Lets producers claim block `index` (below block_count) in lap one. */
+  void arm_first_lap(uint32_t index) const {
+    blocks_[index].armed.store(1, std::memory_order_release);
+  }
+
+  /**
+   * Tells the service about spill file `path`. False if the path is too long
+   * or every slot is taken; the HELLO record is then the only announcement.
+   */
+  bool announce_spill(const char* path, size_t length) const {
+    if (length == 0 || length >= DFT_SHM_SPILL_PATH) return false;
+    const uint32_t i = spills_->next.fetch_add(1, std::memory_order_relaxed);
+    if (i >= DFT_SHM_SPILL_SLOTS) return false;
+    SpillSlot& slot = spills_->slots[i];
+    std::memcpy(slot.path, path, length);
+    slot.path[length] = '\0';
+    slot.length.store(static_cast<uint32_t>(length), std::memory_order_release);
+    return true;
+  }
+
+  /** Calls f(path, length) for every spill file announced so far. */
+  template <typename F>
+  void for_each_spill(F&& f) const {
+    uint32_t n = spills_->next.load(std::memory_order_acquire);
+    if (n > DFT_SHM_SPILL_SLOTS) n = DFT_SHM_SPILL_SLOTS;
+    for (uint32_t i = 0; i < n; ++i) {
+      const SpillSlot& slot = spills_->slots[i];
+      const uint32_t length = slot.length.load(std::memory_order_acquire);
+      if (length != 0) f(slot.path, length);
+    }
+  }
 
  private:
   SegmentHeader* header_ = nullptr;
   BlockControl* blocks_ = nullptr;
+  SpillRegistry* spills_ = nullptr;
   uint8_t* data_ = nullptr;
   uint32_t block_count_ = 0;
   uint32_t block_size_ = 0;

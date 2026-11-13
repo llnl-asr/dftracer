@@ -292,6 +292,9 @@ enum ShmRecordKind : uint16_t {
   SHM_KIND_METADATA = 6,
   SHM_KIND_RECORD = 7,
   SHM_KIND_GOODBYE = 8,
+  // One DATA event in the compact form of core/buffer/compact_event.h. It
+  // decodes only after the COMPACT records before it in its block.
+  SHM_KIND_COMPACT = 9,
   // Opaque payload, used by tests and benchmarks of the ring itself.
   SHM_KIND_RAW = 0x7fff
 };

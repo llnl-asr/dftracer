@@ -842,6 +842,21 @@ struct alignas(DFT_SHM_CACHE_LINE) SegmentHeader {
 };
 
 /**
+ * Spill files of this segment's producers. A producer announces its file here
+ * and not only in its HELLO record, because a producer that starts while the
+ * ring is full never gets a record into the ring. `length` is stored last.
+ */
+struct SpillSlot {
+  std::atomic<uint32_t> length;
+  char path[DFT_SHM_SPILL_PATH];
+};
+struct alignas(DFT_SHM_CACHE_LINE) SpillRegistry {
+  // Slots handed out so far; may pass DFT_SHM_SPILL_SLOTS.
+  std::atomic<uint32_t> next;
+  SpillSlot slots[DFT_SHM_SPILL_SLOTS];
+};
+
+/**
  * Per-block control, cache-line aligned so the consumer releasing block k does
  * not slow down producers claiming block k+1.
  *
@@ -1052,12 +1067,28 @@ class Interner {
 };
 }  // namespace ipc
 
+namespace compact {
+class Encoder;
+}
+
 struct alignas(DFT_SHM_CACHE_LINE) ServiceSlot {
   std::atomic<uint32_t> state{SHM_SLOT_IDLE};  // ShmSlotState
+  // With membarrier: the slot's thread sets `busy` while it logs and another
+  // thread sets `claim` to use the slot (see ServiceBufferManager::enter).
+  std::atomic<uint32_t> busy{0};
+  std::atomic<uint32_t> claim{0};
+  uint64_t spill_until_ns = 0;  // skip the ring until then: it was full
+  uint32_t alive_skip = 0;      // events left before the next liveness check
+  uint64_t alive_at = 0;        // event time of the last liveness check
   uint64_t generation = 0;
+  bool orphan = false;  // for threads past exit, held with orphan_mtx_
+  ThreadID tid = 0;     // of the thread that made it
   std::unique_ptr<ipc::RingProducer> producer;
   std::vector<uint8_t> scratch;
   ipc::Interner intern;  // strings already in the producer's block
+  // SHM_KIND_COMPACT records; starts over with each block the producer fills.
+  std::unique_ptr<compact::Encoder> encoder;
+  uint64_t encoder_block = ~0ULL;
   // Written only by the slot's thread (load + store, no read-modify-write),
   // so counting costs nothing shared; read by pushed(). Drops are rare and
   // counted per process (ServiceBufferManager::count_drop).
