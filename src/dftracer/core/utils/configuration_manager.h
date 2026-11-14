@@ -65,7 +65,6 @@ class ConfigurationManager {
   bool bind_signals;
   bool throw_error;
   size_t write_buffer_size;
-  size_t defer_buffer_size;
   size_t trace_interval_ms;
   bool trace_interval_explicit;
   // Events shorter than this many ns are not traced (DFTLogger::log); 0
@@ -103,7 +102,6 @@ class ConfigurationManager {
   // writes out a partial chunk; gzip level of the node trace.
   uint32_t pc_flush_ms;
   // How long published blocks may wait in the ring (0: drain at once).
-  uint32_t pc_hold_ms;
   int pc_compression_level;
   // Compressed MiB after which the node trace rolls over to a new file
   // (fractions allowed; 0: never).

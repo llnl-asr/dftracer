@@ -308,8 +308,6 @@ endif()
 dftracer_install_external_project(pybind11 2.12.0 "pybind11" https://github.com/pybind/pybind11.git v2.12.0 ${CMAKE_INSTALL_PREFIX} "-DPYBIND11_TEST=OFF")
 
 dftracer_install_external_project(libuv 1.52.1 "libuv" https://github.com/libuv/libuv.git v1.52.1 ${CMAKE_INSTALL_PREFIX} "-DLIBUV_BUILD_TESTS=OFF")
-# libdeflate compresses the gzip members of every trace.
-dftracer_install_external_project(libdeflate 1.9 "libdeflate" https://github.com/ebiggers/libdeflate.git v1.24 ${CMAKE_INSTALL_PREFIX} "-DLIBDEFLATE_BUILD_STATIC_LIB=OFF;-DLIBDEFLATE_BUILD_GZIP=OFF;-DLIBDEFLATE_BUILD_TESTS=OFF;-DCMAKE_INSTALL_LIBDIR=lib64")
 
 # Boost: only headers are needed (Boost.Interprocess maps the shared-memory
 # event ring between traced processes and dftracer_service), so the release

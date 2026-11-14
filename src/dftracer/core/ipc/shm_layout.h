@@ -138,13 +138,14 @@ class RingView {
   }
 
   /**
-   * Initialize a freshly created segment (service side only). Every block is
-   * armed for its first lap (epoch 1), `head` and `tail` start at 0, and the
+   * Initialize a freshly created segment (service side only). The first
+   * `armed_blocks` blocks are armed for their first lap (epoch 1); the rest
+   * read as full until arm_first_lap(). `head` and `tail` start at 0, and the
    * state is left at INITIALIZING; the caller flips it to ACCEPTING once it
    * is ready to drain.
    */
-  static RingView format(void* base, uint32_t block_count,
-                         uint32_t block_size) {
+  static RingView format(void* base, uint32_t block_count, uint32_t block_size,
+                         uint32_t armed_blocks = UINT32_MAX) {
     auto* header = static_cast<SegmentHeader*>(base);
     std::memset(base, 0, data_offset(block_count));
     header->magic = DFT_SHM_SEGMENT_MAGIC;
@@ -159,7 +160,8 @@ class RingView {
     header->spilled.store(0, std::memory_order_relaxed);
     RingView view(base);
     for (uint32_t i = 0; i < block_count; ++i) {
-      view.blocks_[i].armed.store(view.epoch(i), std::memory_order_relaxed);
+      view.blocks_[i].armed.store(i < armed_blocks ? view.epoch(i) : 0,
+                                  std::memory_order_relaxed);
       view.blocks_[i].claim_ns.store(0, std::memory_order_relaxed);
       view.blocks_[i].owner_pid.store(0, std::memory_order_relaxed);
       view.blocks_[i].owner_tid.store(0, std::memory_order_relaxed);
@@ -196,6 +198,10 @@ class RingView {
    */
   uint32_t epoch(uint64_t seq) const {
     return static_cast<uint32_t>(seq >> block_shift_) + 1;
+  }
+  /** Lets producers claim block `index` (below block_count) in lap one. */
+  void arm_first_lap(uint32_t index) const {
+    blocks_[index].armed.store(1, std::memory_order_release);
   }
 
  private:

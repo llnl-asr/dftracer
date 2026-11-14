@@ -155,6 +155,75 @@ class EventDraft {
       StaticKey key, V&& value, MetadataType type = MetadataType::MT_KEY) {
     write(key.name, false, std::forward<V>(value), type);
   }
+  /**
+   * The entry set(key, value, type) would add, for an arg of a fused
+   * interceptor (DFT_FAST_END). A string value is borrowed, not copied.
+   */
+  template <typename V>
+  __attribute__((always_inline)) static Entry entry(StaticKey key,
+                                                    const V& value,
+                                                    MetadataType type) {
+    using D = std::decay_t<V>;
+    Entry e;
+    e.key = key.name.data();
+    e.value_len = 0;
+    ShmValueTag tag;
+    if constexpr (std::is_same_v<D, std::string_view>) {
+      tag = SHM_VALUE_STRING;
+      e.str = value.data();
+      e.value_len = static_cast<uint32_t>(value.size());
+    } else if constexpr (std::is_enum_v<D>) {
+      return entry(key, static_cast<std::underlying_type_t<D>>(value), type);
+    } else {
+      static_assert(std::is_arithmetic_v<D>,
+                    "a fused arg is a number or a "
+                    "string_view");
+      if constexpr (std::is_floating_point_v<D>) {
+        tag = SHM_VALUE_DOUBLE;
+        const double d = static_cast<double>(value);
+        std::memcpy(&e.bits, &d, 8);
+      } else if constexpr (std::is_signed_v<D>) {
+        tag = SHM_VALUE_INT;
+        e.bits = static_cast<uint64_t>(static_cast<int64_t>(value));
+      } else {
+        tag = SHM_VALUE_UINT;
+        e.bits = static_cast<uint64_t>(value);
+      }
+    }
+    e.head = head_of(tag, type, static_cast<uint16_t>(key.name.size()));
+    return e;
+  }
+  /** entry() of a number, the only kind of arg DFT_ARG takes. */
+  template <typename V>
+  __attribute__((always_inline)) static Entry number(StaticKey key,
+                                                     const V& value,
+                                                     MetadataType type) {
+    static_assert(std::is_arithmetic_v<std::decay_t<V>> ||
+                      std::is_enum_v<std::decay_t<V>>,
+                  "DFT_ARG takes a number");
+    return entry(key, value, type);
+  }
+  /** Adds `e` from entry() as set() of its StaticKey would. */
+  void append(const Entry& e) {
+    seen_ |= key_bit(e.key_view());
+    if (e.is_string()) {
+      put_string(e.key_view(), false, e.tag(), e.mtype(), e.str, e.value_len);
+    } else {
+      Entry* n = add(e.key_view(), false, e.tag(), e.mtype(), 8, 0);
+      if (n != nullptr) n->bits = e.bits;
+    }
+  }
+  /** sig() after an entry `e` is added to a draft whose sig() is `sig`. */
+  __attribute__((always_inline)) static uint64_t mix(uint64_t sig,
+                                                     const Entry& e) {
+    return ((sig + reinterpret_cast<uintptr_t>(e.key)) *
+            0x9e3779b97f4a7c15ull) ^
+           e.head;
+  }
+  /** Bytes write_wire() writes for `e`. */
+  static size_t wire_size(const Entry& e) {
+    return 4 + e.key_len() + (e.is_string() ? 4 + e.value_len : 8);
+  }
   /** Every entry of `metadata`, in its order. */
   void set_all(const Metadata& metadata) {
     for (const auto& entry : metadata)
@@ -212,8 +281,11 @@ class EventDraft {
     return uint64_t{1} << (h & 63);
   }
 
-  static size_t wire_size(const Entry& e) {
-    return 4 + e.key_len() + (e.is_string() ? 4 + e.value_len : 8);
+  static uint32_t head_of(ShmValueTag tag, MetadataType type,
+                          uint16_t key_len) {
+    return static_cast<uint32_t>(tag) |
+           (static_cast<uint32_t>(static_cast<uint8_t>(type)) << 8) |
+           (static_cast<uint32_t>(key_len) << 16);
   }
 
   // Drops the entry of `key`; returns its position, so a replacement keeps
@@ -252,9 +324,7 @@ class EventDraft {
         !make_room(wire, copy_bytes))
       return nullptr;
     Entry& e = entries_[count_++];
-    e.head = static_cast<uint32_t>(tag) |
-             (static_cast<uint32_t>(static_cast<uint8_t>(type)) << 8) |
-             (static_cast<uint32_t>(key_len) << 16);
+    e.head = head_of(tag, type, key_len);
     e.value_len = 0;
     if (copy_key) {
       char* at = arena_ + used_;
@@ -264,9 +334,7 @@ class EventDraft {
     } else {
       e.key = key.data();
     }
-    sig_ =
-        ((sig_ + reinterpret_cast<uintptr_t>(e.key)) * 0x9e3779b97f4a7c15ull) ^
-        e.head;
+    sig_ = mix(sig_, e);
     size_ += wire;
     return &e;
   }
@@ -373,6 +441,49 @@ class EventDraft {
   uint64_t sig_ = 0;
   bool shaped_ = true;
   const void* site_ = nullptr;
+};
+
+/**
+ * What one fused call site (DFT_FAST_END) logs every time: its event's name,
+ * category and type, and the site, sig(), size() and count() of a draft
+ * that holds its args. Built once per site.
+ */
+struct SiteInfo {
+  const void* site;
+  std::string_view event_name;
+  std::string_view category;
+  TraceEventType type;
+  uint64_t sig;
+  size_t args_size;
+  uint16_t count;
+
+  template <size_t N>
+  static SiteInfo of(const void* site, std::string_view event_name,
+                     std::string_view category, TraceEventType type,
+                     const EventDraft::Entry (&args)[N]) {
+    static_assert(N <= EventDraft::kShapeKeys);
+    SiteInfo info{
+        site, event_name, category, type, 0, 0, static_cast<uint16_t>(N)};
+    for (const EventDraft::Entry& e : args) {
+      info.sig = EventDraft::mix(info.sig, e);
+      info.args_size += EventDraft::wire_size(e);
+    }
+    return info;
+  }
+};
+
+/**
+ * One event of a fused call site: what BufferManager::log_data_event()
+ * takes, with its args as the info->count entries at `args`.
+ */
+struct SiteEvent {
+  const SiteInfo* info;
+  int index;
+  TimeResolution start_time;
+  TimeResolution duration;
+  const EventDraft::Entry* args;
+  ProcessID process_id;
+  ThreadID tid;
 };
 
 /**

@@ -548,6 +548,38 @@ class DFTLogger {
               start_time, duration, args);
   }
 
+  // log() of a fused interceptor (DFT_FAST_END) with the `info->count`
+  // entries at `args`. The buffer takes them as they are once the site's
+  // shape is in its block; only otherwise is an EventDraft built.
+  inline void log_site(const dftracer::SiteInfo& info,
+                       TimeResolution start_time, TimeResolution duration,
+                       const dftracer::EventDraft::Entry* args) {
+    if (too_short(info.type, duration)) return;
+    const ThreadID tid = dftracer_tid ? df_gettid() : 0;
+    emit(tid, info.type, [&](int index) {
+      const dftracer::SiteEvent e{
+          &info, index, start_time, duration, args, this->process_id, tid};
+      if (include_metadata && this->buffer_manager->log_site_event(e)) return;
+      log_site_draft(e);
+    });
+  }
+
+  __attribute__((noinline)) void log_site_draft(const dftracer::SiteEvent& e) {
+    const dftracer::SiteInfo& info = *e.info;
+    if (!include_metadata) {
+      this->buffer_manager->log_data_event(
+          e.index, info.event_name, info.category, info.type, e.start_time,
+          e.duration, nullptr, e.process_id, e.tid);
+      return;
+    }
+    dftracer::EventDraft draft;
+    draft.set_site(info.site);
+    for (uint16_t i = 0; i < info.count; ++i) draft.append(e.args[i]);
+    this->buffer_manager->log_data_event(
+        e.index, info.event_name, info.category, info.type, e.start_time,
+        e.duration, &draft, e.process_id, e.tid);
+  }
+
   // An event that ran on `thread`, such as a GPU API call reported later from
   // a profiler thread. Without thread ids, `thread` goes in the args.
   inline void log_on(ThreadID thread, std::string_view event_name,
@@ -881,6 +913,42 @@ class DFTLogger {
     DFTRACER_PROFILE_END(dft_profile_end,                                 \
                          DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), true);     \
   }
+// A fused interceptor: no EventDraft while the real call runs. Its args,
+// each DFT_ARG(name, MetadataType), go to DFT_FAST_END after the call, in the
+// order DFT_LOGGER_UPDATE_TYPE would set them, after the fhash. The args are
+// numbers and the fhash has a fixed length, so the site's SiteInfo is built
+// once.
+#define DFT_FAST_START(entity)                               \
+  DFTRACER_PROFILE_BEGIN(dft_profile_start);                 \
+  HashType fhash = is_traced(entity, __FUNCTION__);          \
+  bool trace = fhash != NO_HASH_DEFAULT;                     \
+  if (trace) {                                               \
+    DFTRACER_LOG_DEBUG("Calling function %s", __FUNCTION__); \
+  }                                                          \
+  TimeResolution start_time = 0;                             \
+  static char dft_site;                                      \
+  if (trace) start_time = this->logger->get_time();          \
+  DFTRACER_PROFILE_END_TRACED(dft_profile_start, trace,      \
+                              DFTRACER_PROFILE_CAPTURE(TRACE_TYPE))
+#define DFT_ARG(value, type) \
+  dftracer::EventDraft::number(dftracer::StaticKey{#value}, value, type)
+#define DFT_FAST_END(...)                                                 \
+  if (trace) {                                                            \
+    DFTRACER_PROFILE_BEGIN(dft_profile_end);                              \
+    TimeResolution end_time = this->logger->get_time();                   \
+    const dftracer::EventDraft::Entry dft_args[] = {                      \
+        dftracer::EventDraft::entry(dftracer::StaticKey{"fhash"},         \
+                                    std::string_view(fhash, HASH_OUTPUT), \
+                                    MetadataType::MT_KEY),                \
+        __VA_ARGS__};                                                     \
+    static const dftracer::SiteInfo dft_info = dftracer::SiteInfo::of(    \
+        &dft_site, __FUNCTION__, CATEGORY, TRACE_TYPE, dft_args);         \
+    this->logger->log_site(dft_info, start_time, end_time - start_time,   \
+                           dft_args);                                     \
+    DFTRACER_PROFILE_END(dft_profile_end,                                 \
+                         DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), true);     \
+  }
+
 // A name other than __FUNCTION__ is not fixed by the site.
 #define DFT_LOGGER_END_AS(name) DFT_LOGGER_LOG_END(name, false)
 #define DFT_LOGGER_END() DFT_LOGGER_LOG_END(__FUNCTION__, true)

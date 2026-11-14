@@ -80,6 +80,7 @@ class LocalBufferManager : public BufferManager {
                       TimeResolution start_time, TimeResolution duration,
                       const dftracer::EventDraft* args, ProcessID process_id,
                       ThreadID tid) override;
+  bool log_site_event(const dftracer::SiteEvent& e) override;
 
   // Metadata record whose args are the fields (see JsonLines::record).
   void log_record(ConstEventNameType record_name,
@@ -127,6 +128,7 @@ class LocalBufferManager : public BufferManager {
     compact::Encoder encoder;   // mtx; starts over with each block
     std::mutex render_mtx;
     compact::Decoder decoder;                          // render_mtx
+    ShapeLines lines;                                  // render_mtx
     std::unique_ptr<dftracer::Aggregator> aggregator;  // render_mtx
   };
   /** At thread exit: queues what `tb` holds and frees it for a new thread.
@@ -179,26 +181,13 @@ class LocalBufferManager : public BufferManager {
   // Drops what the thread buffers and the queue hold and starts a new epoch.
   void discard_thread_buffers();
   char* take_block();
-  // Writer thread: adds a block with its pages faulted in to the free list.
-  void prefault_block();
   void give_block(char* block);
   // Counts a block as in flight, before it leaves the lock that guards it, so
   // drain_writer() waits for it. Every reserve_block() is followed by submit().
   void reserve_block();
-  // Holds the pending block of `tb` in `deferred` while it has room; past
-  // that the oldest goes to submit_now().
-  void submit(ThreadBuffer* tb);
   // Queues the pending block of `tb` for the writer thread, or renders it on
   // the calling thread when the writer is behind.
-  void submit_now(ThreadBuffer* tb);
-  // Hands every deferred block to submit_now().
-  void release_deferred();
-  // At finalize with no aggregation: renders the deferred blocks on several
-  // threads and writes them in their order, since the work held back during
-  // the run would otherwise run on one core. With aggregation a thread's
-  // events must be folded in order, and the trace it writes is small. False
-  // when it does not apply.
-  bool release_deferred_parallel();
+  void submit(ThreadBuffer* tb);
   void write_inline(ThreadBuffer* tb);
   // Waits until every submitted block is written; with `stop`, ends the
   // writer thread too.
@@ -227,14 +216,8 @@ class LocalBufferManager : public BufferManager {
   std::mutex queue_mtx;
   std::condition_variable queue_cv;
   std::condition_variable idle_cv;
-  // The writer's jobs: render the next pending block of a thread, or (null)
-  // prefault a block for the free list.
+  // The writer's jobs: the threads whose next pending block it renders.
   std::deque<ThreadBuffer*> queue;
-  // Pending blocks not yet handed to the writer, so their compression runs at
-  // a flush, at exit or when the limit is reached, not beside the
-  // application. Each one is still counted in `busy`.
-  std::deque<ThreadBuffer*> deferred;  // queue_mtx
-  size_t max_deferred = 0;
   size_t busy = 0;  // reserved, or being rendered and written
   // The writer thread's compressor. A member, not a local of the thread, so a
   // fork child (where the thread is gone) can still free it.

@@ -2,6 +2,7 @@
 #define DFTRACER_BUFFER_MANAGER_H
 #include <dftracer/core/common/cpp_typedefs.h>
 #include <dftracer/core/common/enumeration.h>
+#include <dftracer/core/common/event_draft.h>
 #include <dftracer/core/common/typedef.h>
 
 #include <atomic>
@@ -9,7 +10,6 @@
 #include <string>
 #include <string_view>
 namespace dftracer {
-class EventDraft;
 /**
  * Where a process's events go. Two implementations, chosen once per process
  * by BufferManagerFactory:
@@ -88,6 +88,13 @@ class BufferManager {
                               TimeResolution duration,
                               const dftracer::EventDraft* args,
                               ProcessID process_id, ThreadID tid) = 0;
+
+  /**
+   * log_data_event() of `e`. False, with nothing logged, when the manager
+   * needs the EventDraft: the caller then calls log_data_event() with the
+   * same index.
+   */
+  virtual bool log_site_event(const SiteEvent& /*e*/) { return false; }
 
   // Metadata record whose args are the fields (see JsonLines::record). Does
   // not take ownership of fields.

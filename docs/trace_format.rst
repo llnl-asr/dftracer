@@ -456,7 +456,7 @@ readability; on disk it is a single line):
           "time_metric": "US", "io": 1, "posix": 1, "stdio": 1,
           "compression": 1, "trace_all_files": 0, "tids": 1,
           "bind_signals": 0, "write_buffer_size": 16777216,
-          "defer_buffer_size": 67108864, "trace_interval_ms": 1000, "min_duration_ns": 0,
+          "trace_interval_ms": 1000, "min_duration_ns": 0,
           "libuv_thread_count": 1,
           "aggregation_enable": 0, "aggregation_type": "FULL",
           "bind": 1,

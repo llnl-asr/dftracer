@@ -51,10 +51,30 @@ struct Raw {
  * `s` as the inside of a JSON string: quote and backslash escaped, control
  * characters as \u00XX. Other bytes, UTF-8 too, are copied.
  */
+namespace detail {
+// Whether any of the 8 bytes of `x` is a quote, a backslash or below 0x20.
+// From the "determine if a word has a byte less than n" bit hacks (Sean
+// Eron Anderson, Bit Twiddling Hacks, public domain).
+inline bool needs_escape8(uint64_t x) {
+  constexpr uint64_t ones = 0x0101010101010101ull;
+  constexpr uint64_t high = 0x8080808080808080ull;
+  const uint64_t quote = x ^ (ones * '"');
+  const uint64_t slash = x ^ (ones * '\\');
+  return (((x - ones * 0x20) & ~x) | ((quote - ones) & ~quote) |
+          ((slash - ones) & ~slash)) &
+         high;
+}
+}  // namespace detail
+
 template <typename W>
 inline void escaped(W& w, std::string_view s) {
+  size_t i = 0;
+  for (uint64_t x; i + 8 <= s.size(); i += 8) {
+    std::memcpy(&x, s.data() + i, 8);
+    if (detail::needs_escape8(x)) break;
+  }
   size_t run = 0;
-  for (size_t i = 0; i < s.size(); ++i) {
+  for (; i < s.size(); ++i) {
     const unsigned char c = static_cast<unsigned char>(s[i]);
     if (c != '"' && c != '\\' && c >= 0x20) continue;
     if (i > run) w.raw(s.substr(run, i - run));
@@ -88,6 +108,31 @@ inline std::string quoted(std::string_view s) {
  * metadata_json writes an event's args into, so a line and its args go
  * straight into the trace buffer.
  */
+namespace detail {
+// Writes `v` in decimal so that it ends at `end`; returns where it starts.
+// Two digits per step from a table, after Andrei Alexandrescu, "Three
+// Optimization Tips for C++" (2012); no pass to count the digits first.
+inline char* decimal_back(char* end, uint64_t v) {
+  static constexpr char kPairs[] =
+      "00010203040506070809101112131415161718192021222324252627282930313233"
+      "34353637383940414243444546474849505152535455565758596061626364656667"
+      "6869707172737475767778798081828384858687888990919293949596979899";
+  while (v >= 100) {
+    const size_t i = static_cast<size_t>(v % 100) * 2;
+    v /= 100;
+    end -= 2;
+    std::memcpy(end, kPairs + i, 2);
+  }
+  if (v >= 10) {
+    end -= 2;
+    std::memcpy(end, kPairs + v * 2, 2);
+  } else {
+    *--end = static_cast<char>('0' + v);
+  }
+  return end;
+}
+}  // namespace detail
+
 class Line {
  public:
   explicit Line(char* out)
@@ -119,13 +164,18 @@ class Line {
   template <typename T>
   void number(T v) {
     // 20 digits and a sign hold any 64-bit integer.
-    if (static_cast<size_t>(end_ - p_) >= 24) {
-      p_ = std::to_chars(p_, end_, v).ptr;
-      return;
-    }
     char tmp[24];
-    auto r = std::to_chars(tmp, tmp + sizeof(tmp), v);
-    raw(std::string_view(tmp, static_cast<size_t>(r.ptr - tmp)));
+    char* const end = tmp + sizeof(tmp);
+    char* begin;
+    if constexpr (std::is_signed_v<T>) {
+      const uint64_t u =
+          v < 0 ? 0 - static_cast<uint64_t>(v) : static_cast<uint64_t>(v);
+      begin = detail::decimal_back(end, u);
+      if (v < 0) *--begin = '-';
+    } else {
+      begin = detail::decimal_back(end, static_cast<uint64_t>(v));
+    }
+    raw(std::string_view(begin, static_cast<size_t>(end - begin)));
   }
   bool cut() const { return cut_; }
   size_t size() const { return static_cast<size_t>(p_ - begin_); }

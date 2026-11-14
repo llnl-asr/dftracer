@@ -35,8 +35,11 @@ class LaneBuffer {
   void set_rank(int rank) { rank_ = rank; }
 
   /** A DATA (or, with `counter`, COUNTER) record, written or aggregated.
-   * `event` is only read. */
-  void log_packed_event(const ipc::DecodedEvent& event, bool counter);
+   * `event` is only read. A DATA line takes the text of `shape` from `lines`
+   * when it is given (JsonLines::data). */
+  void log_packed_event(const ipc::DecodedEvent& event, bool counter,
+                        ShapeLines* lines = nullptr,
+                        size_t shape = ShapeLines::kNoShape);
   void log_metadata_event(ConstEventNameType name, ConstEventNameType value,
                           ConstEventNameType record_name, TraceEventType type,
                           ProcessID process_id, ThreadID tid, bool is_string);

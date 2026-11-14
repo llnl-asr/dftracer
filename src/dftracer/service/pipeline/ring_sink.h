@@ -18,6 +18,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -54,12 +55,6 @@ namespace dftracer {
  *
  * Thread 0 also takes over blocks held unpublished for longer than
  * `flush_ns`, and finishes client processes that said GOODBYE or died.
- *
- * With `hold_ns`, published blocks wait in the ring and no thread drains
- * until they fill DFT_SHM_HOLD_RING_PERCENT of it, the oldest is `hold_ns`
- * old, or the service stops. A run that fits then pays for its JSON and gzip
- * after it ends, on every thread, not on cores the application needs; what
- * waits is in shared memory, so an application that crashes loses none of it.
  */
 class RingSink {
  public:
@@ -92,7 +87,8 @@ class RingSink {
                    block_size >> 10);
     }
     try {
-      region_ = ipc::ShmRegion::create(name, block_count, block_size);
+      region_ = ipc::ShmRegion::create(name, block_count, block_size,
+                                       ahead_blocks(block_size));
     } catch (const std::exception& error) {
       std::fprintf(stderr, "[DFTRACER] cannot create ring %s: %s\n",
                    name.c_str(), error.what());
@@ -122,9 +118,6 @@ class RingSink {
     tick_ns_ =
         static_cast<uint64_t>(options_.tick_ms == 0 ? 1 : options_.tick_ms) *
         1000000ULL;
-    hold_blocks_ = static_cast<uint64_t>(region_->ring().block_count()) *
-                   DFT_SHM_HOLD_RING_PERCENT / 100;
-    draining_.store(options_.hold_ns == 0, std::memory_order_relaxed);
     active_.store(scaler_->min_threads(), std::memory_order_relaxed);
     scaling_ = Scaling();
     scaling_.peak = scaler_->min_threads();
@@ -139,6 +132,8 @@ class RingSink {
     }
     for (uint32_t i = 0; i < threads; ++i)
       threads_.emplace_back([this, i]() { drain(i); });
+    if (region_->reserved_blocks() < region_->ring().block_count())
+      reserver_ = std::thread([this]() { reserve_ahead(); });
     header->state.store(SHM_SEGMENT_ACCEPTING, std::memory_order_release);
     return true;
   }
@@ -177,6 +172,7 @@ class RingSink {
       stop_.store(true, std::memory_order_release);
     }
     park_cv_.notify_all();
+    if (reserver_.joinable()) reserver_.join();
     for (auto& thread : threads_) thread.join();
     threads_.clear();
     // The drain threads ran below the application's priority, and a thread
@@ -356,6 +352,7 @@ class RingSink {
     // afresh.
     scratch_[id].intern.clear();
     scratch_[id].compact.reset();
+    scratch_[id].lines.reset();
     scratch_[id].compact_ok = true;
     if (clients_ == nullptr) {
       DrainScratch& s = scratch_[id];
@@ -422,7 +419,7 @@ class RingSink {
       }
       case SHM_KIND_COMPACT: {
         if (!decode_compact(s, payload, bytes)) return false;
-        buffer.log_packed_event(s.event, false);
+        buffer.log_packed_event(s.event, false, &s.lines, s.compact.shape());
         return true;
       }
       case SHM_KIND_METADATA: {
@@ -519,21 +516,12 @@ class RingSink {
     if (now < next_tick_ || stop_.load(std::memory_order_relaxed)) return;
     const bool first = next_tick_ == 0;
     next_tick_ = now + tick_ns_;
-    ipc::ParallelBlockClaimer::Oldest oldest;
-    const uint64_t ready = claimer_->ready_blocks(&oldest);
-    const bool holding = options_.hold_ns != 0;
-    const bool drain = !holding || ready > hold_blocks_ ||
-                       (oldest.claim_ns != 0 && now > oldest.claim_ns &&
-                        now - oldest.claim_ns > options_.hold_ns);
-    draining_.store(drain, std::memory_order_relaxed);
-    housekeeping(now, holding, oldest.seq);
+    housekeeping(now);
     const ipc::RingView& ring = region_->ring();
     ipc::ConsumerScaler::Sample sample{};
     sample.now_ns = now;
     sample.head = ring.header()->head.load(std::memory_order_acquire);
-    // Held blocks are not work to catch up on.
-    sample.ready =
-        holding && ready > hold_blocks_ ? ready - hold_blocks_ : ready;
+    sample.ready = claimer_->ready_blocks();
     for (size_t i = 0; i < per_thread_.size(); ++i) {
       sample.drained += load_[i].blocks.load(std::memory_order_relaxed);
       sample.busy_ns += load_[i].busy_ns.load(std::memory_order_relaxed);
@@ -548,13 +536,7 @@ class RingSink {
     scaling_.span_ns += now - last_sample_ns_;
     last_sample_ns_ = now;
     ++scaling_.ticks;
-    uint32_t want;
-    if (drain) {
-      want = scaler_->update(sample, active);
-    } else {
-      scaler_->reset(sample);
-      want = scaler_->min_threads();
-    }
+    const uint32_t want = scaler_->update(sample, active);
     if (want == active) return;
     if (want > active) {
       ++scaling_.ups;
@@ -576,29 +558,21 @@ class RingSink {
    * than flush_ns (a quiet producer thread, or a dead process), so they
    * neither delay its events nor stop producers on the next lap; and, once a
    * second, finish the client processes that are done.
-   *
-   * While blocks are held, a block taken over must come before every held
-   * one, or its producer's events would be written out of order; and a
-   * process with a block still in the ring is not finished yet.
    */
-  void housekeeping(uint64_t now, bool holding, uint64_t first_ready) {
+  void housekeeping(uint64_t now) {
     region_->ring().header()->heartbeat_ns.store(now,
                                                  std::memory_order_relaxed);
     if (now > options_.flush_ns) {
       uint64_t seq;
       uint32_t pid;
-      while (claimer_->take_over(seq, now - options_.flush_ns, pid,
-                                 holding ? first_ready : UINT64_MAX)) {
+      while (claimer_->take_over(seq, now - options_.flush_ns, pid)) {
         ++per_thread_[0].taken;
         process_block(0, seq, true);
       }
     }
     if (clients_ != nullptr && now >= next_reap_) {
       next_reap_ = now + 1000000000ULL;
-      std::vector<uint32_t> in_ring;
-      if (holding) claimer_->pending_pids(in_ring);
-      for (auto& process :
-           clients_->take_finished(now, 2 * options_.flush_ns, in_ring))
+      for (auto& process : clients_->take_finished(now, 2 * options_.flush_ns))
         finish(0, *process);
     }
   }
@@ -619,7 +593,7 @@ class RingSink {
     for (;;) {
       if (!wait_until_active(id)) break;
       uint64_t seq;
-      if (draining_.load(std::memory_order_relaxed) && claimer_->claim(seq)) {
+      if (claimer_->claim(seq)) {
         idle = 0;
         const uint64_t t0 = ipc::monotonic_ns();
         process_block(id, seq, false);
@@ -649,6 +623,44 @@ class RingSink {
     stats.cpu_ns = thread_cpu_ns();
   }
 
+  static uint32_t ahead_blocks(uint32_t block_size) {
+    const uint64_t blocks = DFT_SHM_RESERVE_AHEAD_BYTES / block_size;
+    return blocks == 0 ? 1 : static_cast<uint32_t>(blocks);
+  }
+
+  /**
+   * Keeps the ring's shared memory reserved DFT_SHM_RESERVE_AHEAD_BYTES
+   * ahead of `head` until the whole ring is, so producers on their first lap
+   * do not find it full while there is room in /dev/shm.
+   */
+  void reserve_ahead() {
+    const ipc::RingView& ring = region_->ring();
+    const uint32_t count = ring.block_count();
+    const uint64_t ahead = ahead_blocks(ring.block_size());
+    uint64_t step = DFT_SHM_RESERVE_STEP_BYTES / ring.block_size();
+    if (step == 0) step = 1;
+    while (!stop_.load(std::memory_order_acquire) &&
+           region_->reserved_blocks() < count) {
+      const uint64_t head = ring.header()->head.load(std::memory_order_acquire);
+      const uint64_t want = std::min<uint64_t>(count, head + ahead);
+      const uint32_t have = region_->reserved_blocks();
+      if (have >= want) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        continue;
+      }
+      const uint32_t next =
+          static_cast<uint32_t>(std::min<uint64_t>(want, have + step));
+      if (!region_->reserve(next)) {
+        std::fprintf(stderr,
+                     "[DFTRACER] WARNING: /dev/shm cannot back more of ring "
+                     "%s: it stays at %u of %u blocks, and producers spill "
+                     "once those are in use.\n",
+                     region_->name().c_str(), have, count);
+        return;
+      }
+    }
+  }
+
   /** At stop: drain every published block, on thread `id`'s chunk. */
   void drain_rest(uint32_t id) {
     uint64_t seq;
@@ -669,14 +681,12 @@ class RingSink {
   NodeTraceFile file_;
   std::unique_ptr<ClientTable> clients_;
   std::vector<std::thread> threads_;
+  std::thread reserver_;
   std::vector<Stats> per_thread_;
   std::unique_ptr<Load[]> load_;
   std::vector<DrainScratch> scratch_;
   std::vector<std::unique_ptr<ChunkWriter>> writers_;
   std::atomic<uint32_t> active_{1};
-  // False while published blocks are held in the ring (set by thread 0).
-  std::atomic<bool> draining_{true};
-  uint64_t hold_blocks_ = 0;
   std::atomic<bool> stop_{false};
   std::mutex park_mtx_;
   std::condition_variable park_cv_;

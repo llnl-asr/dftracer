@@ -82,6 +82,9 @@ class Encoder {
     const void* site;
     uint64_t sig;
     uint16_t count;
+    // Bit i: arg i is a string (or raw JSON), or a double.
+    uint32_t strings;
+    uint32_t doubles;
     uint32_t heads[EventDraft::kShapeKeys];
     uint64_t last[EventDraft::kShapeKeys];
   };
@@ -102,9 +105,14 @@ class Encoder {
   /** An upper bound of what event() writes for these fields. */
   static size_t bound(std::string_view name, std::string_view category,
                       const EventDraft* args) {
-    size_t n = 2 + 8 * kVarintMax + name.size() + category.size();
-    if (args != nullptr) n += args->size() + args->count() * (2 * kVarintMax);
-    return n;
+    return args == nullptr ? bound(name, category, 0, 0)
+                           : bound(name, category, args->size(), args->count());
+  }
+  /** bound() of a draft whose size() is `args_size`, with `count` entries. */
+  static size_t bound(std::string_view name, std::string_view category,
+                      size_t args_size, uint16_t count) {
+    return 2 + 8 * kVarintMax + name.size() + category.size() + args_size +
+           count * (2 * kVarintMax);
   }
 
   /**
@@ -120,12 +128,15 @@ class Encoder {
       const uint32_t h = shape_slot(args->site());
       Shape* a = &shapes_[h];
       Shape* b = &shapes_[h ^ 1];
-      if (matches(*a, *args))
-        return shaped(out, *a, index, type, start, duration, *args, pid, tid,
-                      flags);
-      if (matches(*b, *args))
-        return shaped(out, *b, index, type, start, duration, *args, pid, tid,
-                      flags);
+      const void* site = args->site();
+      const uint64_t sig = args->sig();
+      const uint16_t count = args->count();
+      Shape* s = matches(*a, site, sig, count)   ? a
+                 : matches(*b, site, sig, count) ? b
+                                                 : nullptr;
+      if (s != nullptr)
+        return shaped(out, *s, index, type, start, duration, args->entries(),
+                      pid, tid, flags);
       fresh = a->block != block_   ? a
               : b->block != block_ ? b
               : a->used <= b->used ? a
@@ -133,6 +144,25 @@ class Encoder {
     }
     return full(out, index, name, category, type, start, duration, args, pid,
                 tid, flags, fresh);
+  }
+
+  /**
+   * event() of `e` with these flags, if its shape is already in the block;
+   * else 0, with nothing written.
+   */
+  __attribute__((always_inline)) size_t site_event(uint8_t* out,
+                                                   const SiteEvent& e,
+                                                   uint8_t flags) {
+    const SiteInfo& info = *e.info;
+    const uint32_t h = shape_slot(info.site);
+    Shape* a = &shapes_[h];
+    Shape* b = &shapes_[h ^ 1];
+    Shape* s = matches(*a, info.site, info.sig, info.count)   ? a
+               : matches(*b, info.site, info.sig, info.count) ? b
+                                                              : nullptr;
+    if (s == nullptr) return 0;
+    return shaped(out, *s, e.index, info.type, e.start_time, e.duration, e.args,
+                  e.process_id, e.tid, flags);
   }
 
  private:
@@ -211,10 +241,10 @@ class Encoder {
     return static_cast<uint32_t>(h >> 58) & (kShapes - 1);
   }
 
-  bool matches(const Shape& s, const EventDraft& args) const {
-    const uint16_t count = args.count();
-    return s.block == block_ && s.site == args.site() && s.count == count &&
-           s.sig == args.sig();
+  bool matches(const Shape& s, const void* site, uint64_t sig,
+               uint16_t count) const {
+    return s.block == block_ && s.site == site && s.count == count &&
+           s.sig == sig;
   }
 
   void define(Shape& s, const EventDraft& args) {
@@ -225,32 +255,43 @@ class Encoder {
     s.sig = args.sig();
     s.count = args.count();
     const EventDraft::Entry* es = args.entries();
-    for (uint16_t i = 0; i < s.count; ++i) s.heads[i] = es[i].head;
+    s.strings = 0;
+    s.doubles = 0;
+    for (uint16_t i = 0; i < s.count; ++i) {
+      s.heads[i] = es[i].head;
+      if (es[i].is_string()) s.strings |= 1u << i;
+      if (es[i].tag() == SHM_VALUE_DOUBLE) s.doubles |= 1u << i;
+    }
   }
 
-  size_t shaped(uint8_t* out, Shape& s, int index, TraceEventType type,
-                TimeResolution start, TimeResolution duration,
-                const EventDraft& args, ProcessID pid, ThreadID tid,
-                uint8_t flags) {
+  __attribute__((always_inline)) size_t shaped(
+      uint8_t* out, Shape& s, int index, TraceEventType type,
+      TimeResolution start, TimeResolution duration,
+      const EventDraft::Entry* es, ProcessID pid, ThreadID tid, uint8_t flags) {
     s.used = ++tick_;
     uint8_t* p = out;
     *p++ = static_cast<uint8_t>(type);
     *p++ = static_cast<uint8_t>(flags | kShaped);
     p = put_varint(p, s.id);
     p = head(p, out + 1, index, start, duration, pid, tid);
-    const EventDraft::Entry* es = args.entries();
-    for (uint16_t i = 0; i < s.count; ++i) {
+    // Copied out: a store through `p` may alias `s`, so the compiler would
+    // load them again after each byte.
+    const uint32_t count = s.count;
+    const uint32_t strings = s.strings;
+    const uint32_t doubles = s.doubles;
+    uint64_t* last = s.last;
+    for (uint32_t i = 0; i < count; ++i) {
       const EventDraft::Entry& e = es[i];
-      const ShmValueTag tag = static_cast<ShmValueTag>(s.heads[i] & 0xff);
-      if (tag == SHM_VALUE_STRING || tag == SHM_VALUE_RAW_JSON) {
+      if (((strings >> i) & 1) != 0) {
         uint32_t value_id;
         p = string(p, e.str, e.value_len, value_id, 3 + 2 * i);
-      } else if (tag == SHM_VALUE_DOUBLE) {
+      } else if (((doubles >> i) & 1) != 0) {
         std::memcpy(p, &e.bits, 8);
         p += 8;
       } else {
-        p = put_varint(p, zigzag(e.bits - s.last[i]));
-        s.last[i] = e.bits;
+        const uint64_t v = e.bits;
+        p = put_varint(p, zigzag(v - last[i]));
+        last[i] = v;
       }
     }
     return static_cast<size_t>(p - out);
@@ -357,12 +398,22 @@ class Decoder {
     shape_values_.clear();
     std::memset(values_, 0, sizeof(values_));
     index_ = start_ = pid_ = tid_ = 0;
+    shape_ = kNoShape;
   }
+
+  static constexpr size_t kNoShape = ~size_t{0};
+  /**
+   * The shape of the last decoded event, an index below the shape count of
+   * this block, or kNoShape for an event that has none. Events of one shape
+   * share their name, category and keys until reset().
+   */
+  size_t shape() const { return shape_; }
 
   /** Decodes the event at `data`; views point into it. */
   bool event(const uint8_t* data, size_t size, ipc::DecodedEvent& out) {
     p_ = data;
     end_ = data + size;
+    shape_ = kNoShape;
     if (size < 2) return false;
     ipc::EventHead& h = out.head;
     h = ipc::EventHead{};
@@ -395,7 +446,11 @@ class Decoder {
     h.start_time = start_;
     h.process_id = static_cast<int32_t>(pid_);
     h.thread_id = tid_;
-    if ((flags & kShaped) != 0) return shaped(shapes_[shape_id], out);
+    if ((flags & kShaped) != 0) {
+      if (!shaped(shapes_[shape_id], out)) return false;
+      shape_ = static_cast<size_t>(shape_id);
+      return true;
+    }
     uint32_t id;
     if (!string(out.name, id) || !string(out.category, id)) return false;
     h.name_len = static_cast<uint16_t>(out.name.size());
@@ -448,6 +503,7 @@ class Decoder {
         if (d.tag == SHM_VALUE_INT) d.u = static_cast<uint64_t>(d.i);
         shape_values_.push_back(d);
       }
+      shape_ = shapes_.size() - 1;
     }
     return true;
   }
@@ -541,6 +597,7 @@ class Decoder {
   std::vector<ipc::DecodedValue> shape_values_;
   uint64_t values_[kTrackedValues];
   uint64_t index_ = 0, start_ = 0, pid_ = 0, tid_ = 0;
+  size_t shape_ = kNoShape;
 };
 
 }  // namespace compact

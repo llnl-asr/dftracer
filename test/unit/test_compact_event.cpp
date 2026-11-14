@@ -2,9 +2,13 @@
 // in a block, with names, keys and values that repeat, change or clash.
 #include <dftracer/core/buffer/compact_event.h>
 #include <dftracer/core/common/event_draft.h>
+#include <dftracer/core/serialization/json_line.h>
 
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -155,10 +159,28 @@ void test_shapes() {
 
   compact::Decoder dec;
   ipc::DecodedEvent out;
+  JsonLines js;
+  char hostname[] = "6c6f63616c686f73";
+  js.initialize(nullptr, hostname);
+  ShapeLines lines;
+  static char line[DFTRACER_SERIALIZATION_EVENT_MAX];
+  static char plain[DFTRACER_SERIALIZATION_EVENT_MAX];
+  size_t shaped_lines = 0;
   size_t at = 0;
   for (size_t i = 0; i < events.size(); ++i) {
     DFT_CHECK(dec.event(block.bytes.data() + at, block.ends[i] - at, out));
     check_head(out, events[i]);
+    // A line from the shape's stored text is the line written in full.
+    for (uint8_t flags :
+         {uint8_t{0}, uint8_t{SHM_EVENT_HAS_METADATA},
+          uint8_t{SHM_EVENT_HAS_METADATA | SHM_EVENT_INC_METADATA}}) {
+      ipc::DecodedEvent e = out;
+      e.head.flags = flags;
+      const size_t n = js.data(line, e, lines, dec.shape());
+      const size_t m = js.data(plain, e);
+      DFT_CHECK(std::string(line, n) == std::string(plain, m));
+    }
+    shaped_lines += dec.shape() != compact::Decoder::kNoShape;
     at = block.ends[i];
     // Encode the draft alone in full and compare the args.
     compact::Encoder full;
@@ -179,6 +201,8 @@ void test_shapes() {
     }
   }
 
+  DFT_CHECK(shaped_lines > events.size() / 2);
+
   // A new block starts with no shapes: a site sent by its shape before is
   // sent in full again and decodes alone.
   enc.reset();
@@ -198,8 +222,164 @@ void test_shapes() {
 
 }  // namespace
 
+// The 8-byte scan escapes exactly what a byte-by-byte scan does.
+void test_escape() {
+  struct Text {
+    std::string& text;
+    void raw(std::string_view v) { text.append(v.data(), v.size()); }
+  };
+  const auto plain = [](std::string_view s) {
+    std::string t;
+    for (unsigned char c : s) {
+      char esc[8];
+      if (c < 0x20)
+        std::snprintf(esc, sizeof(esc), "\\u%04x", c);
+      else if (c == '"' || c == '\\')
+        std::snprintf(esc, sizeof(esc), "\\%c", c);
+      else
+        esc[0] = static_cast<char>(c), esc[1] = 0;
+      t += esc;
+    }
+    return t;
+  };
+  const unsigned char pool[] = {'a',  '/',  '0',  '"',  '\\', 0x00, 0x01,
+                                0x1f, 0x20, 0x21, 0x7f, 0x80, 0xc3, 0xff};
+  std::mt19937 rng(7);
+  for (int round = 0; round < 20000; ++round) {
+    std::string s(rng() % 40, 'x');
+    const unsigned rare = rng() % 4;
+    for (char& c : s)
+      c = static_cast<char>(rng() % 8 < rare ? pool[rng() % sizeof(pool)]
+                                             : pool[rng() % 3]);
+    std::string got;
+    Text w{got};
+    line_format::escaped(w, s);
+    DFT_CHECK(got == plain(s));
+  }
+}
+
+// Line::number() writes what std::to_chars writes, at the edges of each
+// digit count and for random values of every width.
+template <typename T>
+void check_number(T v) {
+  std::vector<char> buf(DFTRACER_SERIALIZATION_EVENT_MAX);
+  line_format::Line w(buf.data());
+  w.number(v);
+  char want[32];
+  const auto r = std::to_chars(want, want + sizeof(want), v);
+  DFT_CHECK(std::string(buf.data(), w.size()) ==
+            std::string(want, static_cast<size_t>(r.ptr - want)));
+}
+
+void test_number() {
+  uint64_t p = 1;
+  for (int d = 0; d < 20; ++d) {
+    for (uint64_t v : {p - 1, p, p + 1}) {
+      check_number(v);
+      check_number(static_cast<int64_t>(v));
+      check_number(-static_cast<int64_t>(v));
+    }
+    p *= 10;
+  }
+  check_number(std::numeric_limits<uint64_t>::max());
+  check_number(std::numeric_limits<int64_t>::max());
+  check_number(std::numeric_limits<int64_t>::min());
+  check_number(std::numeric_limits<int32_t>::min());
+  check_number(std::numeric_limits<uint32_t>::max());
+  std::mt19937_64 rng(7);
+  for (int i = 0; i < 100000; ++i) {
+    const uint64_t v = rng() >> (rng() % 64);
+    check_number(v);
+    check_number(static_cast<int64_t>(v));
+    check_number(static_cast<int32_t>(v));
+    check_number(static_cast<uint32_t>(v));
+  }
+}
+
+// A fused interceptor's args (EventDraft::entry() and Encoder::site_event())
+// give the same bytes as the EventDraft of the same calls.
+void test_site_event() {
+  static char site;
+  static const char kFhash[] = "fhash";
+  static const char kCount[] = "count";
+  static const char kOffset[] = "offset";
+  static const char kRet[] = "ret";
+  const std::string_view hash = "0123456789abcdef";
+  compact::Encoder plain_enc;
+  compact::Encoder site_enc;
+  Block plain;
+  Block fused;
+  int fused_hits = 0;
+  for (int i = 0; i < 200; ++i) {
+    const size_t count = 4096 + (i % 3);
+    const off_t offset = static_cast<off_t>(i) * 4096 - 100;
+    const ssize_t ret = i % 7 == 0 ? -1 : static_cast<ssize_t>(count);
+    const Event e{i + 1,
+                  "pread",
+                  "POSIX",
+                  TraceEventType::TRACE_TYPE_LIBC_IO,
+                  static_cast<TimeResolution>(1000 + 37 * i),
+                  static_cast<TimeResolution>(5 + i % 11),
+                  42,
+                  static_cast<ThreadID>(i % 50 == 0 ? 8 : 7),
+                  static_cast<uint8_t>(SHM_EVENT_HAS_METADATA)};
+    EventDraft d;
+    d.set_site(&site);
+    d.set(StaticKey{kFhash}, hash);
+    d.set(StaticKey{kCount}, count, MetadataType::MT_VALUE);
+    d.set(StaticKey{kOffset}, offset, MetadataType::MT_VALUE);
+    d.set(StaticKey{kRet}, ret, MetadataType::MT_VALUE);
+    add(plain, plain_enc, e, d);
+
+    const EventDraft::Entry args[] = {
+        EventDraft::entry(StaticKey{kFhash}, hash, MetadataType::MT_KEY),
+        EventDraft::entry(StaticKey{kCount}, count, MetadataType::MT_VALUE),
+        EventDraft::entry(StaticKey{kOffset}, offset, MetadataType::MT_VALUE),
+        EventDraft::entry(StaticKey{kRet}, ret, MetadataType::MT_VALUE)};
+    uint64_t sig = 0;
+    size_t size = 0;
+    for (const EventDraft::Entry& a : args) {
+      sig = EventDraft::mix(sig, a);
+      size += EventDraft::wire_size(a);
+    }
+    DFT_CHECK(sig == d.sig() && size == d.size());
+    const size_t bound = compact::Encoder::bound(e.name, e.category, size, 4);
+    DFT_CHECK(bound == compact::Encoder::bound(e.name, e.category, &d));
+    const size_t at = fused.bytes.size();
+    fused.bytes.resize(at + bound);
+    const SiteInfo info = SiteInfo::of(&site, e.name, e.category, e.type, args);
+    DFT_CHECK(info.sig == sig && info.args_size == size && info.count == 4);
+    const SiteEvent se{&info, e.index, e.start, e.duration, args, e.pid, e.tid};
+    size_t n = site_enc.site_event(fused.bytes.data() + at, se, e.flags);
+    if (n != 0) {
+      ++fused_hits;
+    } else {
+      EventDraft back;
+      back.set_site(&site);
+      for (const EventDraft::Entry& a : args) back.append(a);
+      DFT_CHECK(back.sig() == d.sig() && back.shaped());
+      n = site_enc.event(fused.bytes.data() + at, e.index, e.name, e.category,
+                         e.type, e.start, e.duration, &back, e.pid, e.tid,
+                         e.flags);
+    }
+    DFT_CHECK(n > 0 && n <= bound);
+    fused.bytes.resize(at + n);
+    fused.ends.push_back(at + n);
+    if (i == 99) {
+      plain_enc.reset();
+      site_enc.reset();
+    }
+  }
+  DFT_CHECK(fused_hits == 198);
+  DFT_CHECK(fused.ends == plain.ends);
+  DFT_CHECK(fused.bytes == plain.bytes);
+}
+
 int main() {
+  test_escape();
+  test_number();
   test_shapes();
+  test_site_event();
   compact::Encoder enc;
   Block block;
   std::vector<Event> events;

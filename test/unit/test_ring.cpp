@@ -271,6 +271,36 @@ void test_full_ring() {
   DFT_CHECK(ring.header()->head.load() == 3);
 }
 
+// A ring reserved in part reads as full past the reserved blocks, and takes
+// more once reserve() arms them.
+void test_partial_reserve() {
+  auto region = ShmRegion::create(segment_name("partial"), 8, 4096, 2);
+  const RingView& ring = region->ring();
+  DFT_CHECK(region->reserved_blocks() == 2);
+  RingProducer writer(ring, 1);
+  Reservation r;
+  const auto fill = [&]() {
+    uint64_t accepted = 0;
+    while (writer.try_reserve(1000, SHM_KIND_RAW, r) ==
+           RingProducer::Result::OK) {
+      writer.commit(r);
+      ++accepted;
+      DFT_CHECK(accepted < 100);
+    }
+    return accepted;
+  };
+  // Four records fill a 4 KiB block (see test_full_ring).
+  DFT_CHECK(fill() == 8);
+  DFT_CHECK(ring.header()->head.load() == 2);
+  DFT_CHECK(region->reserve(5) && region->reserved_blocks() == 5);
+  DFT_CHECK(fill() == 12);
+  DFT_CHECK(ring.header()->head.load() == 5);
+  DFT_CHECK(region->reserve(100) && region->reserved_blocks() == 8);
+  DFT_CHECK(fill() == 12);
+  DFT_CHECK(ring.header()->head.load() == 8);
+  DFT_CHECK(region->reserve(8));
+}
+
 // As produce(), the way the PC producer writes events: reserve what the
 // block has left (try_reserve_upto), write, and commit what was written. A
 // record that does not fit is cancelled and reserved again at its size, and
@@ -535,18 +565,6 @@ void test_take_over() {
   RingProducer busy(ring, pid, 12);
   put(busy, 100);
   busy.flush();  // block 1, published
-  ParallelBlockClaimer::Oldest oldest;
-  DFT_CHECK(claimer.ready_blocks(&oldest) == 1);
-  DFT_CHECK(oldest.seq == 1 &&
-            oldest.claim_ns == ring.block(1).claim_ns.load());
-  {
-    // Freed before the fork below, so the child holds no heap of it.
-    std::vector<uint32_t> pids;
-    claimer.pending_pids(pids);
-    DFT_CHECK(pids == std::vector<uint32_t>{pid});
-  }
-  // Old enough, but not before `below`.
-  DFT_CHECK(!claimer.take_over(seq, monotonic_ns(), owner, 0));
   DFT_CHECK(claimer.claim(seq) && seq == 1);
   DFT_CHECK(ring.block(seq).owner_tid.load() == 12);
   DFT_CHECK(values_of(ring, seq, false) == std::vector<uint32_t>{100});
@@ -696,6 +714,7 @@ int main() {
   test_single_record_and_flush();
   test_too_large_and_exact_fit();
   test_full_ring();
+  test_partial_reserve();
   test_many_threads();
   test_parallel_consumers();
   test_consumer_scaler();

@@ -73,6 +73,7 @@ class ServiceBufferManager : public BufferManager {
                       TimeResolution start_time, TimeResolution duration,
                       const dftracer::EventDraft* args, ProcessID process_id,
                       ThreadID tid) override;
+  bool log_site_event(const dftracer::SiteEvent& e) override;
   void log_record(ConstEventNameType record_name,
                   const dftracer::Metadata* fields, TraceEventType type,
                   ProcessID process_id, ThreadID tid) override;
@@ -114,8 +115,12 @@ class ServiceBufferManager : public BufferManager {
   // it stays readable afterwards: exit handlers (the preload finalizer's
   // "end" event, atexit, static destructors) still log on that thread.
   static thread_local bool tl_exited;
+  // tl_ref's slot while tl_ref lives. Trivially initialized, so reading it
+  // needs no TLS init call, unlike tl_ref.
+  static thread_local Slot* tl_slot;
 
   Slot* acquire_slot();
+  Slot* acquire_slot_slow();
   // The slot's own thread enters and leaves it around each use. False if the
   // slot is dead (abandoned across fork()).
   bool enter(Slot* slot);

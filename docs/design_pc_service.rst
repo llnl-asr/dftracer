@@ -673,8 +673,10 @@ returns, the loop thread either seals the chunk (at ``write_buffer_size``, or
 when it is older than ``DFTRACER_PC_FLUSH_MS``) and passes it to S3, or returns
 it to the open pool.
 
-**Why any order is valid.** ``GzipCompression::compress`` (libdeflate, which is
-one-shot) turns each call's buffer into one complete gzip member. So every
+**Why any order is valid.** ``GzipCompression::compress`` (ISA-L, one-shot) turns
+each call's buffer into one complete gzip member. It ends a deflate block every
+256 KiB of input, so a reader's index can start inside a member. Level 0 maps to
+ISA-L level 0 and levels 1-9 map to ISA-L level 1. So every
 sealed chunk is a self-contained gzip member, and members concatenated in any
 order form a valid
 ``.pfw.gz``. S3 and S4 can therefore run fully in parallel, with S4 writing
@@ -965,13 +967,14 @@ Variable                                    Default                 Meaning
 ``DFTRACER_PC_MAX_WORKERS``                 cores/4                 ceiling on pool tasks in flight
 ``DFTRACER_PC_STREAM_QUEUE``                8                       slices buffered per stream
 ``DFTRACER_PC_FLUSH_MS``                    1000                    take over a held block; write a partial chunk
-``DFTRACER_PC_HOLD_MS``                     60000                   leave published blocks in the ring this long, or until half full (0: drain at once)
-``DFTRACER_PC_COMPRESSION_LEVEL``           1                       gzip level of the node trace (speed over ratio)
+``DFTRACER_PC_COMPRESSION_LEVEL``           1                       gzip level (0 = ISA-L 0, 1-9 = ISA-L 1)
 ``DFTRACER_PC_DRAIN_TIMEOUT_MS``            10000                   shutdown drain bound
 ==========================================  ======================  ===========================================
 
-``/dev/shm`` is tmpfs and counts against node memory. The default ring reserves
-1 GiB of address space, but only pages that are touched get committed. Keep
+``/dev/shm`` is tmpfs and counts against node memory. The default ring is
+1 GiB. The service reserves its shared memory 64 MiB ahead of the producers'
+first lap, so a short run commits only what it uses, and a producer never
+writes to a page that is not reserved (no SIGBUS when ``/dev/shm`` fills). Keep
 ``DFTRACER_PC_BLOCKS`` at least 4 × the most producers expected on a node,
 since each holds one block while filling it.
 

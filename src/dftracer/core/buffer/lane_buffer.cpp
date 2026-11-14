@@ -36,8 +36,8 @@ void LaneBuffer::wrote(size_t size) {
   }
 }
 
-void LaneBuffer::log_packed_event(const ipc::DecodedEvent& event,
-                                  bool counter) {
+void LaneBuffer::log_packed_event(const ipc::DecodedEvent& event, bool counter,
+                                  ShapeLines* lines, size_t shape) {
   if (finished_) return;
   if (counter) {
     wrote(serializer_.counter(chunk_ + used_, event));
@@ -53,7 +53,9 @@ void LaneBuffer::log_packed_event(const ipc::DecodedEvent& event,
     if (aggregator_->aggregate(event)) drain(false, event.head.process_id);
     return;
   }
-  wrote(serializer_.data(chunk_ + used_, event));
+  wrote(lines != nullptr
+            ? serializer_.data(chunk_ + used_, event, *lines, shape)
+            : serializer_.data(chunk_ + used_, event));
 }
 
 void LaneBuffer::log_metadata_event(ConstEventNameType name,

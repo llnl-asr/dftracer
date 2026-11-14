@@ -4,12 +4,10 @@
 #include <dftracer/core/ipc/shm_layout.h>
 #include <signal.h>
 
-#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <memory>
-#include <vector>
 
 namespace dftracer {
 namespace ipc {
@@ -176,12 +174,10 @@ class ParallelBlockClaimer {
    * `older_than_ns` or earlier: IDLE -> TAKEN, or WRITING -> TAKEN when the
    * producer is dead. The caller then drains it with for_each_record(...,
    * salvage = true) and releases it like a claimed block. `pid` is the
-   * producer that held it. Only blocks before `below` are looked at.
+   * producer that held it.
    */
-  bool take_over(uint64_t& seq, uint64_t older_than_ns, uint32_t& pid,
-                 uint64_t below = UINT64_MAX) {
-    const uint64_t head =
-        std::min(ring_.header()->head.load(std::memory_order_acquire), below);
+  bool take_over(uint64_t& seq, uint64_t older_than_ns, uint32_t& pid) {
+    const uint64_t head = ring_.header()->head.load(std::memory_order_acquire);
     for (uint64_t s = advance(head); s < head; ++s) {
       BlockControl& block = ring_.block(s);
       const uint32_t epoch = ring_.epoch(s);
@@ -241,45 +237,16 @@ class ParallelBlockClaimer {
     }
   }
 
-  /**
-   * Complete blocks no thread has claimed yet. With `oldest`, also the first
-   * of them: its sequence number and when its producer took it (UINT64_MAX
-   * and 0 when there is none).
-   */
-  struct Oldest {
-    uint64_t seq = UINT64_MAX;
-    uint64_t claim_ns = 0;
-  };
-  uint64_t ready_blocks(Oldest* oldest = nullptr) {
+  /** Complete blocks no thread has claimed yet. */
+  uint64_t ready_blocks() {
     const uint64_t head = ring_.header()->head.load(std::memory_order_acquire);
     uint64_t ready = 0;
     for (uint64_t s = advance(head); s < head; ++s) {
-      const BlockControl& block = ring_.block(s);
-      if (block.committed.load(std::memory_order_relaxed) !=
+      if (ring_.block(s).committed.load(std::memory_order_relaxed) ==
           published_word(ring_.epoch(s), ring_.block_size()))
-        continue;
-      if (ready++ == 0 && oldest != nullptr) {
-        oldest->seq = s;
-        oldest->claim_ns = block.claim_ns.load(std::memory_order_relaxed);
-      }
+        ++ready;
     }
     return ready;
-  }
-
-  /**
-   * The producers (pids, sorted and unique) of every block not yet claimed
-   * or taken over: published and waiting, or still held by its producer.
-   */
-  void pending_pids(std::vector<uint32_t>& pids) {
-    pids.clear();
-    const uint64_t head = ring_.header()->head.load(std::memory_order_acquire);
-    for (uint64_t s = advance(head); s < head; ++s) {
-      if (!done(s))
-        pids.push_back(
-            ring_.block(s).owner_pid.load(std::memory_order_relaxed));
-    }
-    std::sort(pids.begin(), pids.end());
-    pids.erase(std::unique(pids.begin(), pids.end()), pids.end());
   }
 
   uint64_t backlog_blocks() const {

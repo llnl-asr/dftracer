@@ -5,6 +5,7 @@
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
+#include <dftracer/core/serialization/json_line.h>
 
 #include <atomic>
 #include <cstddef>
@@ -172,9 +173,6 @@ struct DrainOptions {
   // A producer's unpublished block is taken over, and a drain thread's chunk
   // written, once this old.
   uint64_t flush_ns = DFT_SHM_DEFAULT_FLUSH_MS * 1000000ULL;
-  // Published blocks wait in the ring until the oldest is this old (0: drain
-  // at once); see DFT_SHM_DEFAULT_HOLD_MS.
-  uint64_t hold_ns = 0;
   // The node's trace file. Empty: decode and count only (benchmarks).
   std::string node_file;
   std::string hostname_hash;
@@ -198,6 +196,8 @@ struct DrainScratch {
   // decode, the block's later ones may refer to what it held: they are
   // counted as malformed too.
   compact::Decoder compact;
+  // The JSON text of compact's shapes, reset with it.
+  ShapeLines lines;
   bool compact_ok = true;
   // NUL-terminated copies of the METADATA and RECORD strings the serializer
   // takes as char*. DATA and COUNTER records need none (log_packed_event).
