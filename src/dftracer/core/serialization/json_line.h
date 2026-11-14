@@ -39,6 +39,13 @@ class ShapeLines {
     std::string keys;
     std::vector<uint32_t> ends;
     std::vector<ShmValueTag> tags;
+    // Per value: the last string that needed no escaping. The views point
+    // into the decoder's block, so the same view is the same text.
+    std::vector<std::string_view> plain;
+    // The longest line of this shape, apart from ids_, args_head_ and the
+    // values at `strings`: those vary by event.
+    size_t fixed = 0;
+    std::vector<uint32_t> strings;
   };
   std::vector<Shape> shapes_;
   // ,"ph":N,"args":{"hhash":"..."  and  ,"ph":N
@@ -47,7 +54,8 @@ class ShapeLines {
   bool have_ids_ = false;
   int32_t pid_ = 0;
   uint64_t tid_ = 0;
-  // pid,"tid":tid,"ts":
+  uint64_t ts_hi_ = 0;
+  // pid,"tid":tid,"ts": and the digits of ts above its last 8, if any.
   std::string ids_;
 };
 
@@ -166,11 +174,20 @@ inline size_t JsonLines::data(char* out, const ipc::DecodedEvent& e,
       sh.ends.push_back(static_cast<uint32_t>(sh.keys.size()));
       sh.tags.push_back(v.tag);
     }
+    sh.plain.resize(sh.tags.size());
+    // {"id":, an int32, ,"dur":, a uint64, then }} and the newline.
+    sh.fixed = 6 + 11 + sh.head.size() + 7 + 20 + sh.keys.size() + 3;
+    for (size_t i = 0; i < sh.tags.size(); ++i) {
+      if (sh.tags[i] == SHM_VALUE_STRING || sh.tags[i] == SHM_VALUE_RAW_JSON)
+        sh.strings.push_back(static_cast<uint32_t>(i));
+      // A number, a %g double, or a string's closing quote.
+      sh.fixed += sh.tags[i] == SHM_VALUE_DOUBLE ? 31 : 21;
+    }
   }
+  // A decoder shape fixes the tag of each value, so only the count is
+  // checked.
   if (sh.type != h.type || sh.tags.size() != e.values.size())
     return data(out, e);
-  for (size_t i = 0; i < e.values.size(); ++i)
-    if (e.values[i].tag != sh.tags[i]) return data(out, e);
   if (lines.hostname_ != hostname_hash || lines.no_args_.empty()) {
     const std::string ph = std::to_string(
         static_cast<unsigned>(TracePhaseType::TRACE_PHASE_COMPLETE));
@@ -180,55 +197,91 @@ inline size_t JsonLines::data(char* out, const ipc::DecodedEvent& e,
     Text args{lines.args_head_};
     line_format::append<packed_json::ArgsHead>(args, hostname_hash);
   }
+  constexpr uint64_t kLow = 100000000;
+  const uint64_t ts_hi = h.start_time / kLow;
   if (!lines.have_ids_ || lines.pid_ != h.process_id ||
-      lines.tid_ != h.thread_id) {
+      lines.tid_ != h.thread_id || lines.ts_hi_ != ts_hi) {
     lines.have_ids_ = true;
     lines.pid_ = h.process_id;
     lines.tid_ = h.thread_id;
+    lines.ts_hi_ = ts_hi;
     lines.ids_ = std::to_string(h.process_id) +
                  ",\"tid\":" + std::to_string(h.thread_id) + ",\"ts\":";
+    if (ts_hi != 0) lines.ids_ += std::to_string(ts_hi);
   }
-  packed_json::Line w(out);
-  w.raw("{\"id\":");
-  w.number(h.index);
-  w.raw(sh.head);
-  w.raw(lines.ids_);
-  w.number(h.start_time);
-  w.raw(",\"dur\":");
-  w.number(h.duration);
+  const ipc::DecodedValue* values = e.values.data();
+  size_t bound = sh.fixed + lines.ids_.size() + 20 + lines.args_head_.size();
+  for (uint32_t i : sh.strings) bound += 6 * values[i].s.size();
+  // Line cuts text at DFTRACER_SERIALIZATION_EVENT_MAX - 2 bytes; bound
+  // also counts the newline. A line that may not fit takes the full path,
+  // which writes the same text.
+  if (bound > DFTRACER_SERIALIZATION_EVENT_MAX - 2) return data(out, e);
+  using line_format::detail::emit;
+  char* p = emit(out, "{\"id\":");
+  p = emit(p, static_cast<int64_t>(h.index));
+  p = emit(p, sh.head);
+  p = emit(p, lines.ids_);
+  if (ts_hi != 0) {
+    line_format::detail::eight_digits(
+        p, static_cast<uint32_t>(h.start_time - ts_hi * kLow));
+    p += 8;
+  } else {
+    p = emit(p, static_cast<uint64_t>(h.start_time));
+  }
+  p = emit(p, ",\"dur\":");
+  p = emit(p, static_cast<uint64_t>(h.duration));
   if (!has_metadata) {
-    w.raw(lines.no_args_);
-    w.raw("}");
-    return w.finish("JsonLines.data", h.index);
-  }
-  w.raw(lines.args_head_);
-  const std::string_view keys(sh.keys);
-  uint32_t at = 0;
-  for (size_t i = 0; i < e.values.size(); ++i) {
-    const ipc::DecodedValue& v = e.values[i];
-    w.raw(keys.substr(at, sh.ends[i] - at));
-    at = sh.ends[i];
-    switch (v.tag) {
-      case SHM_VALUE_INT:
-        w.i64(v.i);
-        break;
-      case SHM_VALUE_UINT:
-        w.u64(v.u);
-        break;
-      case SHM_VALUE_DOUBLE:
-        w.f64(v.d);
-        break;
-      case SHM_VALUE_STRING:
-        w.escaped(v.s);
-        w.raw("\"");
-        break;
-      case SHM_VALUE_RAW_JSON:
-        w.raw(v.s);
-        break;
+    p = emit(p, lines.no_args_);
+    *p++ = '}';
+  } else {
+    p = emit(p, lines.args_head_);
+    const char* keys = sh.keys.data();
+    const uint32_t* ends = sh.ends.data();
+    const size_t count = sh.tags.size();
+    uint32_t at = 0;
+    for (size_t i = 0; i < count; ++i) {
+      const ipc::DecodedValue& v = values[i];
+      p = emit(p, std::string_view(keys + at, ends[i] - at));
+      at = ends[i];
+      switch (v.tag) {
+        case SHM_VALUE_INT:
+          p = emit(p, static_cast<int64_t>(v.i));
+          break;
+        case SHM_VALUE_UINT:
+          p = emit(p, static_cast<uint64_t>(v.u));
+          break;
+        case SHM_VALUE_DOUBLE: {
+          packed_json::Line w(p);
+          w.f64(v.d);
+          p += w.size();
+          break;
+        }
+        case SHM_VALUE_STRING: {
+          std::string_view& seen = sh.plain[i];
+          if (v.s.data() == seen.data() && v.s.size() == seen.size()) {
+            p = emit(p, v.s);
+          } else if (line_format::plain(v.s)) {
+            seen = v.s;
+            p = emit(p, v.s);
+          } else {
+            packed_json::Line w(p);
+            w.escaped(v.s);
+            p += w.size();
+          }
+          *p++ = '"';
+          break;
+        }
+        case SHM_VALUE_RAW_JSON:
+          p = emit(p, v.s);
+          break;
+      }
     }
+    *p++ = '}';
+    *p++ = '}';
   }
-  w.raw("}}");
-  return w.finish("JsonLines.data", h.index);
+  *p++ = '\n';
+  *p = '\0';
+  return static_cast<size_t>(p - out);
 }
 
 inline size_t JsonLines::counter(char* out, const ipc::DecodedEvent& e) const {

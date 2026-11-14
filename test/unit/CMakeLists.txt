@@ -82,6 +82,9 @@ add_dependencies(test_gzip_compression ${PROJECT_NAME}_core_dbg)
 add_executable(test_ring test_ring.cpp)
 target_link_libraries(test_ring pthread rt)
 
+# Where the service runs, beside its clients (service/pipeline, header-only).
+add_executable(test_cpu_placer test_cpu_placer.cpp)
+
 # The lock-free FILE* table of the STDIO interceptors (header-only).
 add_executable(test_file_handle_table test_file_handle_table.cpp)
 target_link_libraries(test_file_handle_table pthread)
@@ -109,6 +112,10 @@ set_common_properties(${test_name})
 
 set(test_name unit_test_regression)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_regression)
+set_common_properties(${test_name})
+
+set(test_name unit_test_cpu_placer)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_cpu_placer)
 set_common_properties(${test_name})
 
 set(test_name unit_test_service)

@@ -969,7 +969,15 @@ Variable                                    Default                 Meaning
 ``DFTRACER_PC_FLUSH_MS``                    1000                    take over a held block; write a partial chunk
 ``DFTRACER_PC_COMPRESSION_LEVEL``           1                       gzip level (0 = ISA-L 0, 1-9 = ISA-L 1)
 ``DFTRACER_PC_DRAIN_TIMEOUT_MS``            10000                   shutdown drain bound
+``DFTRACER_PC_SERVICE_CPUS``                auto                    service CPUs: ``auto``, ``off`` or a list such as ``8-11,20-23``
 ==========================================  ======================  ===========================================
+
+With ``DFTRACER_PC_SERVICE_CPUS=auto`` the service keeps its threads off the
+CPUs its clients' threads may run on, and off the SMT siblings of those CPUs.
+A drain thread on an application's core, or on its sibling, takes cycles and
+cache from the application. When the clients may run anywhere (they are not
+bound), there is no CPU to keep off, and the service stays where it started.
+The service checks again when a client comes or goes, and once a second.
 
 ``/dev/shm`` is tmpfs and counts against node memory. The default ring is
 1 GiB. The service reserves its shared memory 64 MiB ahead of the producers'

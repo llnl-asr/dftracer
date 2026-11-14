@@ -179,6 +179,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
       pc_flush_ms(DFT_SHM_DEFAULT_FLUSH_MS),
       pc_compression_level(DFT_SHM_DEFAULT_COMPRESSION_LEVEL),
       pc_rollover_mb(DFT_SHM_DEFAULT_ROLLOVER_MB),
+      pc_service_cpus("auto"),
       aggregation_inclusion_rules(),
       aggregation_exclusion_rules() {
   const char* env_conf = getenv(DFTRACER_CONFIGURATION);
@@ -518,6 +519,8 @@ dftracer::ConfigurationManager::ConfigurationManager()
       if (env_pc_rollover != nullptr)
         this->pc_rollover_mb = strtod(env_pc_rollover, nullptr);
       if (!(this->pc_rollover_mb >= 0)) this->pc_rollover_mb = 0;
+      const char* env_pc_cpus = getenv(DFTRACER_PC_SERVICE_CPUS);
+      if (env_pc_cpus != nullptr) this->pc_service_cpus = env_pc_cpus;
       DFTRACER_LOG_DEBUG(
           "ENV ConfigurationManager.pc_mode service_shm %s blocks %u x %u "
           "consumers %u..%u",

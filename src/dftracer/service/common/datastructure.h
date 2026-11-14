@@ -178,6 +178,8 @@ struct DrainOptions {
   std::string hostname_hash;
   size_t chunk_size = DFT_SHM_DEFAULT_CHUNK_SIZE;
   int compression_level = DFT_SHM_DEFAULT_COMPRESSION_LEVEL;
+  // Where the service's threads run (DFTRACER_PC_SERVICE_CPUS, CpuPlacer).
+  std::string service_cpus = "auto";
   // Compressed bytes after which the node trace rolls over (0: never).
   uint64_t rollover_bytes = DFT_SHM_DEFAULT_ROLLOVER_MB << 20;
   // The service's own spill file, appended at stop with its clients'.

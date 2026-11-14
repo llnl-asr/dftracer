@@ -80,9 +80,12 @@ void test_shapes() {
     add(block, enc, e, drafts.back());
   };
   char dynamic_name[16];
-  static char seek_site, read_site, write_site, region_site, op_sites[100];
+  static char seek_site, read_site, write_site, region_site, long_site,
+      op_sites[100];
   for (int i = 0; i < 200; ++i) {
-    const TimeResolution t = 1000 + 10 * i;
+    // Crosses a multiple of 10^8 halfway, where the shaped line's cached
+    // high digits of ts change.
+    const TimeResolution t = 1794677399999000 + 10 * i;
     drafts.emplace_back();
     EventDraft& seek = drafts.back();
     seek.set_site(&seek_site);
@@ -138,9 +141,21 @@ void test_shapes() {
     drafts.emplace_back();
     drafts.back().set_site(&region_site);
     drafts.back().set(StaticKey{"level"}, i, MetadataType::MT_VALUE);
-    drafts.back().set(StaticKey{"fname"}, std::string("/tmp/f0"));
+    drafts.back().set(StaticKey{"fname"},
+                      std::string(i == 1 ? "/tmp/\"f0" : "/tmp/f0"));
     drafts.back().set(StaticKey{"level"}, i + 10, MetadataType::MT_VALUE);
     add_event({620 + i, "region0", "APP", data, 6000, 1, 7, 8, 0});
+  }
+  // Long strings: one that fits however it is escaped, one that fits though
+  // the shaped line's bound does not, and one that is cut once escaped.
+  const std::string longs[] = {std::string(2500, 'a'),
+                               std::string(3000, '"') + std::string(9000, 'b'),
+                               std::string(9000, '"')};
+  for (int i = 0; i < 6; ++i) {
+    drafts.emplace_back();
+    drafts.back().set_site(&long_site);
+    drafts.back().set(StaticKey{"fname"}, longs[i % 3]);
+    add_event({640 + i, "open", "POSIX", data, 6100, 1, 7, 8, 0});
   }
   // More shapes than the table holds, twice over.
   for (int round = 0; round < 2; ++round) {
@@ -255,6 +270,7 @@ void test_escape() {
     Text w{got};
     line_format::escaped(w, s);
     DFT_CHECK(got == plain(s));
+    DFT_CHECK(line_format::plain(s) == (got == s));
   }
 }
 
@@ -286,6 +302,26 @@ void test_number() {
   check_number(std::numeric_limits<int64_t>::min());
   check_number(std::numeric_limits<int32_t>::min());
   check_number(std::numeric_limits<uint32_t>::max());
+  for (int64_t v = -300; v <= 300; ++v) {
+    check_number(v);
+    check_number(static_cast<int32_t>(v));
+    if (v >= 0) check_number(static_cast<uint64_t>(v));
+  }
+  // Every length of a piece, after every offset, copies only that piece.
+  std::string text;
+  for (int i = 0; i < 64; ++i) text += static_cast<char>('A' + i % 26);
+  for (size_t at = 0; at < 8; ++at) {
+    for (size_t n = 0; at + n <= 64; ++n) {
+      std::vector<char> buf(DFTRACER_SERIALIZATION_EVENT_MAX, '#');
+      line_format::Line w(buf.data());
+      w.raw(std::string_view(text).substr(0, at));
+      w.raw(std::string_view(text).substr(at, n));
+      DFT_CHECK(w.size() == at + n);
+      DFT_CHECK(std::string(buf.data(), at + n) ==
+                text.substr(0, at) + text.substr(at, n));
+      DFT_CHECK(buf[at + n] == '#');
+    }
+  }
   std::mt19937_64 rng(7);
   for (int i = 0; i < 100000; ++i) {
     const uint64_t v = rng() >> (rng() % 64);

@@ -11,6 +11,7 @@
 #include <dftracer/service/pipeline/block_tracker.h>
 #include <dftracer/service/pipeline/client_table.h>
 #include <dftracer/service/pipeline/consumer_scaler.h>
+#include <dftracer/service/pipeline/cpu_placer.h>
 #include <dftracer/service/pipeline/node_trace_file.h>
 #include <sys/file.h>
 #include <sys/resource.h>
@@ -130,6 +131,9 @@ class RingSink {
         writers_.push_back(std::make_unique<ChunkWriter>(
             file_, options_.chunk_size, options_.compression_level));
     }
+    // Before the threads start: they inherit a fixed CPU list, and drain
+    // thread 0 then owns the placer.
+    placer_.configure(options_.service_cpus);
     for (uint32_t i = 0; i < threads; ++i)
       threads_.emplace_back([this, i]() { drain(i); });
     if (region_->reserved_blocks() < region_->ring().block_count())
@@ -511,6 +515,50 @@ class RingSink {
     }
   }
 
+  // The processes the service has seen, and those holding a block now: a
+  // process is in the table only once one of its blocks is drained.
+  std::vector<uint32_t> client_pids() {
+    const uint32_t self = static_cast<uint32_t>(getpid());
+    std::vector<uint32_t> pids = clients_->pids(self);
+    const ipc::RingView& ring = region_->ring();
+    for (uint32_t i = 0; i < ring.block_count(); ++i) {
+      const ipc::BlockControl& block = ring.block(i);
+      if (block.claim_ns.load(std::memory_order_relaxed) == 0) continue;
+      const uint32_t pid = block.owner_pid.load(std::memory_order_relaxed);
+      if (pid != 0 && pid != self) pids.push_back(pid);
+    }
+    std::sort(pids.begin(), pids.end());
+    pids.erase(std::unique(pids.begin(), pids.end()), pids.end());
+    return pids;
+  }
+
+  /**
+   * Drain thread 0, between blocks: notices a process by the blocks claimed
+   * since the last look, so the service leaves its CPUs at once rather than
+   * at the next tick. A pid read before its producer wrote it is seen at
+   * the tick.
+   */
+  void watch_clients(uint64_t now) {
+    if (clients_ == nullptr || placer_.mode() != CpuPlacer::Mode::kAuto) return;
+    const ipc::RingView& ring = region_->ring();
+    const uint64_t head = ring.header()->head.load(std::memory_order_acquire);
+    if (head == seen_head_) return;
+    const uint64_t count = ring.block_count();
+    uint64_t seq = head - seen_head_ > count ? head - count : seen_head_;
+    seen_head_ = head;
+    const uint32_t self = static_cast<uint32_t>(getpid());
+    for (; seq < head; ++seq) {
+      const uint32_t pid =
+          ring.block(seq).owner_pid.load(std::memory_order_relaxed);
+      if (pid == 0 || pid == self ||
+          std::binary_search(placed_pids_.begin(), placed_pids_.end(), pid))
+        continue;
+      placed_pids_ = client_pids();
+      placer_.update(placed_pids_, now);
+      return;
+    }
+  }
+
   /** Controller, run by drain thread 0 between blocks. */
   void maybe_scale(uint64_t now) {
     if (now < next_tick_ || stop_.load(std::memory_order_relaxed)) return;
@@ -570,12 +618,19 @@ class RingSink {
         process_block(0, seq, true);
       }
     }
+    if (clients_ != nullptr && placer_.mode() == CpuPlacer::Mode::kAuto) {
+      placed_pids_ = client_pids();
+      placer_.update(placed_pids_, now);
+    }
     if (clients_ != nullptr && now >= next_reap_) {
       next_reap_ = now + 1000000000ULL;
       for (auto& process : clients_->take_finished(now, 2 * options_.flush_ns))
         finish(0, *process);
     }
   }
+
+  static constexpr uint32_t kIdleSleepMinUs = 200;
+  static constexpr uint32_t kIdleSleepMaxUs = 3200;
 
   /**
    * A drain thread while the application runs. It runs at
@@ -590,11 +645,13 @@ class RingSink {
     Load& load = load_[id];
     ChunkWriter* writer = writers_.empty() ? nullptr : writers_[id].get();
     uint32_t idle = 0;
+    uint32_t sleep_us = kIdleSleepMinUs;
     for (;;) {
       if (!wait_until_active(id)) break;
       uint64_t seq;
       if (claimer_->claim(seq)) {
         idle = 0;
+        sleep_us = kIdleSleepMinUs;
         const uint64_t t0 = ipc::monotonic_ns();
         process_block(id, seq, false);
         const uint64_t t1 = ipc::monotonic_ns();
@@ -604,19 +661,27 @@ class RingSink {
         load.blocks.store(load.blocks.load(std::memory_order_relaxed) + 1,
                           std::memory_order_relaxed);
         if (writer != nullptr) writer->flush_if_older(t1, options_.flush_ns);
-        if (id == 0) maybe_scale(t1);
+        if (id == 0) {
+          watch_clients(t1);
+          maybe_scale(t1);
+        }
         continue;
       }
       if (stop_.load(std::memory_order_acquire)) break;
       const uint64_t now = ipc::monotonic_ns();
       if (writer != nullptr) writer->flush_if_older(now, options_.flush_ns);
-      if (id == 0) maybe_scale(now);
-      // Nothing complete: back off from spinning to short sleeps, so an idle
-      // node costs the service almost nothing.
+      if (id == 0) {
+        watch_clients(now);
+        maybe_scale(now);
+      }
+      // Nothing complete: back off from spinning to sleeps that double, so
+      // waiting for the next block wakes the thread a few times, not once
+      // per kIdleSleepMinUs on a core the application may be using.
       if (++idle < 1024) {
         ipc::cpu_relax();
       } else {
-        std::this_thread::sleep_for(std::chrono::microseconds(200));
+        std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
+        sleep_us = std::min(2 * sleep_us, kIdleSleepMaxUs);
       }
     }
     if (writer != nullptr) writer->flush();
@@ -680,6 +745,11 @@ class RingSink {
   std::unique_ptr<ipc::ConsumerScaler> scaler_;
   NodeTraceFile file_;
   std::unique_ptr<ClientTable> clients_;
+  // Drain thread 0 only, once started: where the service runs, for which
+  // clients, and the ring head watch_clients() looked at last.
+  CpuPlacer placer_;
+  std::vector<uint32_t> placed_pids_;
+  uint64_t seen_head_ = 0;
   std::vector<std::thread> threads_;
   std::thread reserver_;
   std::vector<Stats> per_thread_;

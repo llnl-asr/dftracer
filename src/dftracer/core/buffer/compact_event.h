@@ -411,35 +411,34 @@ class Decoder {
 
   /** Decodes the event at `data`; views point into it. */
   bool event(const uint8_t* data, size_t size, ipc::DecodedEvent& out) {
-    p_ = data;
-    end_ = data + size;
+    Cursor c{data, data + size};
     shape_ = kNoShape;
     if (size < 2) return false;
     ipc::EventHead& h = out.head;
     h = ipc::EventHead{};
-    h.type = *p_++;
-    const uint8_t flags = *p_++;
+    h.type = *c.p++;
+    const uint8_t flags = *c.p++;
     h.flags =
         static_cast<uint8_t>(flags & ~(kSameSource | kShapeNew | kShaped));
     uint64_t v;
     uint64_t shape_id = 0;
     if ((flags & kShaped) != 0 &&
-        (!varint(shape_id) || shape_id >= shapes_.size()))
+        (!varint(c, shape_id) || shape_id >= shapes_.size()))
       return false;
     if ((flags & kSameSource) != 0) {
       ++index_;
-      if (!varint(v)) return false;
+      if (!varint(c, v)) return false;
       start_ += unzigzag(v);
-      if (!varint(h.duration)) return false;
+      if (!varint(c, h.duration)) return false;
     } else {
-      if (!varint(v)) return false;
+      if (!varint(c, v)) return false;
       index_ += unzigzag(v);
-      if (!varint(v)) return false;
+      if (!varint(c, v)) return false;
       start_ += unzigzag(v);
-      if (!varint(h.duration)) return false;
-      if (!varint(v)) return false;
+      if (!varint(c, h.duration)) return false;
+      if (!varint(c, v)) return false;
       pid_ += unzigzag(v);
-      if (!varint(v)) return false;
+      if (!varint(c, v)) return false;
       tid_ += unzigzag(v);
     }
     h.index = static_cast<int32_t>(index_);
@@ -447,30 +446,30 @@ class Decoder {
     h.process_id = static_cast<int32_t>(pid_);
     h.thread_id = tid_;
     if ((flags & kShaped) != 0) {
-      if (!shaped(shapes_[shape_id], out)) return false;
+      if (!shaped(c, shapes_[shape_id], out)) return false;
       shape_ = static_cast<size_t>(shape_id);
       return true;
     }
     uint32_t id;
-    if (!string(out.name, id) || !string(out.category, id)) return false;
+    if (!string(c, out.name, id) || !string(c, out.category, id)) return false;
     h.name_len = static_cast<uint16_t>(out.name.size());
     h.category_len = static_cast<uint16_t>(out.category.size());
     uint64_t count;
-    if (!varint(count) || count > 0xffff) return false;
+    if (!varint(c, count) || count > 0xffff) return false;
     h.meta_count = static_cast<uint16_t>(count);
     out.values.clear();
     out.values.reserve(count);
     for (uint64_t i = 0; i < count; ++i) {
-      if (p_ >= end_) return false;
+      if (c.p >= c.end) return false;
       ipc::DecodedValue d{};
-      const uint8_t head = *p_++;
+      const uint8_t head = *c.p++;
       d.tag = static_cast<ShmValueTag>(head & 7);
       d.mtype = static_cast<MetadataType>(head >> 3);
-      if (!string(d.key, id)) return false;
+      if (!string(c, d.key, id)) return false;
       switch (d.tag) {
         case SHM_VALUE_INT:
         case SHM_VALUE_UINT: {
-          if (!varint(v)) return false;
+          if (!varint(c, v)) return false;
           uint64_t last = 0;
           uint64_t* slot = id < kTrackedValues ? &values_[id] : &last;
           *slot += unzigzag(v);
@@ -481,14 +480,14 @@ class Decoder {
           break;
         }
         case SHM_VALUE_DOUBLE:
-          if (end_ - p_ < 8) return false;
-          std::memcpy(&d.d, p_, 8);
-          p_ += 8;
+          if (c.end - c.p < 8) return false;
+          std::memcpy(&d.d, c.p, 8);
+          c.p += 8;
           break;
         case SHM_VALUE_STRING:
         case SHM_VALUE_RAW_JSON: {
           uint32_t value_id;
-          if (!string(d.s, value_id)) return false;
+          if (!string(c, d.s, value_id)) return false;
           break;
         }
         default:
@@ -518,25 +517,38 @@ class Decoder {
     size_t count;
   };
 
-  bool shaped(const Shape& shape, ipc::DecodedEvent& out) {
+  // The read position: a local, so that it stays in a register through the
+  // byte stores into the decoded event.
+  struct Cursor {
+    const uint8_t* p;
+    const uint8_t* end;
+  };
+
+  __attribute__((always_inline)) bool shaped(Cursor& c, const Shape& shape,
+                                             ipc::DecodedEvent& out) {
     out.name = shape.name;
     out.category = shape.category;
     out.head.name_len = static_cast<uint16_t>(shape.name.size());
     out.head.category_len = static_cast<uint16_t>(shape.category.size());
     out.head.meta_count = static_cast<uint16_t>(shape.count);
-    out.values.clear();
-    out.values.reserve(shape.count);
+    // Filled in place: the vector keeps its size from one event of a shape
+    // to the next, so this costs no allocation or element copy.
+    out.values.resize(shape.count);
     for (size_t i = 0; i < shape.count; ++i) {
       ipc::DecodedValue& last = shape_values_[shape.first + i];
-      ipc::DecodedValue d{};
+      ipc::DecodedValue& d = out.values[i];
       d.tag = last.tag;
       d.mtype = last.mtype;
       d.key = last.key;
+      d.i = 0;
+      d.u = 0;
+      d.d = 0;
+      d.s = std::string_view();
       switch (d.tag) {
         case SHM_VALUE_INT:
         case SHM_VALUE_UINT: {
           uint64_t v;
-          if (!varint(v)) return false;
+          if (!varint(c, v)) return false;
           last.u += unzigzag(v);
           if (d.tag == SHM_VALUE_INT)
             d.i = static_cast<int64_t>(last.u);
@@ -545,25 +557,29 @@ class Decoder {
           break;
         }
         case SHM_VALUE_DOUBLE:
-          if (end_ - p_ < 8) return false;
-          std::memcpy(&d.d, p_, 8);
-          p_ += 8;
+          if (c.end - c.p < 8) return false;
+          std::memcpy(&d.d, c.p, 8);
+          c.p += 8;
           break;
         default: {
           uint32_t value_id;
-          if (!string(d.s, value_id)) return false;
+          if (!string(c, d.s, value_id)) return false;
           break;
         }
       }
-      out.values.push_back(d);
     }
     return true;
   }
 
-  bool varint(uint64_t& out) {
+  __attribute__((always_inline)) bool varint(Cursor& c, uint64_t& out) {
+    // Most values (deltas, ids, counts) take one byte.
+    if (c.p < c.end && *c.p < 0x80) {
+      out = *c.p++;
+      return true;
+    }
     uint64_t v = 0;
-    for (int shift = 0; shift < 64 && p_ < end_; shift += 7) {
-      const uint8_t b = *p_++;
+    for (int shift = 0; shift < 64 && c.p < c.end; shift += 7) {
+      const uint8_t b = *c.p++;
       v |= static_cast<uint64_t>(b & 0x7f) << shift;
       if ((b & 0x80) == 0) {
         out = v;
@@ -572,9 +588,10 @@ class Decoder {
     }
     return false;
   }
-  bool string(std::string_view& out, uint32_t& id) {
+  __attribute__((always_inline)) bool string(Cursor& c, std::string_view& out,
+                                             uint32_t& id) {
     uint64_t v;
-    if (!varint(v)) return false;
+    if (!varint(c, v)) return false;
     if ((v & 1) == 0) {
       if ((v >> 1) >= strings_.size()) return false;
       id = static_cast<uint32_t>(v >> 1);
@@ -582,16 +599,14 @@ class Decoder {
       return true;
     }
     const uint64_t n = v >> 1;
-    if (static_cast<uint64_t>(end_ - p_) < n) return false;
-    out = std::string_view(reinterpret_cast<const char*>(p_), n);
-    p_ += n;
+    if (static_cast<uint64_t>(c.end - c.p) < n) return false;
+    out = std::string_view(reinterpret_cast<const char*>(c.p), n);
+    c.p += n;
     id = static_cast<uint32_t>(strings_.size());
     strings_.push_back(out);
     return true;
   }
 
-  const uint8_t* p_ = nullptr;
-  const uint8_t* end_ = nullptr;
   std::vector<std::string_view> strings_;
   std::vector<Shape> shapes_;
   std::vector<ipc::DecodedValue> shape_values_;
