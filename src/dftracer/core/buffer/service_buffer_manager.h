@@ -74,6 +74,11 @@ class ServiceBufferManager : public BufferManager {
                       const dftracer::EventDraft* args, ProcessID process_id,
                       ThreadID tid) override;
   bool log_site_event(const dftracer::SiteEvent& e) override;
+  ServiceBufferManager* as_service() override { return this; }
+  // log_site_event() for callers in service_buffer_manager.cpp, inlined.
+  // With `slot_tid`, the thread id is the calling thread's, taken from its
+  // slot, in place of e.tid.
+  inline bool log_site_inline(const dftracer::SiteEvent& e, bool slot_tid);
   void log_record(ConstEventNameType record_name,
                   const dftracer::Metadata* fields, TraceEventType type,
                   ProcessID process_id, ThreadID tid) override;

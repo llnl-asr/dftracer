@@ -1066,6 +1066,8 @@ struct alignas(DFT_SHM_CACHE_LINE) ServiceSlot {
   uint32_t alive_skip = 0;      // events left before the next liveness check
   uint64_t alive_at = 0;        // event time of the last liveness check
   uint64_t generation = 0;
+  bool orphan = false;  // for threads past exit, held with orphan_mtx_
+  ThreadID tid = 0;     // of the thread that made it
   std::unique_ptr<ipc::RingProducer> producer;
   std::vector<uint8_t> scratch;
   ipc::Interner intern;  // strings already in the producer's block

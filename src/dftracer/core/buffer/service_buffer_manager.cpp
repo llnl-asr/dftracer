@@ -5,6 +5,7 @@
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/profiler.h>
 #include <dftracer/core/common/singleton.h>
+#include <dftracer/core/df_logger.h>
 #include <dftracer/core/utils/configuration_manager.h>
 #include <dftracer/core/utils/posix_bypass.h>
 #include <fcntl.h>
@@ -69,9 +70,10 @@ ServiceBufferManager::create_slot() {
   slot->generation = generation_.load(std::memory_order_acquire);
   // Once per thread: the service keeps one aggregation lane per producer
   // thread, keyed by this id.
+  slot->tid = static_cast<ThreadID>(syscall(SYS_gettid));
   slot->producer = std::make_unique<ipc::RingProducer>(
       region_->ring(), static_cast<uint32_t>(owner_pid_),
-      static_cast<uint32_t>(syscall(SYS_gettid)));
+      static_cast<uint32_t>(slot->tid));
   // Encoded into as a buffer (ByteWriter::Buffer): sized once, grown only
   // for a record larger than it.
   slot->scratch.resize(4096);
@@ -106,8 +108,10 @@ ServiceBufferManager::Slot* ServiceBufferManager::acquire_slot_slow() {
     // This thread's slot is gone; tl_ref must not be touched again.
     orphan_mtx_.lock();
     if (orphan_ == nullptr ||
-        orphan_->generation != generation_.load(std::memory_order_relaxed))
+        orphan_->generation != generation_.load(std::memory_order_relaxed)) {
       orphan_ = create_slot();
+      orphan_->orphan = true;
+    }
     Slot* s = orphan_.get();
     enter(s);
     return s;
@@ -124,7 +128,7 @@ ServiceBufferManager::Slot* ServiceBufferManager::acquire_slot_slow() {
 inline __attribute__((always_inline)) void ServiceBufferManager::release_slot(
     Slot* slot) {
   leave(slot);
-  if (tl_exited) orphan_mtx_.unlock();
+  if (slot->orphan) orphan_mtx_.unlock();
 }
 
 // Only the slot's thread enters it, once per event, and another thread claims
@@ -672,10 +676,15 @@ void ServiceBufferManager::log_data_event(
 }
 
 bool ServiceBufferManager::log_site_event(const dftracer::SiteEvent& e) {
+  return log_site_inline(e, false);
+}
+
+inline __attribute__((always_inline)) bool
+ServiceBufferManager::log_site_inline(const dftracer::SiteEvent& e,
+                                      bool slot_tid) {
   if (!is_ready() || region_ == nullptr) return false;
   const dftracer::SiteInfo& info = *e.info;
-  const size_t bound = compact::Encoder::bound(info.event_name, info.category,
-                                               info.args_size, info.count);
+  const size_t bound = info.bound;
   if (bound + sizeof(ipc::RecordHeader) > DFT_SHM_MAX_RECORD_LENGTH)
     return false;
   // Phases are counted only for an event logged here: a miss is counted by
@@ -704,7 +713,9 @@ bool ServiceBufferManager::log_site_event(const dftracer::SiteEvent& e) {
     size_t bytes = 0;
     if (capacity >= bound && slot->encoder_block == producer.block_serial()) {
       DFTRACER_PROFILE_BEGIN(encode_frame);
-      bytes = slot->encoder->site_event(r.payload, e, flags);
+      dftracer::SiteEvent se = e;
+      if (slot_tid) se.tid = slot->orphan ? df_gettid() : slot->tid;
+      bytes = slot->encoder->site_event(r.payload, se, flags);
       if (bytes != 0) {
         DFTRACER_PROFILE_END(encode_frame,
                              DFTRACER_PROFILE_PHASE(SERIALIZATION), true);
@@ -788,3 +799,21 @@ void ServiceBufferManager::log_metadata_event(ConstEventNameType name,
 }
 
 }  // namespace dftracer
+
+void DFTLogger::log_site_service(const dftracer::SiteInfo& info,
+                                 TimeResolution start_time,
+                                 TimeResolution duration,
+                                 const dftracer::EventDraft::Entry* args) {
+  const int index = increment_index();
+  if (__builtin_expect(!mpi_event, 0) && dftracer_module_mpi_rank != nullptr)
+    handle_mpi(dftracer_tid ? df_gettid() : 0);
+  if (this->buffer_manager == nullptr) return;
+  // The thread id comes from the thread's ring slot, which keeps it.
+  dftracer::SiteEvent e{
+      &info, index, start_time, duration, args, this->process_id, 0};
+  if (!site_sink_->log_site_inline(e, dftracer_tid)) {
+    e.tid = dftracer_tid ? df_gettid() : 0;
+    log_site_draft(e);
+  }
+  note_logged(info.type);
+}

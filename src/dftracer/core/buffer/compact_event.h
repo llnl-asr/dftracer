@@ -63,7 +63,7 @@ inline uint64_t unzigzag(uint64_t v) { return (v >> 1) ^ (0 - (v & 1)); }
 // Values of keys with an id below this are sent as changes.
 constexpr uint32_t kTrackedValues = 256;
 // Largest varint plus the head bytes of an entry or event field.
-constexpr size_t kVarintMax = 10;
+constexpr size_t kVarintMax = kCompactVarintMax;
 // Flag bits of this encoding only; the decoder clears them.
 constexpr uint8_t kSameSource = 0x20;
 constexpr uint8_t kShapeNew = 0x40;
@@ -75,6 +75,7 @@ static_assert(((kSameSource | kShapeNew | kShaped) &
 
 class Encoder {
   static constexpr uint32_t kShapes = 64;
+  static constexpr uint32_t kSiteIds = 256;
   struct Shape {
     uint32_t block = 0;  // the block_ it was made in; another is stale
     uint32_t id;
@@ -85,6 +86,8 @@ class Encoder {
     // Bit i: arg i is a string (or raw JSON), or a double.
     uint32_t strings;
     uint32_t doubles;
+    // Arg 0 is a string and the rest are integers, as at every fused site.
+    bool fused;
     uint32_t heads[EventDraft::kShapeKeys];
     uint64_t last[EventDraft::kShapeKeys];
   };
@@ -95,6 +98,7 @@ class Encoder {
     std::memset(slots_, 0, sizeof(slots_));
     std::memset(last_, 0, sizeof(last_));
     std::memset(values_, 0, sizeof(values_));
+    std::memset(by_site_, 0, sizeof(by_site_));
     next_id_ = 0;
     index_ = start_ = pid_ = tid_ = 0;
     ++block_;
@@ -111,8 +115,7 @@ class Encoder {
   /** bound() of a draft whose size() is `args_size`, with `count` entries. */
   static size_t bound(std::string_view name, std::string_view category,
                       size_t args_size, uint16_t count) {
-    return 2 + 8 * kVarintMax + name.size() + category.size() + args_size +
-           count * (2 * kVarintMax);
+    return compact_bound(name.size(), category.size(), args_size, count);
   }
 
   /**
@@ -154,13 +157,15 @@ class Encoder {
                                                    const SiteEvent& e,
                                                    uint8_t flags) {
     const SiteInfo& info = *e.info;
-    const uint32_t h = shape_slot(info.site);
-    Shape* a = &shapes_[h];
-    Shape* b = &shapes_[h ^ 1];
-    Shape* s = matches(*a, info.site, info.sig, info.count)   ? a
-               : matches(*b, info.site, info.sig, info.count) ? b
-                                                              : nullptr;
-    if (s == nullptr) return 0;
+    Shape* s = info.id < kSiteIds ? by_site_[info.id] : nullptr;
+    // A site's sig and count never change, so a shape of this block made for
+    // this site is its shape.
+    if (__builtin_expect(
+            s == nullptr || s->block != block_ || s->site != info.site, 0)) {
+      s = find(info);
+      if (s == nullptr) return 0;
+      if (info.id < kSiteIds) by_site_[info.id] = s;
+    }
     return shaped(out, *s, e.index, info.type, e.start_time, e.duration, e.args,
                   e.process_id, e.tid, flags);
   }
@@ -234,6 +239,15 @@ class Encoder {
     return p;
   }
 
+  __attribute__((noinline)) Shape* find(const SiteInfo& info) {
+    const uint32_t h = shape_slot(info.site);
+    Shape* a = &shapes_[h];
+    Shape* b = &shapes_[h ^ 1];
+    return matches(*a, info.site, info.sig, info.count)   ? a
+           : matches(*b, info.site, info.sig, info.count) ? b
+                                                          : nullptr;
+  }
+
   static uint32_t shape_slot(const void* site) {
     const uint64_t h =
         static_cast<uint64_t>(reinterpret_cast<uintptr_t>(site)) *
@@ -262,6 +276,7 @@ class Encoder {
       if (es[i].is_string()) s.strings |= 1u << i;
       if (es[i].tag() == SHM_VALUE_DOUBLE) s.doubles |= 1u << i;
     }
+    s.fused = s.strings == 1 && s.doubles == 0;
   }
 
   __attribute__((always_inline)) size_t shaped(
@@ -280,6 +295,16 @@ class Encoder {
     const uint32_t strings = s.strings;
     const uint32_t doubles = s.doubles;
     uint64_t* last = s.last;
+    if (s.fused) {
+      uint32_t value_id;
+      p = string(p, es[0].str, es[0].value_len, value_id, 3);
+      for (uint32_t i = 1; i < count; ++i) {
+        const uint64_t v = es[i].bits;
+        p = put_varint(p, zigzag(v - last[i]));
+        last[i] = v;
+      }
+      return static_cast<size_t>(p - out);
+    }
     for (uint32_t i = 0; i < count; ++i) {
       const EventDraft::Entry& e = es[i];
       if (((strings >> i) & 1) != 0) {
@@ -315,7 +340,8 @@ class Encoder {
                        static_cast<uint8_t>(s[n / 2]) * 131;
     return (h ^ (h >> 6)) & (kSlots - 1);
   }
-  static bool same(const uint8_t* a, const char* b, size_t n) {
+  __attribute__((always_inline)) static bool same(const uint8_t* a,
+                                                  const char* b, size_t n) {
     if (n >= 8 && n <= 16) {
       uint64_t a0, a1, b0, b1;
       std::memcpy(&a0, a, 8);
@@ -384,6 +410,8 @@ class Encoder {
   uint64_t index_ = 0, start_ = 0, pid_ = 0, tid_ = 0;
   // Two ways per hash: shapes_[h] and shapes_[h ^ 1].
   Shape shapes_[kShapes];
+  // A site's shape from its last event, checked by matches() before use.
+  Shape* by_site_[kSiteIds];
   uint32_t block_ = 0;
   uint32_t next_shape_ = 0;
   uint64_t tick_ = 0;

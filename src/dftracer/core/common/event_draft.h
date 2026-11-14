@@ -8,6 +8,7 @@
 #include <dftracer/core/serialization/metadata_json.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -448,6 +449,16 @@ class EventDraft {
  * category and type, and the site, sig(), size() and count() of a draft
  * that holds its args. Built once per site.
  */
+/** Largest varint, and room for the head bytes of an event field. */
+constexpr size_t kCompactVarintMax = 10;
+
+/** An upper bound of a compact event of these sizes (Encoder::bound). */
+constexpr size_t compact_bound(size_t name, size_t category, size_t args_size,
+                               size_t count) {
+  return 2 + 8 * kCompactVarintMax + name + category + args_size +
+         count * (2 * kCompactVarintMax);
+}
+
 struct SiteInfo {
   const void* site;
   std::string_view event_name;
@@ -456,19 +467,37 @@ struct SiteInfo {
   uint64_t sig;
   size_t args_size;
   uint16_t count;
+  // Small and dense across the sites of a process; it only speeds up lookups.
+  uint32_t id;
+  size_t bound;  // compact_bound() of its events
 
   template <size_t N>
   static SiteInfo of(const void* site, std::string_view event_name,
                      std::string_view category, TraceEventType type,
                      const EventDraft::Entry (&args)[N]) {
     static_assert(N <= EventDraft::kShapeKeys);
-    SiteInfo info{
-        site, event_name, category, type, 0, 0, static_cast<uint16_t>(N)};
+    SiteInfo info{site,
+                  event_name,
+                  category,
+                  type,
+                  0,
+                  0,
+                  static_cast<uint16_t>(N),
+                  next_id().fetch_add(1, std::memory_order_relaxed),
+                  0};
     for (const EventDraft::Entry& e : args) {
       info.sig = EventDraft::mix(info.sig, e);
       info.args_size += EventDraft::wire_size(e);
     }
+    info.bound =
+        compact_bound(event_name.size(), category.size(), info.args_size, N);
     return info;
+  }
+
+ private:
+  static std::atomic<uint32_t>& next_id() {
+    static std::atomic<uint32_t> next{0};
+    return next;
   }
 };
 

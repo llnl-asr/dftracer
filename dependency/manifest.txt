@@ -6,4 +6,5 @@ gotcha       v1.0.10          https://github.com/LLNL/GOTCHA.git
 cpp-logger   e2f126e9fe71f7f49ad4c8b69c45e6508e1ad907 https://github.com/llnl-asr/cpp-logger.git
 yaml-cpp     yaml-cpp-0.6.3   https://github.com/jbeder/yaml-cpp.git
 libuv        v1.52.1          https://github.com/libuv/libuv.git
-brahma       f1f4bc4d7ea36ebef715a851220322b23ba8dbc9 https://github.com/llnl-asr/brahma.git
+# TODO(ray): change this when we bump version
+brahma       4e4c917c151c99cde803bf43385a2613d02dfa85 https://github.com/llnl-asr/brahma.git

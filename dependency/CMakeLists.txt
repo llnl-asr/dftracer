@@ -196,7 +196,8 @@ endif()
 # commit not yet released) for testing dftracer against it.
 set(DFTRACER_BRAHMA_GIT_REPOSITORY "https://github.com/llnl-asr/brahma.git" CACHE STRING
     "Git repository brahma is built from")
-set(DFTRACER_BRAHMA_GIT_TAG "f1f4bc4d7ea36ebef715a851220322b23ba8dbc9" CACHE STRING "Tag, branch or commit of brahma to build")
+# TODO(ray): change this when we bump version
+set(DFTRACER_BRAHMA_GIT_TAG "4e4c917c151c99cde803bf43385a2613d02dfa85" CACHE STRING "Tag, branch or commit of brahma to build")
 set(_brahma_variants_dir "${CMAKE_INSTALL_PREFIX}/brahma-variants")
 find_package(brahma 5.1.1 QUIET)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/modules/DFTracerBrahmaCheck.cmake)

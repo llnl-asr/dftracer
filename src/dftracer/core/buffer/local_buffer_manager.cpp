@@ -660,9 +660,7 @@ void LocalBufferManager::log_data_event(
 
 bool LocalBufferManager::log_site_event(const dftracer::SiteEvent& e) {
   const dftracer::SiteInfo& info = *e.info;
-  if (!is_ready() ||
-      compact::Encoder::bound(info.event_name, info.category, info.args_size,
-                              info.count) > DFTRACER_SERIALIZATION_EVENT_MAX)
+  if (!is_ready() || info.bound > DFTRACER_SERIALIZATION_EVENT_MAX)
     return false;
   // Counted only for an event logged here: a miss is counted by the
   // log_data_event() that follows.

@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 namespace dftracer {
+class ServiceBufferManager;
 /**
  * Where a process's events go. Two implementations, chosen once per process
  * by BufferManagerFactory:
@@ -95,6 +96,9 @@ class BufferManager {
    * same index.
    */
   virtual bool log_site_event(const SiteEvent& /*e*/) { return false; }
+
+  /** This manager when it sends events to the pc-mode service, else null. */
+  virtual ServiceBufferManager* as_service() { return nullptr; }
 
   // Metadata record whose args are the fields (see JsonLines::record). Does
   // not take ownership of fields.

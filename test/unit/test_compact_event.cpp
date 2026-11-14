@@ -65,6 +65,26 @@ void check_head(const ipc::DecodedEvent& d, const Event& e) {
   DFT_CHECK(d.head.flags == e.flags);
 }
 
+// `got` has the args of `draft` encoded alone in full for `e`.
+void check_values(const ipc::DecodedEvent& got, const Event& e,
+                  const EventDraft& draft) {
+  compact::Encoder full;
+  Block one;
+  add(one, full, e, draft);
+  compact::Decoder alone;
+  ipc::DecodedEvent want;
+  DFT_CHECK(alone.event(one.bytes.data(), one.ends[0], want));
+  DFT_CHECK(got.values.size() == want.values.size());
+  DFT_CHECK(got.head.meta_count == want.head.meta_count);
+  for (size_t k = 0; k < want.values.size(); ++k) {
+    const ipc::DecodedValue& a = got.values[k];
+    const ipc::DecodedValue& b = want.values[k];
+    DFT_CHECK(a.key == b.key && a.tag == b.tag && a.mtype == b.mtype);
+    DFT_CHECK(a.i == b.i && a.u == b.u && a.s == b.s);
+    DFT_CHECK(a.d == b.d);
+  }
+}
+
 // Events sent by their shape decode to the same fields as events sent in
 // full: shapes that alternate, share keys, clash in the table, change a
 // key's type, have no call site or are broken by a dynamic or replaced key.
@@ -197,23 +217,7 @@ void test_shapes() {
     }
     shaped_lines += dec.shape() != compact::Decoder::kNoShape;
     at = block.ends[i];
-    // Encode the draft alone in full and compare the args.
-    compact::Encoder full;
-    Block one;
-    EventDraft& d = drafts[i];
-    add(one, full, events[i], d);
-    compact::Decoder alone;
-    ipc::DecodedEvent want;
-    DFT_CHECK(alone.event(one.bytes.data(), one.ends[0], want));
-    DFT_CHECK(out.values.size() == want.values.size());
-    DFT_CHECK(out.head.meta_count == want.head.meta_count);
-    for (size_t k = 0; k < want.values.size(); ++k) {
-      const ipc::DecodedValue& a = out.values[k];
-      const ipc::DecodedValue& b = want.values[k];
-      DFT_CHECK(a.key == b.key && a.tag == b.tag && a.mtype == b.mtype);
-      DFT_CHECK(a.i == b.i && a.u == b.u && a.s == b.s);
-      DFT_CHECK(a.d == b.d);
-    }
+    check_values(out, events[i], drafts[i]);
   }
 
   DFT_CHECK(shaped_lines > events.size() / 2);
@@ -333,9 +337,11 @@ void test_number() {
 }
 
 // A fused interceptor's args (EventDraft::entry() and Encoder::site_event())
-// give the same bytes as the EventDraft of the same calls.
-void test_site_event() {
-  static char site;
+// give the same bytes as the EventDraft of the same calls. Event i comes from
+// site site_of(i); more sites than the encoder keeps shapes for evict them.
+template <typename SiteOf>
+void test_site_event(int sites, SiteOf site_of) {
+  static char site_storage[100];
   static const char kFhash[] = "fhash";
   static const char kCount[] = "count";
   static const char kOffset[] = "offset";
@@ -346,7 +352,13 @@ void test_site_event() {
   Block plain;
   Block fused;
   int fused_hits = 0;
+  int defined = 0;
+  std::vector<SiteInfo> infos;
+  std::vector<Event> events;
+  std::vector<EventDraft> drafts;
+  drafts.reserve(200);
   for (int i = 0; i < 200; ++i) {
+    const char& site = site_storage[site_of(i)];
     const size_t count = 4096 + (i % 3);
     const off_t offset = static_cast<off_t>(i) * 4096 - 100;
     const ssize_t ret = i % 7 == 0 ? -1 : static_cast<ssize_t>(count);
@@ -359,7 +371,9 @@ void test_site_event() {
                   42,
                   static_cast<ThreadID>(i % 50 == 0 ? 8 : 7),
                   static_cast<uint8_t>(SHM_EVENT_HAS_METADATA)};
-    EventDraft d;
+    events.push_back(e);
+    drafts.emplace_back();
+    EventDraft& d = drafts.back();
     d.set_site(&site);
     d.set(StaticKey{kFhash}, hash);
     d.set(StaticKey{kCount}, count, MetadataType::MT_VALUE);
@@ -383,13 +397,19 @@ void test_site_event() {
     DFT_CHECK(bound == compact::Encoder::bound(e.name, e.category, &d));
     const size_t at = fused.bytes.size();
     fused.bytes.resize(at + bound);
-    const SiteInfo info = SiteInfo::of(&site, e.name, e.category, e.type, args);
+    if (infos.empty())
+      for (int k = 0; k < sites; ++k)
+        infos.push_back(
+            SiteInfo::of(&site_storage[k], e.name, e.category, e.type, args));
+    const SiteInfo& info = infos[site_of(i)];
     DFT_CHECK(info.sig == sig && info.args_size == size && info.count == 4);
+    DFT_CHECK(info.bound == bound);
     const SiteEvent se{&info, e.index, e.start, e.duration, args, e.pid, e.tid};
     size_t n = site_enc.site_event(fused.bytes.data() + at, se, e.flags);
     if (n != 0) {
       ++fused_hits;
     } else {
+      ++defined;
       EventDraft back;
       back.set_site(&site);
       for (const EventDraft::Entry& a : args) back.append(a);
@@ -406,16 +426,36 @@ void test_site_event() {
       site_enc.reset();
     }
   }
-  DFT_CHECK(fused_hits == 198);
+  if (sites == 1) DFT_CHECK(fused_hits == 198);
+  DFT_CHECK(fused_hits + defined == 200 && fused_hits > 0);
   DFT_CHECK(fused.ends == plain.ends);
   DFT_CHECK(fused.bytes == plain.bytes);
+
+  compact::Decoder dec;
+  ipc::DecodedEvent out;
+  size_t at = 0;
+  for (size_t i = 0; i < events.size(); ++i) {
+    if (i == 100) dec.reset();
+    DFT_CHECK(dec.event(fused.bytes.data() + at, fused.ends[i] - at, out));
+    check_head(out, events[i]);
+    check_values(out, events[i], drafts[i]);
+    at = fused.ends[i];
+  }
 }
 
 int main() {
   test_escape();
   test_number();
   test_shapes();
-  test_site_event();
+  test_site_event(1, [](int) { return 0; });
+  test_site_event(3, [](int i) { return i % 3; });
+  test_site_event(40, [](int i) { return i % 40; });
+  // Site 0 three times, then 80 others that take its shape's slot, then site
+  // 0 again; then the same in the next block.
+  test_site_event(81, [](int i) {
+    const int k = i % 100;
+    return k < 3 || k >= 83 ? 0 : k - 2;
+  });
   compact::Encoder enc;
   Block block;
   std::vector<Event> events;
