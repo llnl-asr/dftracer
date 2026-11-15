@@ -2238,7 +2238,12 @@ if [ "$USE_PYTHON" = "yes" ]; then
     fi
 fi
 
-collect_python_runtime_library_paths
+# Python's LIBDIR goes on the tests' library path only when the tests use
+# that Python: a conda LIBDIR also holds libhdf5, libstdc++ and others, which
+# would shadow the libraries the build was linked against.
+if [ "$USE_PYTHON" = "yes" ]; then
+    collect_python_runtime_library_paths
+fi
 collect_cxx_runtime_library_paths
 
 # Handle --clean-install flag
