@@ -4,15 +4,15 @@
 
 # DFTracer
 
-**Version:** `$(cat PACKAGE_VERSION 2>/dev/null || echo "2.0.2")`
-
 [![Build and Test](https://github.com/llnl-asr/dftracer/actions/workflows/ci.yml/badge.svg)](https://github.com/llnl-asr/dftracer/actions/workflows/ci.yml)
-[![Coverage Status](https://coveralls.io/repos/github/LLNL/dftracer/badge.svg?branch=develop)](https://coveralls.io/github/LLNL/dftracer?branch=develop)
 [![Documentation Status](https://readthedocs.org/projects/dftracer/badge/?version=latest)](https://dftracer.readthedocs.io/en/latest/?badge=latest)
 ![PyPI - Version](https://img.shields.io/pypi/v/dftracer?label=PyPI)
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/dftracer?label=Wheel)
 ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/dftracer?label=Python)
 ![PyPI - License](https://img.shields.io/pypi/l/dftracer?label=License)
+<!-- Disabled: Coveralls only receives coverage from pull requests, so the develop badge shows "unknown".
+[![Coverage Status](https://coveralls.io/repos/github/LLNL/dftracer/badge.svg?branch=develop)](https://coveralls.io/github/LLNL/dftracer?branch=develop)
+-->
 
 ## Overview
 
@@ -20,25 +20,12 @@ DFTracer is a tracing tool designed to capture both application-code and I/O-cal
 
 ## Prerequisites
 
-Requirements for DFTracer
-
 1. Python>=3.7
-1. pybind11
+1. For building from source: a C++17 compiler (GCC 9 or newer) and CMake 3.24 or newer.
+   See [With MPI, HDF5 or HIP support](#with-mpi-hdf5-or-hip-support).
 
-Requirements for DFAnalyzer
-
-1. bokeh>=2.4.2
-1. dask>=2023.5.0
-1. distributed
-1. matplotlib>=3.7.3
-1. numpy>=1.24.3
-1. pandas>=2.0.3
-1. pyarrow>=12.0.1
-1. pybind11
-1. python-intervals>=1.10.0.post1
-1. rich>=13.6.0
-1. seaborn>=0.13.2
-1. [zindex_py](https://github.com/hariharan-devarajan/zindex.git)
+The prebuilt wheel needs nothing beyond Python. Build tools such as `pybind11`
+are installed by `pip` automatically.
 
 ## Installation
 
@@ -49,9 +36,8 @@ This method works for both native Python and Conda environments.
 
 ```bash
 pip install dftracer
+# DFAnalyzer (trace analysis) is a separate package; it needs Python>=3.9
 pip install dftracer[dfanalyzer]
-# if you want to use old version of DFAnalyzer
-# pip install dftracer[dfanalyzer_old]
 ```
 
 This installs a prebuilt wheel that traces POSIX and STDIO I/O. It needs nothing
@@ -71,9 +57,7 @@ pip install dftracer==2.1.0.post5.dev0   # a specific one
 ```bash
 DFTRACER_VERSION=develop
 pip install git+https://github.com/llnl-asr/dftracer.git@${DFTRACER_VERSION}
-pip install git+https://github.com/llnl-asr/dftracer.git@${DFTRACER_VERSION}#egg=dftracer[dfanalyzer]
-# if you want to use old version of DFAnalyzer
-# pip install git+https://github.com/llnl-asr/dftracer.git@${DFTRACER_VERSION}#egg=dftracer[dfanalyzer_old]
+pip install "dftracer[dfanalyzer] @ git+https://github.com/llnl-asr/dftracer.git@${DFTRACER_VERSION}"
 ```
 
 ### From Source
@@ -81,20 +65,33 @@ pip install git+https://github.com/llnl-asr/dftracer.git@${DFTRACER_VERSION}#egg
 ```bash
 git clone https://github.com/llnl-asr/dftracer.git
 cd dftracer
-# You can skip this for installing the dev branch.
-# for latest stable version use master branch.
-git checkout tags/<Release> -b <Release>
+# This builds the develop branch. For a release, check out its tag instead:
+# git checkout tags/<Release> -b <Release>
 pip install .
 ```
 
 ### With MPI, HDF5 or HIP support
 
-These are compile-time options, so they need a build against the libraries you
-actually run with. The prebuilt wheel cannot carry them: DFTracer intercepts
-calls into the MPI/HDF5 library the application loads, and the interception is
-generated for a specific implementation and version, so a wheel built elsewhere
-would trace nothing. Build from the source distribution instead, the way
-`mpi4py` does:
+MPI, HDF5 and HIP support has to match the libraries you run with: DFTracer
+intercepts calls into the MPI/HDF5 library the application loads, and the
+interception is generated for a specific implementation and version. There are
+two ways to get that.
+
+**Compose prebuilt modules.** `dftracer-modules` ships that support prebuilt for
+each library version, and `dftracer-compose` links the ones that fit the machine
+(building any it lacks from source). Run it in the environment you trace in, with
+CMake 3.24 or newer available:
+
+```bash
+pip install "dftracer[modules]"
+dftracer-compose                        # link what this machine needs
+dftracer_install_info --composition     # show what got linked
+```
+
+See [Composable install](https://dftracer.readthedocs.io/en/latest/composable_install.html)
+for details.
+
+**Or build from source**, the way `mpi4py` does:
 
 ```bash
 # MPI and HDF5 must be discoverable by CMake (module load, spack load, ...)
@@ -140,9 +137,22 @@ when it is reachable.
 ## Usage
 
 ```python
+import os
+from multiprocessing import get_context
+from time import sleep
+
+import numpy as np
 from dftracer.python import dftracer, dft_fn
+
+cwd = os.getcwd()
+os.makedirs(f"{cwd}/data", exist_ok=True)
+
 log_inst = dftracer.initialize_log(logfile=None, data_dir=None, process_id=-1)
 dft_fn = dft_fn("COMPUTE")
+
+# Initializer for spawned workers, so they also trace.
+def init():
+    dftracer.initialize_log(logfile=None, data_dir=None, process_id=-1)
 
 # Example of using function decorators
 @dft_fn.log
@@ -174,8 +184,10 @@ def npz_calls(index):
 def main():
     log_events(0)
     npz_calls(1)
-    with get_context('spawn').Pool(1, initializer=init) as pool:
-        pool.map(posix_calls, ((2, True),))
+    pool = get_context('spawn').Pool(1, initializer=init)
+    pool.map(posix_calls, ((2, True),))
+    pool.close()
+    pool.join()
     log_inst.finalize()
 
 if __name__ == "__main__":
@@ -203,7 +215,7 @@ For more examples, click [here](https://dftracer.readthedocs.io/en/latest/exampl
 * Building DFTracer: [https://dftracer.readthedocs.io/en/latest/build.html](https://dftracer.readthedocs.io/en/latest/build.html)
 * Integrating DFTracer: [https://dftracer.readthedocs.io/en/latest/examples.html](https://dftracer.readthedocs.io/en/latest/examples.html)
 * Visualizing DFTracer Traces: [https://dftracer.readthedocs.io/en/latest/perfetto.html](https://dftracer.readthedocs.io/en/latest/perfetto.html)
-* Building DFAnalyzer: [https://dftracer.readthedocs.io/en/latest/dfanalyzer_build.html](https://dftracer.readthedocs.io/en/latest/dfanalyzer_build.html)
+* DFAnalyzer: [https://dftracer.readthedocs.io/projects/dfanalyzer/en/latest/index.html](https://dftracer.readthedocs.io/projects/dfanalyzer/en/latest/index.html)
 
 ## Citation and Reference
 
