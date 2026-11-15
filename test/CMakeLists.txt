@@ -1553,10 +1553,17 @@ if(TARGET ${PROJECT_NAME}_service)
     add_library(dftracer_test_variorum_08 SHARED variorum/variorum_stub.c)
     target_compile_definitions(dftracer_test_variorum_08 PRIVATE VARIORUM_STUB_API_08)
     add_library(dftracer_test_variorum_07 SHARED variorum/variorum_stub.c)
+    foreach(_stub EXIT CRASH HANG)
+        string(TOLOWER ${_stub} _stub_name)
+        add_library(dftracer_test_variorum_${_stub_name} SHARED variorum/variorum_stub.c)
+        target_compile_definitions(dftracer_test_variorum_${_stub_name} PRIVATE VARIORUM_STUB_${_stub})
+    endforeach()
     add_test(NAME check_variorum_runtime
         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/check_variorum_runtime.sh
         $<TARGET_FILE:${PROJECT_NAME}_service> $<TARGET_FILE:dftracer_test_variorum_08>
-        $<TARGET_FILE:dftracer_test_variorum_07> ${CMAKE_CURRENT_BINARY_DIR}/variorum_runtime)
+        $<TARGET_FILE:dftracer_test_variorum_07> ${CMAKE_CURRENT_BINARY_DIR}/variorum_runtime
+        $<TARGET_FILE:dftracer_test_variorum_exit> $<TARGET_FILE:dftracer_test_variorum_crash>
+        $<TARGET_FILE:dftracer_test_variorum_hang>)
 endif()
 # dftracer-compose changing an install: settings, staged install, locking,
 # a failed or read-only relink (see py/test_compose_cli.py).
