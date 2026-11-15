@@ -6,9 +6,12 @@
 #   0.8 API (variorum_get_power_json)    power records, per family
 #   0.7 API (variorum_get_node_power_json) none, and the service still runs
 #   a library that does not exist          none, and the service still runs
+#   a library that exits, crashes or hangs none, and the service still runs
 #   check_variorum_runtime.sh <dftracer_service> <0.8 stub> <0.7 stub> <work dir>
+#     <exit stub> <crash stub> <hang stub>
 set -uo pipefail
 service=${1:?service} stub08=${2:?stub} stub07=${3:?stub} work=${4:?work dir}
+stub_exit=${5:?stub} stub_crash=${6:?stub} stub_hang=${7:?stub}
 mkdir -p "$work"
 status=0
 
@@ -27,7 +30,15 @@ run() {
     status=1
     return
   fi
-  local records families
+  local records families cpu
+  # CPU telemetry is sampled whatever Variorum does: none means the service
+  # did not keep running.
+  cpu=$(zcat -f "$trace" | grep -c '"name":"cpu"')
+  if [ "$cpu" -eq 0 ]; then
+    echo "FAIL $name: the service did not keep running (no cpu records)" >&2
+    status=1
+    return
+  fi
   records=$(zcat -f "$trace" | grep -c '"name":"power"')
   families=$(zcat -f "$trace" | grep -oE '"name":"power","cat":"[a-z]+"' |
     sed 's/.*"cat":"//; s/"//' | sort -u | tr '\n' ' ')
@@ -49,4 +60,7 @@ run() {
 run api-0.8 "$stub08"
 run api-0.7 "$stub07"
 run missing "$work/no-such-libvariorum.so"
+run exits "$stub_exit"
+run crashes "$stub_crash"
+run hangs "$stub_hang"
 exit "$status"

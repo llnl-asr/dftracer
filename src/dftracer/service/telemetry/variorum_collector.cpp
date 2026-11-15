@@ -3,8 +3,15 @@
 #include <dftracer/core/utils/configuration_manager.h>
 #include <dftracer/service/telemetry/variorum_collector.h>
 #include <dlfcn.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
 
+#include <cerrno>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <dftracer/core/dftracer_config.hpp>
 #include <string>
 #include <utility>
@@ -24,11 +31,99 @@ namespace {
 // it, and the system's).
 using variorum_get_power_json_fn = int (*)(char **);
 
+enum class ProbeExit : int {
+  kRead = 0,
+  kNoCall = 3,
+  kCallFailed = 4,
+  kLibraryExited = 5,
+};
+constexpr int kProbeTimeoutMs = 10000;
+constexpr int kProbePollMs = 20;
+
+void exit_from_library() { _exit(static_cast<int>(ProbeExit::kLibraryExited)); }
+
+[[noreturn]] void run_probe(const char *library) {
+  // Registered last, so it runs first: a library that calls exit() ends the
+  // child here, before the service's own exit handlers and destructors run.
+  atexit(exit_from_library);
+  void *handle = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+  auto call = handle == nullptr ? nullptr
+                                : reinterpret_cast<variorum_get_power_json_fn>(
+                                      dlsym(handle, "variorum_get_power_json"));
+  if (call == nullptr) _exit(static_cast<int>(ProbeExit::kNoCall));
+  char *payload = nullptr;
+  _exit(static_cast<int>(call(&payload) == 0 ? ProbeExit::kRead
+                                             : ProbeExit::kCallFailed));
+}
+
+// Variorum ends the process with exit() on a topology it does not handle
+// (corona's login nodes: "hwloc reports the number of threads (2) mod the
+// number of cores (8) is not zero"), so its first call runs in a child. The
+// service loads it only if that call returned: a crash, an exit or a hang
+// there turns power telemetry off instead of taking the service down.
+bool variorum_survives(const char *library) {
+  fflush(nullptr);
+  const pid_t pid = fork();
+  if (pid < 0) {
+    DFTRACER_LOG_ERROR(
+        "Cannot fork to check Variorum (%s): %s; power telemetry disabled",
+        library, strerror(errno));
+    return false;
+  }
+  if (pid == 0) run_probe(library);
+
+  int status = 0;
+  for (int waited_ms = 0;; waited_ms += kProbePollMs) {
+    const pid_t done = waitpid(pid, &status, WNOHANG);
+    if (done == pid) break;
+    if (done < 0 && errno != EINTR) {
+      DFTRACER_LOG_ERROR("Lost the Variorum check (%s): %s", library,
+                         strerror(errno));
+      return false;
+    }
+    if (waited_ms >= kProbeTimeoutMs) {
+      kill(pid, SIGKILL);
+      waitpid(pid, &status, 0);
+      DFTRACER_LOG_ERROR(
+          "Variorum (%s) did not return from variorum_get_power_json within "
+          "%d s; power telemetry disabled",
+          library, kProbeTimeoutMs / 1000);
+      return false;
+    }
+    const struct timespec pause = {0, kProbePollMs * 1000000L};
+    nanosleep(&pause, nullptr);
+  }
+
+  if (WIFSIGNALED(status)) {
+    DFTRACER_LOG_ERROR(
+        "Variorum (%s) was killed by signal %d in variorum_get_power_json; "
+        "power telemetry disabled",
+        library, WTERMSIG(status));
+    return false;
+  }
+  switch (static_cast<ProbeExit>(WEXITSTATUS(status))) {
+    case ProbeExit::kRead:
+    case ProbeExit::kNoCall:
+    case ProbeExit::kCallFailed:
+      // Safe to load here; initialize() reports a missing or failing call.
+      return true;
+    case ProbeExit::kLibraryExited:
+      break;
+  }
+  DFTRACER_LOG_ERROR(
+      "Variorum (%s) ended the process in variorum_get_power_json (its "
+      "message is above); power telemetry disabled",
+      library);
+  return false;
+}
+
 variorum_get_power_json_fn variorum_get_power_json_symbol() {
   static const variorum_get_power_json_fn fn = []() {
     const char *named = std::getenv("DFTRACER_VARIORUM_LIBRARY");
     const char *library =
         (named != nullptr && named[0] != '\0') ? named : "libvariorum.so";
+    if (!variorum_survives(library))
+      return static_cast<variorum_get_power_json_fn>(nullptr);
     void *handle = dlopen(library, RTLD_NOW | RTLD_LOCAL);
     if (handle == nullptr) {
       DFTRACER_LOG_INFO("Variorum not loaded (%s): %s", library, dlerror());
