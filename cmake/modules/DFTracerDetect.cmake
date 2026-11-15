@@ -63,6 +63,18 @@ function(dftracer_detect_module _dftd_module _dftd_found_out _dftd_variant_out _
     set(HDF5_PREFER_PARALLEL TRUE)
     set(HDF5_NO_FIND_PACKAGE_CONFIG_FILE TRUE)
     find_package(HDF5 QUIET COMPONENTS C)
+    # An HDF5 built with CMake installs an h5cc that does not implement -show
+    # (1.10, 1.12) or passes it to the compiler (1.14), and FindHDF5 then
+    # gives up instead of searching. Search the wrapper's prefix instead, as
+    # tools/ci/build-module.sh does. A set HDF5_ROOT already names the prefix.
+    if(NOT HDF5_FOUND AND HDF5_C_COMPILER_EXECUTABLE AND NOT HDF5_ROOT
+       AND NOT DEFINED ENV{HDF5_ROOT}
+       AND NOT HDF5_C_COMPILER_EXECUTABLE STREQUAL "/bin/false")
+      get_filename_component(_h5_bin "${HDF5_C_COMPILER_EXECUTABLE}" DIRECTORY)
+      get_filename_component(HDF5_ROOT "${_h5_bin}" DIRECTORY)
+      set(HDF5_C_COMPILER_EXECUTABLE /bin/false CACHE FILEPATH "" FORCE)
+      find_package(HDF5 QUIET COMPONENTS C)
+    endif()
     if(HDF5_FOUND)
       set(_found TRUE)
       if(HDF5_C_LIBRARIES)
