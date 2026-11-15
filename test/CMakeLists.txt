@@ -495,6 +495,21 @@ df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR
     __readlink_chk __readlinkat_chk __getcwd_chk __realpath_chk __fread_chk __fgets_chk)
 set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
 
+add_executable(test_own_malloc c/test_own_malloc.c)
+target_compile_options(test_own_malloc PRIVATE -O0)
+target_link_libraries(test_own_malloc pthread)
+add_dependencies(test_own_malloc ${PROJECT_NAME}_preload_dbg)
+
+set(test_name test_own_malloc)
+df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_own_malloc ${CMAKE_CURRENT_BINARY_DIR}/data)
+set_common_properties(${test_name})
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT LD_PRELOAD=${CMAKE_BINARY_DIR}/${DFTRACER_LIBDIR}/libdftracer_preload_dbg.so)
+set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=PRELOAD)
+set_tests_properties(${test_name} PROPERTIES TIMEOUT 60)
+df_add_test(check_events_${test_name} ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/check_events_present.sh ${CMAKE_CURRENT_BINARY_DIR}/${test_name}*
+    sysconf open write close)
+set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
+
 set(test_name test_cpp_basic_app_only)
 df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_cpp ${CMAKE_CURRENT_BINARY_DIR}/data 1)
 set_common_properties(${test_name})

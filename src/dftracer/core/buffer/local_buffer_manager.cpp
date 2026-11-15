@@ -1,6 +1,7 @@
 #include <dftracer/core/buffer/local_buffer_manager.h>
 #include <dftracer/core/common/event_types.h>
 #include <dftracer/core/common/profiler.h>
+#include <dftracer/core/common/tracer_scope.h>
 #include <dftracer/core/serialization/packed_json.h>
 #include <pthread.h>
 #include <signal.h>
@@ -314,6 +315,7 @@ void LocalBufferManager::start_writer_locked() {
 }
 
 void* LocalBufferManager::writer_main(void* self) {
+  dftracer::TracerScope scope;
   static_cast<LocalBufferManager*>(self)->run_writer();
   return nullptr;
 }

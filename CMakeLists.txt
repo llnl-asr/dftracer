@@ -1185,6 +1185,7 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/brahma/stdio.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/dftracer_main.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/logging.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/tracer_scope.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/event_loop.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/generic_function.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/function/hip/intercept.h

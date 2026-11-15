@@ -334,8 +334,10 @@ int brahma::MPIIODFTracer::MPI_File_open(MPI_Comm comm, const char* filename,
   DFT_LOGGER_UPDATE_TYPE(info, MetadataType::MT_VALUE);
   DFT_LOGGER_UPDATE_MPI_PATH(filename);
   int ret = __real_MPI_File_open(comm, filename, amode, info, fh);
-  if (trace && ret == MPI_SUCCESS && fh != nullptr)
+  if (trace && ret == MPI_SUCCESS && fh != nullptr) {
+    dftracer::TracerScope scope;
     this->logger->mpi_file_opened(*fh, fhash);
+  }
   DFT_LOGGER_UPDATE_TYPE(ret, MetadataType::MT_VALUE);
   DFT_LOGGER_END();
   return ret;

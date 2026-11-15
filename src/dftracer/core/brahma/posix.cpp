@@ -2208,7 +2208,10 @@ int brahma::POSIXDFTracer::mkstemp(char* tmpl) {
   DFT_LOGGER_START(tmpl);
   int ret = __real_mkstemp(tmpl);
   if (trace && ret >= 0) {
-    fhash = is_traced(tmpl, __FUNCTION__);
+    {
+      dftracer::TracerScope scope;
+      fhash = is_traced(tmpl, __FUNCTION__);
+    }
     DFT_LOGGER_UPDATE(fhash);
     this->trace(ret, fhash);
   }
@@ -2221,7 +2224,10 @@ int brahma::POSIXDFTracer::mkstemp64(char* tmpl) {
   DFT_LOGGER_START(tmpl);
   int ret = __real_mkstemp64(tmpl);
   if (trace && ret >= 0) {
-    fhash = is_traced(tmpl, __FUNCTION__);
+    {
+      dftracer::TracerScope scope;
+      fhash = is_traced(tmpl, __FUNCTION__);
+    }
     DFT_LOGGER_UPDATE(fhash);
     this->trace(ret, fhash);
   }
@@ -2235,7 +2241,10 @@ int brahma::POSIXDFTracer::mkostemp(char* tmpl, int flags) {
   DFT_LOGGER_UPDATE_TYPE(flags, MetadataType::MT_VALUE);
   int ret = __real_mkostemp(tmpl, flags);
   if (trace && ret >= 0) {
-    fhash = is_traced(tmpl, __FUNCTION__);
+    {
+      dftracer::TracerScope scope;
+      fhash = is_traced(tmpl, __FUNCTION__);
+    }
     DFT_LOGGER_UPDATE(fhash);
     this->trace(ret, fhash);
   }
@@ -2249,7 +2258,10 @@ int brahma::POSIXDFTracer::mkostemp64(char* tmpl, int flags) {
   DFT_LOGGER_UPDATE_TYPE(flags, MetadataType::MT_VALUE);
   int ret = __real_mkostemp64(tmpl, flags);
   if (trace && ret >= 0) {
-    fhash = is_traced(tmpl, __FUNCTION__);
+    {
+      dftracer::TracerScope scope;
+      fhash = is_traced(tmpl, __FUNCTION__);
+    }
     DFT_LOGGER_UPDATE(fhash);
     this->trace(ret, fhash);
   }
@@ -2263,7 +2275,10 @@ int brahma::POSIXDFTracer::mkstemps(char* tmpl, int suffixlen) {
   DFT_LOGGER_UPDATE_TYPE(suffixlen, MetadataType::MT_VALUE);
   int ret = __real_mkstemps(tmpl, suffixlen);
   if (trace && ret >= 0) {
-    fhash = is_traced(tmpl, __FUNCTION__);
+    {
+      dftracer::TracerScope scope;
+      fhash = is_traced(tmpl, __FUNCTION__);
+    }
     DFT_LOGGER_UPDATE(fhash);
     this->trace(ret, fhash);
   }
@@ -2277,7 +2292,10 @@ int brahma::POSIXDFTracer::mkstemps64(char* tmpl, int suffixlen) {
   DFT_LOGGER_UPDATE_TYPE(suffixlen, MetadataType::MT_VALUE);
   int ret = __real_mkstemps64(tmpl, suffixlen);
   if (trace && ret >= 0) {
-    fhash = is_traced(tmpl, __FUNCTION__);
+    {
+      dftracer::TracerScope scope;
+      fhash = is_traced(tmpl, __FUNCTION__);
+    }
     DFT_LOGGER_UPDATE(fhash);
     this->trace(ret, fhash);
   }
@@ -2292,7 +2310,10 @@ int brahma::POSIXDFTracer::mkostemps(char* tmpl, int suffixlen, int flags) {
   DFT_LOGGER_UPDATE_TYPE(flags, MetadataType::MT_VALUE);
   int ret = __real_mkostemps(tmpl, suffixlen, flags);
   if (trace && ret >= 0) {
-    fhash = is_traced(tmpl, __FUNCTION__);
+    {
+      dftracer::TracerScope scope;
+      fhash = is_traced(tmpl, __FUNCTION__);
+    }
     DFT_LOGGER_UPDATE(fhash);
     this->trace(ret, fhash);
   }
@@ -2307,7 +2328,10 @@ int brahma::POSIXDFTracer::mkostemps64(char* tmpl, int suffixlen, int flags) {
   DFT_LOGGER_UPDATE_TYPE(flags, MetadataType::MT_VALUE);
   int ret = __real_mkostemps64(tmpl, suffixlen, flags);
   if (trace && ret >= 0) {
-    fhash = is_traced(tmpl, __FUNCTION__);
+    {
+      dftracer::TracerScope scope;
+      fhash = is_traced(tmpl, __FUNCTION__);
+    }
     DFT_LOGGER_UPDATE(fhash);
     this->trace(ret, fhash);
   }

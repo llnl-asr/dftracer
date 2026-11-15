@@ -14,6 +14,7 @@
 #include <dftracer/core/common/module_hooks.h>
 #include <dftracer/core/common/profiler.h>
 #include <dftracer/core/common/singleton.h>
+#include <dftracer/core/common/tracer_scope.h>
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/utils/configuration_manager.h>
 #include <dftracer/core/utils/fs_info.h>
@@ -493,6 +494,7 @@ class DFTLogger {
   inline void log(ConstEventNameType event_name, ConstEventNameType category,
                   TraceEventType type, TimeResolution start_time,
                   TimeResolution duration, dftracer::Metadata* metadata) {
+    dftracer::TracerScope scope;
     DFTRACER_LOG_DEBUG("DFTLogger.log");
     // DFTRACER_MIN_DURATION_NS: an event shorter than it is dropped here,
     // before it takes an index or reaches the buffer manager, so it costs
@@ -546,6 +548,7 @@ class DFTLogger {
 
   inline void log_metadata(ConstEventNameType key, ConstEventNameType value,
                            TraceEventType type) {
+    dftracer::TracerScope scope;
     DFTRACER_LOG_DEBUG("DFTLogger.log_metadata");
     ThreadID tid = 0;
     if (dftracer_tid) {
@@ -610,6 +613,7 @@ class DFTLogger {
   // straight into the trace (or the ring). Takes ownership of fields.
   inline void log_record(ConstEventNameType record, dftracer::Metadata* fields,
                          TraceEventType type) {
+    dftracer::TracerScope scope;
     ThreadID tid = 0;
     if (dftracer_tid) tid = df_gettid();
     if (this->buffer_manager != nullptr)
@@ -768,16 +772,21 @@ class DFTLogger {
 #define DFT_LOGGER_INIT() dftracer::Singleton<DFTLogger>::get_instance()
 #define DFT_LOGGER_FINI() \
   dftracer::Singleton<DFTLogger>::get_instance()->finalize()
-#define DFT_LOGGER_UPDATE(value)               \
-  if (trace && this->logger->include_metadata) \
-    metadata->insert_or_assign(dftracer::StaticKey{#value}, value);
+#define DFT_LOGGER_UPDATE(value)                                    \
+  if (trace && this->logger->include_metadata) {                    \
+    dftracer::TracerScope dft_scope;                                \
+    metadata->insert_or_assign(dftracer::StaticKey{#value}, value); \
+  }
 
-#define DFT_LOGGER_UPDATE_TYPE(value, type)    \
-  if (trace && this->logger->include_metadata) \
-    metadata->insert_or_assign(dftracer::StaticKey{#value}, value, type);
+#define DFT_LOGGER_UPDATE_TYPE(value, type)                               \
+  if (trace && this->logger->include_metadata) {                          \
+    dftracer::TracerScope dft_scope;                                      \
+    metadata->insert_or_assign(dftracer::StaticKey{#value}, value, type); \
+  }
 
 #define DFT_LOGGER_UPDATE_HASH(value)                                 \
   if (trace && this->logger->include_metadata) {                      \
+    dftracer::TracerScope dft_hash_scope;                             \
     HashType value##_hash =                                           \
         this->logger->hash_and_store(value, METADATA_NAME_FILE_HASH); \
     DFT_LOGGER_UPDATE(value##_hash);                                  \
@@ -787,6 +796,7 @@ class DFTLogger {
 // with, as POSIX calls do, instead of the handle (see mpi_file_fhash).
 #define DFT_LOGGER_UPDATE_MPI_FILE(fh)                      \
   if (trace && this->logger->include_metadata) {            \
+    dftracer::TracerScope dft_hash_scope;                   \
     HashType fhash = this->logger->mpi_file_fhash(fh);      \
     if (fhash != NO_HASH_DEFAULT) DFT_LOGGER_UPDATE(fhash); \
   }
@@ -795,6 +805,7 @@ class DFTLogger {
 #define DFT_LOGGER_UPDATE_MPI_PATH(path)                                   \
   HashType fhash = NO_HASH_DEFAULT;                                        \
   if (trace && (path) != nullptr) {                                        \
+    dftracer::TracerScope dft_hash_scope;                                  \
     fhash = this->logger->hash_and_store((path), METADATA_NAME_FILE_HASH); \
     DFT_LOGGER_UPDATE(fhash);                                              \
   }
@@ -802,16 +813,22 @@ class DFTLogger {
 // With DFTRACER_ENABLE_PROFILING, the two halves of an interceptor are timed
 // as its layer's capture phase (the real call between them is not), and the
 // end half counts the event; an untraced call is timed as "filtered".
+// Each half of an interceptor runs in a TracerScope, so what dftracer calls
+// while it records the event is not traced. The real call between them is
+// outside it, so the calls it makes are traced as before.
 #define DFT_LOGGER_START(entity)                             \
   DFTRACER_PROFILE_BEGIN(dft_profile_start);                 \
-  HashType fhash = is_traced(entity, __FUNCTION__);          \
-  bool trace = fhash != NO_HASH_DEFAULT;                     \
-  if (trace) {                                               \
-    DFTRACER_LOG_DEBUG("Calling function %s", __FUNCTION__); \
-  }                                                          \
+  HashType fhash = NO_HASH_DEFAULT;                          \
   TimeResolution start_time = 0;                             \
   dftracer::Metadata* metadata = nullptr;                    \
+  if (!dftracer::in_tracer()) {                              \
+    dftracer::TracerScope dft_start_scope;                   \
+    fhash = is_traced(entity, __FUNCTION__);                 \
+  }                                                          \
+  bool trace = fhash != NO_HASH_DEFAULT;                     \
   if (trace) {                                               \
+    dftracer::TracerScope dft_start_scope;                   \
+    DFTRACER_LOG_DEBUG("Calling function %s", __FUNCTION__); \
     if (this->logger->include_metadata) {                    \
       metadata = dftracer::Metadata::acquire();              \
       DFT_LOGGER_UPDATE(fhash);                              \
@@ -821,30 +838,35 @@ class DFTLogger {
   }                                                          \
   DFTRACER_PROFILE_END_TRACED(dft_profile_start, trace,      \
                               DFTRACER_PROFILE_CAPTURE(TRACE_TYPE))
-#define DFT_LOGGER_START_ALWAYS()                                 \
-  DFTRACER_PROFILE_BEGIN(dft_profile_start);                      \
-  DFTRACER_LOG_DEBUG("Calling function %s", __FUNCTION__);        \
-  bool trace = this->logger->is_active(); /* skip if finalized */ \
-  TimeResolution start_time = 0;                                  \
-  dftracer::Metadata* metadata = nullptr;                         \
-  if (trace) {                                                    \
-    if (this->logger->include_metadata) {                         \
-      metadata = dftracer::Metadata::acquire();                   \
-    }                                                             \
-    this->logger->enter_event();                                  \
-    start_time = this->logger->get_time();                        \
-  }                                                               \
-  DFTRACER_PROFILE_END(dft_profile_start,                         \
+#define DFT_LOGGER_START_ALWAYS()                                   \
+  DFTRACER_PROFILE_BEGIN(dft_profile_start);                        \
+  /* skip if finalized */                                           \
+  bool trace = !dftracer::in_tracer() && this->logger->is_active(); \
+  TimeResolution start_time = 0;                                    \
+  dftracer::Metadata* metadata = nullptr;                           \
+  if (trace) {                                                      \
+    dftracer::TracerScope dft_start_scope;                          \
+    DFTRACER_LOG_DEBUG("Calling function %s", __FUNCTION__);        \
+    if (this->logger->include_metadata) {                           \
+      metadata = dftracer::Metadata::acquire();                     \
+    }                                                               \
+    this->logger->enter_event();                                    \
+    start_time = this->logger->get_time();                          \
+  }                                                                 \
+  DFTRACER_PROFILE_END(dft_profile_start,                           \
                        DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), false);
-#define DFT_LOGGER_END_AS(name)                                        \
-  if (trace) {                                                         \
-    DFTRACER_PROFILE_BEGIN(dft_profile_end);                           \
-    TimeResolution end_time = this->logger->get_time();                \
-    this->logger->log((char*)(name), CATEGORY, TRACE_TYPE, start_time, \
-                      end_time - start_time, metadata);                \
-    this->logger->exit_event();                                        \
-    DFTRACER_PROFILE_END(dft_profile_end,                              \
-                         DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), true);  \
+#define DFT_LOGGER_END_AS(name)                                          \
+  if (trace) {                                                           \
+    DFTRACER_PROFILE_BEGIN(dft_profile_end);                             \
+    {                                                                    \
+      dftracer::TracerScope dft_end_scope;                               \
+      TimeResolution end_time = this->logger->get_time();                \
+      this->logger->log((char*)(name), CATEGORY, TRACE_TYPE, start_time, \
+                        end_time - start_time, metadata);                \
+      this->logger->exit_event();                                        \
+    }                                                                    \
+    DFTRACER_PROFILE_END(dft_profile_end,                                \
+                         DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), true);    \
   }
 #define DFT_LOGGER_END() DFT_LOGGER_END_AS(__FUNCTION__)
 
