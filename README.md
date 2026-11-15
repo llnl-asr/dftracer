@@ -201,7 +201,7 @@ For more examples, click [here](https://dftracer.readthedocs.io/en/latest/exampl
 * Building DFTracer: [https://dftracer.readthedocs.io/en/latest/build.html](https://dftracer.readthedocs.io/en/latest/build.html)
 * Integrating DFTracer: [https://dftracer.readthedocs.io/en/latest/examples.html](https://dftracer.readthedocs.io/en/latest/examples.html)
 * Visualizing DFTracer Traces: [https://dftracer.readthedocs.io/en/latest/perfetto.html](https://dftracer.readthedocs.io/en/latest/perfetto.html)
-* Building DFAnalyzer: [https://dftracer.readthedocs.io/en/latest/dfanalyzer_build.html](https://dftracer.readthedocs.io/en/latest/dfanalyzer_build.html)
+* DFAnalyzer: [https://dftracer.readthedocs.io/projects/dfanalyzer/en/latest/index.html](https://dftracer.readthedocs.io/projects/dfanalyzer/en/latest/index.html)
 
 ## Citation and Reference
 
