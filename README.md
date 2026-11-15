@@ -140,9 +140,22 @@ when it is reachable.
 ## Usage
 
 ```python
+import os
+from multiprocessing import get_context
+from time import sleep
+
+import numpy as np
 from dftracer.python import dftracer, dft_fn
+
+cwd = os.getcwd()
+os.makedirs(f"{cwd}/data", exist_ok=True)
+
 log_inst = dftracer.initialize_log(logfile=None, data_dir=None, process_id=-1)
 dft_fn = dft_fn("COMPUTE")
+
+# Initializer for spawned workers, so they also trace.
+def init():
+    dftracer.initialize_log(logfile=None, data_dir=None, process_id=-1)
 
 # Example of using function decorators
 @dft_fn.log
