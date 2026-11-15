@@ -2,6 +2,7 @@
 #include <dftracer/core/utils/configuration_manager.h>
 #include <dftracer/service/common/datastructure.h>
 #include <dftracer/service/service.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include <chrono>
@@ -442,6 +443,69 @@ void test_proc_telemetry_generation_smoke() {
   std::cout << "✓ Proc telemetry generation smoke test passed\n" << std::endl;
 }
 
+// A zombie counts as gone: in a container whose PID 1 never reaps, the
+// orphaned service stays a zombie after it exits.
+static bool process_running(pid_t pid) {
+  if (kill(pid, 0) != 0) return false;
+  std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+  std::string line;
+  if (!std::getline(stat, line)) return false;
+  const auto paren = line.rfind(')');
+  return paren == std::string::npos || paren + 2 >= line.size() ||
+         line[paren + 2] != 'Z';
+}
+
+// `run` keeps the service in the foreground, `wait` returns once it is ready
+// and `stop` makes it write its trace and exit.
+void test_run_wait_stop_smoke() {
+  std::cout << "=== Test: Run, Wait and Stop ===\n" << std::endl;
+
+  char exe_path[1024] = {0};
+  DFT_CHECK(readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1) > 0);
+  std::string bin_dir(exe_path);
+  bin_dir = bin_dir.substr(0, bin_dir.find_last_of('/'));
+  const std::string service_bin = bin_dir + "/dftracer_service";
+
+  const std::string log_prefix = "/tmp/test_dftracer_run_wait_ctest";
+  setenv("DFTRACER_ENABLE", "1", 1);
+  setenv("DFTRACER_LOG_FILE", log_prefix.c_str(), 1);
+  setenv("DFTRACER_TRACE_INTERVAL_MS", "200", 1);
+
+  char hostname[256];
+  gethostname(hostname, sizeof(hostname));
+  const std::string prefix = log_prefix + "_" + hostname;
+  const std::string trace_path = prefix + ".pfw.gz";
+  const std::string pid_path = prefix + ".pid";
+  std::remove(trace_path.c_str());
+  std::remove(pid_path.c_str());
+
+  // The service starts late, so `wait` has to wait for it.
+  const std::string run_cmd =
+      "(sleep 1; exec " + service_bin + " run) >/dev/null 2>&1 &";
+  DFT_CHECK(system(run_cmd.c_str()) == 0);
+  DFT_CHECK(system((service_bin + " wait").c_str()) == 0);
+
+  pid_t pid = 0;
+  {
+    std::ifstream pid_file(pid_path);
+    DFT_CHECK(pid_file >> pid);
+  }
+  DFT_CHECK(pid > 0 && kill(pid, 0) == 0);
+
+  DFT_CHECK(system((service_bin + " stop").c_str()) == 0);
+  for (int i = 0; i < 200 && process_running(pid); ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  DFT_CHECK(!process_running(pid));
+
+  std::ifstream trace(trace_path, std::ios::binary | std::ios::ate);
+  DFT_CHECK(trace.good());
+  DFT_CHECK(trace.tellg() > 0);
+
+  unsetenv("DFTRACER_ENABLE");
+  unsetenv("DFTRACER_LOG_FILE");
+  unsetenv("DFTRACER_TRACE_INTERVAL_MS");
+}
+
 int main() {
   std::cout << "\n=== Running DFTracerService Unit Tests ===\n" << std::endl;
 
@@ -461,6 +525,7 @@ int main() {
     test_service_log_file_creation();
     test_service_with_custom_interval();
     test_proc_telemetry_generation_smoke();
+    test_run_wait_stop_smoke();
 
     std::cout << "\n=== All DFTracerService Tests Passed ===\n" << std::endl;
     std::cout.flush();

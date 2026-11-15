@@ -175,11 +175,78 @@ Run on multiple nodes with flux run
 Run on multiple nodes with srun
 ===============================
 
+Slurm can end every process of a job step when the step ends (``ProctrackType=proctrack/cgroup``).
+Then the daemon that ``start`` leaves behind dies with its step, and the application spills all its events.
+So with Slurm, use ``run``, which keeps the service in the foreground as a step of its own.
+``wait`` returns when the service on each node is ready, and ``stop`` ends it.
+
 .. code-block:: bash
 
-   srun -N 4 -n 4 "${SERVICE_BIN}" start
+   srun -N 4 --ntasks-per-node=1 --overlap "${SERVICE_BIN}" run &
+   srun -N 4 --ntasks-per-node=1 --overlap "${SERVICE_BIN}" wait
    # ... the application ...
-   srun -N 4 -n 4 "${SERVICE_BIN}" stop
+   srun -N 4 --ntasks-per-node=1 --overlap "${SERVICE_BIN}" stop
+   wait
+
+``--overlap`` lets these steps share CPUs with the application.
+
+Leave one core per node for the service
+=======================================
+
+In producer/consumer mode the service drains the ring while the application runs.
+When a drain thread shares a core with an application rank, or runs on the SMT sibling of that core, it takes cycles and cache from that rank.
+To prevent this, run one rank fewer than the node has cores and bind each rank to a core.
+The free core then belongs to the service.
+This costs the application one core per node.
+
+You do not tell the service which core is free.
+With ``DFTRACER_PC_SERVICE_CPUS=auto`` (the default) the service reads the CPU masks of its clients and moves its threads to the CPUs that no client may use.
+It prefers a free core whose siblings are also free.
+It checks again when a client starts or exits.
+
+The service can move only to CPUs that it was allowed to use when it started.
+So start the service unbound, and bind only the application ranks.
+If the ranks are not bound, every rank may run on every CPU, no CPU is free and the service stays where it started.
+
+The examples use 4 nodes, ``C`` for the number of physical cores per node and ``T`` for the hardware threads per core.
+
+With Flux:
+
+.. code-block:: bash
+
+   export DFTRACER_ENABLE_PC_MODE=1
+   flux run -N 4 -n 4 -o cpu-affinity=off "${SERVICE_BIN}" start
+   flux run -N 4 -n $((4 * (C - 1))) -c 1 -o cpu-affinity=per-task ./app
+   flux run -N 4 -n 4 -o cpu-affinity=off "${SERVICE_BIN}" stop
+
+``-o cpu-affinity=per-task`` binds each task to its own core.
+Do not combine ``--tasks-per-node`` with ``-n`` or ``-c``, because ``flux run`` rejects that.
+
+With Slurm:
+
+.. code-block:: bash
+
+   export DFTRACER_ENABLE_PC_MODE=1
+   ALL="${SLURM_JOB_CPUS_PER_NODE%%(*}"
+   srun -N 4 --ntasks-per-node=1 -c "${ALL}" --cpu-bind=none --overlap "${SERVICE_BIN}" run &
+   srun -N 4 --ntasks-per-node=1 --overlap "${SERVICE_BIN}" wait
+   srun -N 4 --ntasks-per-node=$((C - 1)) -c "${T}" --cpu-bind=cores ./app
+   srun -N 4 --ntasks-per-node=1 --overlap "${SERVICE_BIN}" stop
+   wait
+
+The service step asks for every CPU of the node with ``-c``, because Slurm can confine each step to the CPUs that it asked for (``ConstrainCores=yes`` in ``cgroup.conf``).
+``--overlap`` lets the application step use those CPUs too.
+``-c "${T}"`` gives each rank a whole core.
+With ``-c 1`` on a node with two threads per core, two ranks share one core.
+``--cpu-bind=cores`` needs the ``task/affinity`` plugin.
+
+To make an explicit choice, set ``DFTRACER_PC_SERVICE_CPUS`` to a CPU list, such as ``11,23`` for the last core of a 12-core node with two threads per core.
+Include both hardware threads of the core.
+A list does not follow the clients, so use it only when you know the binding of the ranks.
+
+To check the placement, read ``<log_file>_<host>.log`` on a node.
+The service writes ``service threads on CPUs <list>`` each time it moves.
+To see the cores of the ranks, use ``-o cpu-affinity=verbose,per-task`` with Flux or ``--cpu-bind=verbose,cores`` with Slurm.
 
 Troubleshooting
 ===============

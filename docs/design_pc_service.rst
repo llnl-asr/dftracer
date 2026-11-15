@@ -978,6 +978,8 @@ A drain thread on an application's core, or on its sibling, takes cycles and
 cache from the application. When the clients may run anywhere (they are not
 bound), there is no CPU to keep off, and the service stays where it started.
 The service checks again when a client comes or goes, and once a second.
+To leave a core free for the service with Flux or Slurm, see
+:doc:`dftracer_service`.
 
 ``/dev/shm`` is tmpfs and counts against node memory. The default ring is
 1 GiB. The service reserves its shared memory 64 MiB ahead of the producers'
