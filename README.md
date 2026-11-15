@@ -72,12 +72,26 @@ pip install .
 
 ### With MPI, HDF5 or HIP support
 
-These are compile-time options, so they need a build against the libraries you
-actually run with. The prebuilt wheel cannot carry them: DFTracer intercepts
-calls into the MPI/HDF5 library the application loads, and the interception is
-generated for a specific implementation and version, so a wheel built elsewhere
-would trace nothing. Build from the source distribution instead, the way
-`mpi4py` does:
+MPI, HDF5 and HIP support has to match the libraries you run with: DFTracer
+intercepts calls into the MPI/HDF5 library the application loads, and the
+interception is generated for a specific implementation and version. There are
+two ways to get that.
+
+**Compose prebuilt modules.** `dftracer-modules` ships that support prebuilt for
+each library version, and `dftracer-compose` links the ones that fit the machine
+(building any it lacks from source). Run it in the environment you trace in, with
+CMake 3.24 or newer available:
+
+```bash
+pip install "dftracer[modules]"
+dftracer-compose                        # link what this machine needs
+dftracer_install_info --composition     # show what got linked
+```
+
+See [Composable install](https://dftracer.readthedocs.io/en/latest/composable_install.html)
+for details.
+
+**Or build from source**, the way `mpi4py` does:
 
 ```bash
 # MPI and HDF5 must be discoverable by CMake (module load, spack load, ...)
