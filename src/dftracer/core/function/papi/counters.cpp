@@ -1,3 +1,4 @@
+#include <dftracer/core/common/tracer_scope.h>
 #include <dftracer/core/function/papi/counters.h>
 
 #ifdef DFTRACER_PAPI_TRACING_ENABLE
@@ -500,6 +501,7 @@ void PAPICounterFunction::initialize() {
 // collectors. Every PAPI call for the real event set happens on this thread,
 // which is what PAPI requires of the thread that created it.
 void PAPICounterFunction::run_sampler() {
+  dftracer::TracerScope scope;
   // initialize() waits on this; release it on every exit path, successful or
   // not, so a PAPI failure never blocks application start-up.
   bool notified = false;

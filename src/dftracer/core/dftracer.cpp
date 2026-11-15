@@ -8,6 +8,7 @@
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/common/event_types.h>
 #include <dftracer/core/common/profiler.h>
+#include <dftracer/core/common/tracer_scope.h>
 #include <dftracer/core/utils/utils.h>
 #include <dftracer/dftracer.h>
 
@@ -143,6 +144,7 @@ static void update_value([[maybe_unused]] TraceEventType layer, int event_type,
                          const T& value, MetadataType type) {
   if (key == nullptr) return;
   DFTRACER_PROFILE_SCOPE_DYNAMIC(DFTRACER_PROFILE_CAPTURE(layer), false);
+  dftracer::TracerScope scope;
   auto dftracer_core = DFTRACER_MAIN_SINGLETON_PTR(
       ProfilerStage::PROFILER_OTHER, ProfileType::PROFILER_CPP_APP);
   if (dftracer_core != nullptr && dftracer_core->is_active() &&
@@ -187,6 +189,7 @@ static void append_value([[maybe_unused]] TraceEventType layer,
                          const char* sub, dftracer::ArgList::Value value) {
   if (key == nullptr) return;
   DFTRACER_PROFILE_SCOPE_DYNAMIC(DFTRACER_PROFILE_CAPTURE(layer), false);
+  dftracer::TracerScope scope;
   if (metadata == nullptr) metadata = dftracer::Metadata::acquire();
   auto it = metadata->find(key);
   if (it == metadata->end())

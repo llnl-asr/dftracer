@@ -1,5 +1,6 @@
 #include <dftracer/core/common/event_loop.h>
 #include <dftracer/core/common/logging.h>
+#include <dftracer/core/common/tracer_scope.h>
 
 #include <utility>
 
@@ -122,6 +123,7 @@ void EventLoop::close_handles_locked() {
 }
 
 void EventLoop::drive() {
+  TracerScope scope;
   // The whole of the loop thread's life: hooks, then the loop, then hooks. The
   // hooks run outside the lock; PAPI's take milliseconds.
   if (thread_start) thread_start();
