@@ -446,6 +446,10 @@ the expiry below:
   writer's uncommitted reservation by its length. A producer that finds its
   block ``TAKEN`` drops it and claims another. A record being written is never
   read, so there is no late-writer race and no quarantine.
+* **Take-over before the lap.** Drain thread 0 also takes over a held block,
+  however young, once ``head`` is within a quarter of the ring of its slot on
+  the next lap. Producers claim in order, so a held block there would stop all
+  of them and make every producer spill, even with idle drain threads.
 * **Finalize** publishes every thread's block, waiting up to 100 ms for a
   thread that is inside a log call. The exec wrappers finalize before calling
   the real ``exec``, so an exec'ing process loses nothing, in either mode.
@@ -978,13 +982,20 @@ A drain thread on an application's core, or on its sibling, takes cycles and
 cache from the application. When the clients may run anywhere (they are not
 bound), there is no CPU to keep off, and the service stays where it started.
 The service checks again when a client comes or goes, and once a second.
+If 65536 or more events spill within 100 ms, or a quarter of the ring waits to
+be drained at the end of a 100 ms window, the service has fallen behind, and
+it widens one step: from the free cores to every CPU no client uses,
+then to all the CPUs it started with. A new set of clients resets it.
 To leave a core free for the service with Flux or Slurm, see
 :doc:`dftracer_service`.
 
 ``/dev/shm`` is tmpfs and counts against node memory. The default ring is
-1 GiB. The service reserves its shared memory 64 MiB ahead of the producers'
-first lap, so a short run commits only what it uses, and a producer never
-writes to a page that is not reserved (no SIGBUS when ``/dev/shm`` fills). Keep
+1 GiB. The service reserves the first 64 MiB before it reports ready, so it
+starts fast, and the rest of the ring right after, so the whole ring counts
+against node memory while the service runs. Reserving only ahead of the
+producers is not enough: many producers that start at once claim blocks faster
+than one thread can reserve them, and they spill. A producer never writes to a
+page that is not reserved (no SIGBUS when ``/dev/shm`` fills). Keep
 ``DFTRACER_PC_BLOCKS`` at least 4 × the most producers expected on a node,
 since each holds one block while filling it.
 

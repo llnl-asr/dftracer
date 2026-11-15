@@ -135,10 +135,10 @@ static const uint32_t DFT_SHM_DEFAULT_FLUSH_MS = 1000;
 // Nice value of the service's drain threads while the application runs: they
 // use the cores it leaves idle. The drain at stop runs at normal priority.
 static const int DFT_SHM_DRAIN_NICE = 19;
-// The service reserves the ring's shared memory this far ahead of the
-// producers' first lap, in steps of DFT_SHM_RESERVE_STEP_BYTES, so a short
-// run does not pay to reserve the whole ring.
-static const uint64_t DFT_SHM_RESERVE_AHEAD_BYTES = 64ULL << 20;
+// The service reserves this much of the ring's shared memory before it is
+// ready, so it starts fast, and the rest right after in steps of
+// DFT_SHM_RESERVE_STEP_BYTES.
+static const uint64_t DFT_SHM_RESERVE_FIRST_BYTES = 64ULL << 20;
 static const uint64_t DFT_SHM_RESERVE_STEP_BYTES = 16ULL << 20;
 // JSON a drain thread collects before compressing it into one gzip member.
 static const size_t DFT_SHM_DEFAULT_CHUNK_SIZE = 4u << 20;

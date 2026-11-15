@@ -89,7 +89,7 @@ class RingSink {
     }
     try {
       region_ = ipc::ShmRegion::create(name, block_count, block_size,
-                                       ahead_blocks(block_size));
+                                       first_blocks(block_size));
     } catch (const std::exception& error) {
       std::fprintf(stderr, "[DFTRACER] cannot create ring %s: %s\n",
                    name.c_str(), error.what());
@@ -137,7 +137,7 @@ class RingSink {
     for (uint32_t i = 0; i < threads; ++i)
       threads_.emplace_back([this, i]() { drain(i); });
     if (region_->reserved_blocks() < region_->ring().block_count())
-      reserver_ = std::thread([this]() { reserve_ahead(); });
+      reserver_ = std::thread([this]() { reserve_rest(); });
     header->state.store(SHM_SEGMENT_ACCEPTING, std::memory_order_release);
     return true;
   }
@@ -532,6 +532,17 @@ class RingSink {
     return pids;
   }
 
+  // Events clients could not put in the ring so far.
+  uint64_t spilled() const {
+    return region_->ring().header()->spilled.load(std::memory_order_relaxed);
+  }
+
+  // A quarter of the ring is published and waits for a drain thread.
+  bool backlogged() {
+    return claimer_->ready_blocks() >=
+           std::max<uint64_t>(1, region_->ring().block_count() / 4);
+  }
+
   /**
    * Drain thread 0, between blocks: notices a process by the blocks claimed
    * since the last look, so the service leaves its CPUs at once rather than
@@ -554,7 +565,7 @@ class RingSink {
           std::binary_search(placed_pids_.begin(), placed_pids_.end(), pid))
         continue;
       placed_pids_ = client_pids();
-      placer_.update(placed_pids_, now);
+      placer_.update(placed_pids_, now, spilled(), backlogged());
       return;
     }
   }
@@ -603,24 +614,31 @@ class RingSink {
 
   /**
    * Thread 0, once per tick: take over blocks held unpublished for longer
-   * than flush_ns (a quiet producer thread, or a dead process), so they
-   * neither delay its events nor stop producers on the next lap; and, once a
-   * second, finish the client processes that are done.
+   * than flush_ns (a quiet producer thread, or a dead process), so they do
+   * not delay its events, and blocks that the next lap is about to reach, so
+   * they do not stop producers; and, once a second, finish the client
+   * processes that are done.
    */
   void housekeeping(uint64_t now) {
     region_->ring().header()->heartbeat_ns.store(now,
                                                  std::memory_order_relaxed);
-    if (now > options_.flush_ns) {
+    {
+      // A quarter of the ring is many ticks of claims at any rate the
+      // drain threads keep up with.
+      const uint64_t margin =
+          std::max<uint64_t>(1, region_->ring().block_count() / 4);
+      const uint64_t older_than =
+          now > options_.flush_ns ? now - options_.flush_ns : 0;
       uint64_t seq;
       uint32_t pid;
-      while (claimer_->take_over(seq, now - options_.flush_ns, pid)) {
+      while (claimer_->take_over(seq, older_than, pid, margin)) {
         ++per_thread_[0].taken;
         process_block(0, seq, true);
       }
     }
     if (clients_ != nullptr && placer_.mode() == CpuPlacer::Mode::kAuto) {
       placed_pids_ = client_pids();
-      placer_.update(placed_pids_, now);
+      placer_.update(placed_pids_, now, spilled(), backlogged());
     }
     if (clients_ != nullptr && now >= next_reap_) {
       next_reap_ = now + 1000000000ULL;
@@ -688,33 +706,27 @@ class RingSink {
     stats.cpu_ns = thread_cpu_ns();
   }
 
-  static uint32_t ahead_blocks(uint32_t block_size) {
-    const uint64_t blocks = DFT_SHM_RESERVE_AHEAD_BYTES / block_size;
+  static uint32_t first_blocks(uint32_t block_size) {
+    const uint64_t blocks = DFT_SHM_RESERVE_FIRST_BYTES / block_size;
     return blocks == 0 ? 1 : static_cast<uint32_t>(blocks);
   }
 
   /**
-   * Keeps the ring's shared memory reserved DFT_SHM_RESERVE_AHEAD_BYTES
-   * ahead of `head` until the whole ring is, so producers on their first lap
-   * do not find it full while there is room in /dev/shm.
+   * Reserves the rest of the ring's shared memory, right after the start.
+   * Keeping only ahead of the producers' first lap is not enough: many
+   * producers that start at once claim blocks faster than this thread can
+   * reserve them on CPUs they keep busy, and they spill.
    */
-  void reserve_ahead() {
+  void reserve_rest() {
     const ipc::RingView& ring = region_->ring();
     const uint32_t count = ring.block_count();
-    const uint64_t ahead = ahead_blocks(ring.block_size());
     uint64_t step = DFT_SHM_RESERVE_STEP_BYTES / ring.block_size();
     if (step == 0) step = 1;
     while (!stop_.load(std::memory_order_acquire) &&
            region_->reserved_blocks() < count) {
-      const uint64_t head = ring.header()->head.load(std::memory_order_acquire);
-      const uint64_t want = std::min<uint64_t>(count, head + ahead);
       const uint32_t have = region_->reserved_blocks();
-      if (have >= want) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        continue;
-      }
       const uint32_t next =
-          static_cast<uint32_t>(std::min<uint64_t>(want, have + step));
+          static_cast<uint32_t>(std::min<uint64_t>(count, have + step));
       if (!region_->reserve(next)) {
         std::fprintf(stderr,
                      "[DFTRACER] WARNING: /dev/shm cannot back more of ring "

@@ -3,6 +3,7 @@
 #include <dftracer/service/common/datastructure.h>
 #include <dftracer/service/service.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <chrono>
@@ -506,6 +507,49 @@ void test_run_wait_stop_smoke() {
   unsetenv("DFTRACER_TRACE_INTERVAL_MS");
 }
 
+// In producer/consumer mode the service reserves the whole ring soon after it
+// starts, even before any client claims a block: a reserve that only keeps
+// ahead of the clients falls behind when many of them start at once.
+void test_ring_reserved_at_start() {
+  std::cout << "=== Test: Ring Reserved At Start ===\n" << std::endl;
+
+  char exe_path[1024] = {0};
+  DFT_CHECK(readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1) > 0);
+  std::string bin_dir(exe_path);
+  bin_dir = bin_dir.substr(0, bin_dir.find_last_of('/'));
+  const std::string service_bin = bin_dir + "/dftracer_service";
+
+  const std::string log_prefix = "/tmp/test_dftracer_ring_reserve_ctest";
+  const std::string shm = "/test-dftracer-ring-reserve";
+  setenv("DFTRACER_ENABLE", "1", 1);
+  setenv("DFTRACER_ENABLE_PC_MODE", "1", 1);
+  setenv("DFTRACER_LOG_FILE", log_prefix.c_str(), 1);
+  setenv("DFTRACER_SERVICE_SHM", shm.c_str(), 1);
+  setenv("DFTRACER_PC_BLOCKS", "256", 1);
+  setenv("DFTRACER_PC_BLOCK_SIZE", "1048576", 1);
+
+  DFT_CHECK(system((service_bin + " start").c_str()) == 0);
+  const std::string path = "/dev/shm" + shm;
+  const long long ring = 256LL << 20;
+  long long reserved = 0;
+  for (int i = 0; i < 100 && reserved < ring; ++i) {
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0)
+      reserved = static_cast<long long>(st.st_blocks) * 512;
+    if (reserved < ring)
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  DFT_CHECK(reserved >= ring);
+  DFT_CHECK(system((service_bin + " stop").c_str()) == 0);
+
+  unsetenv("DFTRACER_ENABLE");
+  unsetenv("DFTRACER_ENABLE_PC_MODE");
+  unsetenv("DFTRACER_LOG_FILE");
+  unsetenv("DFTRACER_SERVICE_SHM");
+  unsetenv("DFTRACER_PC_BLOCKS");
+  unsetenv("DFTRACER_PC_BLOCK_SIZE");
+}
+
 int main() {
   std::cout << "\n=== Running DFTracerService Unit Tests ===\n" << std::endl;
 
@@ -526,6 +570,7 @@ int main() {
     test_service_with_custom_interval();
     test_proc_telemetry_generation_smoke();
     test_run_wait_stop_smoke();
+    test_ring_reserved_at_start();
 
     std::cout << "\n=== All DFTracerService Tests Passed ===\n" << std::endl;
     std::cout.flush();

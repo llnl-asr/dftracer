@@ -203,6 +203,8 @@ You do not tell the service which core is free.
 With ``DFTRACER_PC_SERVICE_CPUS=auto`` (the default) the service reads the CPU masks of its clients and moves its threads to the CPUs that no client may use.
 It prefers a free core whose siblings are also free.
 It checks again when a client starts or exits.
+If the service falls behind on the free cores, so that events wait in the ring or spill, it also takes the free SMT siblings of the clients' cores, and then all of its CPUs.
+It goes back to the free cores when a client starts or exits.
 
 The service can move only to CPUs that it was allowed to use when it started.
 So start the service unbound, and bind only the application ranks.

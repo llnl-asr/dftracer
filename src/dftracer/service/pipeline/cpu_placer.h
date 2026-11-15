@@ -68,15 +68,53 @@ class CpuPlacer {
   Mode mode() const { return mode_; }
 
   /**
+   * Tells whether the service has fallen behind: kSpills or more events
+   * spilled within one kHoldNs window of the same set of clients, or a
+   * `backlog` (a quarter of the ring waiting to be drained) when the window
+   * ends. The backlog shows a service that falls behind before the ring is
+   * full and anything spills. A new set (`same` false) starts a new window.
+   */
+  class SpillWindow {
+   public:
+    static constexpr uint64_t kHoldNs = 100000000ULL;
+    // A few spilled events are a burst the ring could not absorb. Moving
+    // onto the siblings of the clients' cores slows every client, so widen
+    // only when the service keeps falling behind.
+    static constexpr uint64_t kSpills = 65536;
+
+    bool fell_behind(bool same, uint64_t spilled, bool backlog,
+                     uint64_t now_ns) {
+      if (same && now_ns < end_ns_) return false;
+      const bool behind = same && (backlog || spilled - mark_ >= kSpills);
+      mark_ = spilled;
+      end_ns_ = now_ns + kHoldNs;
+      return behind;
+    }
+
+   private:
+    uint64_t mark_ = 0;
+    uint64_t end_ns_ = 0;
+  };
+
+  /**
    * In auto mode, moves the service to fit the client processes `pids`.
    * Processes set their affinity after they start (taskset, MPI, OpenMP), so
    * it looks again when the set changes, and after a wait that starts at
-   * kFirstLookNs on any change and doubles up to kLastLookNs.
+   * kFirstLookNs on any change and doubles up to kLastLookNs. `spilled`
+   * counts the events clients could not put in the ring so far, and
+   * `backlog` says a quarter of the ring waits to be drained. When the
+   * service falls behind (SpillWindow), it takes one step more CPUs (see
+   * choose()), until the set of clients changes.
    */
-  void update(const std::vector<uint32_t>& pids, uint64_t now_ns) {
+  void update(const std::vector<uint32_t>& pids, uint64_t now_ns,
+              uint64_t spilled, bool backlog) {
     if (mode_ != Mode::kAuto) return;
     const bool same = pids == pids_;
-    if (same && now_ns < next_look_ns_) return;
+    if (!same) wider_ = 0;
+    const bool widen = spills_.fell_behind(same, spilled, backlog, now_ns) &&
+                       !CPU_EQUAL(&current_, &base_);
+    if (widen) ++wider_;
+    if (same && !widen && now_ns < next_look_ns_) return;
     pids_ = pids;
     cpu_set_t used;
     CPU_ZERO(&used);
@@ -86,17 +124,19 @@ class CpuPlacer {
     look_ns_ = moved ? kFirstLookNs : std::min(2 * look_ns_, kLastLookNs);
     next_look_ns_ = now_ns + look_ns_;
     cpu_set_t want;
-    choose(base_, used, siblings_, &want);
+    choose(base_, used, siblings_, &want, wider_);
     if (!CPU_EQUAL(&want, &current_)) move_to(want);
   }
 
   /**
    * The CPUs for the service: `base` without `used` and without the SMT
    * siblings of `used`; else `base` without `used`; else all of `base`.
-   * `siblings[c]` holds CPU c and its siblings (empty for an unknown c).
+   * `wider` moves that many steps further down the list. `siblings[c]` holds
+   * CPU c and its siblings (empty for an unknown c).
    */
   static void choose(const cpu_set_t& base, const cpu_set_t& used,
-                     const std::vector<cpu_set_t>& siblings, cpu_set_t* out) {
+                     const std::vector<cpu_set_t>& siblings, cpu_set_t* out,
+                     uint32_t wider = 0) {
     cpu_set_t near = used;
     for (size_t c = 0; c < siblings.size(); ++c)
       if (CPU_ISSET(c, &used)) CPU_OR(&near, &near, &siblings[c]);
@@ -109,12 +149,11 @@ class CpuPlacer {
       if (!CPU_ISSET(c, &near)) CPU_SET(c, &free_core);
       if (!CPU_ISSET(c, &used)) CPU_SET(c, &free_cpu);
     }
-    if (CPU_COUNT(&free_core) != 0)
-      *out = free_core;
-    else if (CPU_COUNT(&free_cpu) != 0)
-      *out = free_cpu;
-    else
-      *out = base;
+    const cpu_set_t* steps[] = {&free_core, &free_cpu, &base};
+    size_t step = 0;
+    while (step + 1 < 3 && CPU_COUNT(steps[step]) == 0) ++step;
+    step += wider;
+    *out = *steps[step < 3 ? step : 2];
   }
 
   /** Parses a CPU list such as "0-3,8,10-11"; false if malformed. */
@@ -229,6 +268,8 @@ class CpuPlacer {
   cpu_set_t used_{};
   uint64_t look_ns_ = kFirstLookNs;
   uint64_t next_look_ns_ = 0;
+  uint32_t wider_ = 0;
+  SpillWindow spills_;
 };
 
 }  // namespace dftracer

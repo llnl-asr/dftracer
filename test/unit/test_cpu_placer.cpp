@@ -19,9 +19,9 @@ cpu_set_t cpus(const char* list) {
 }
 
 std::string pick(const char* base, const char* used,
-                 const std::vector<cpu_set_t>& siblings) {
+                 const std::vector<cpu_set_t>& siblings, uint32_t wider = 0) {
   cpu_set_t out;
-  CpuPlacer::choose(cpus(base), cpus(used), siblings, &out);
+  CpuPlacer::choose(cpus(base), cpus(used), siblings, &out, wider);
   return CpuPlacer::format_cpu_list(out);
 }
 
@@ -63,10 +63,40 @@ void test_choose() {
   DFT_CHECK(pick("0-7", "0-3", std::vector<cpu_set_t>()) == "4-7");
 }
 
+// A service that falls behind widens a step at a time: free cores, then every
+// CPU no client uses, then all of its CPUs.
+void test_choose_wider() {
+  const std::vector<cpu_set_t> smt = two_way();
+  DFT_CHECK(pick("0-23", "0-10", smt, 0) == "11,23");
+  DFT_CHECK(pick("0-23", "0-10", smt, 1) == "11-23");
+  DFT_CHECK(pick("0-23", "0-10", smt, 2) == "0-23");
+  DFT_CHECK(pick("0-23", "0-10", smt, 9) == "0-23");
+  // No free core: the first step is the free CPUs.
+  DFT_CHECK(pick("0-23", "0-11", smt, 1) == "0-23");
+}
+
+// Widen only when many events spill within one window of the same clients.
+void test_spill_window() {
+  CpuPlacer::SpillWindow w;
+  const uint64_t hold = CpuPlacer::SpillWindow::kHoldNs;
+  const uint64_t many = CpuPlacer::SpillWindow::kSpills;
+  DFT_CHECK(!w.fell_behind(false, 0, false, 0));  // new clients: a window
+  DFT_CHECK(!w.fell_behind(true, many, false, hold - 1));  // not over yet
+  DFT_CHECK(w.fell_behind(true, many, false, hold));       // over, many spilled
+  DFT_CHECK(!w.fell_behind(true, 2 * many - 1, false, 2 * hold));  // short
+  DFT_CHECK(!w.fell_behind(false, 9 * many, true, 3 * hold));      // new set
+  DFT_CHECK(!w.fell_behind(true, 9 * many + 1, false, 4 * hold));
+  // A backlog without spills is behind too, but only at a window's end.
+  DFT_CHECK(!w.fell_behind(true, 9 * many + 1, true, 4 * hold + 1));
+  DFT_CHECK(w.fell_behind(true, 9 * many + 1, true, 5 * hold));
+}
+
 }  // namespace
 
 int main() {
   test_lists();
   test_choose();
+  test_choose_wider();
+  test_spill_window();
   return 0;
 }
