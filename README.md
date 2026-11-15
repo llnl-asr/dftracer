@@ -20,25 +20,12 @@ DFTracer is a tracing tool designed to capture both application-code and I/O-cal
 
 ## Prerequisites
 
-Requirements for DFTracer
-
 1. Python>=3.7
-1. pybind11
+1. For building from source: a C++17 compiler (GCC 9 or newer) and CMake 3.24 or newer.
+   See [With MPI, HDF5 or HIP support](#with-mpi-hdf5-or-hip-support).
 
-Requirements for DFAnalyzer
-
-1. bokeh>=2.4.2
-1. dask>=2023.5.0
-1. distributed
-1. matplotlib>=3.7.3
-1. numpy>=1.24.3
-1. pandas>=2.0.3
-1. pyarrow>=12.0.1
-1. pybind11
-1. python-intervals>=1.10.0.post1
-1. rich>=13.6.0
-1. seaborn>=0.13.2
-1. [zindex_py](https://github.com/hariharan-devarajan/zindex.git)
+The prebuilt wheel needs nothing beyond Python. Build tools such as `pybind11`
+are installed by `pip` automatically.
 
 ## Installation
 
@@ -49,6 +36,7 @@ This method works for both native Python and Conda environments.
 
 ```bash
 pip install dftracer
+# DFAnalyzer (trace analysis) is a separate package; it needs Python>=3.9
 pip install dftracer[dfanalyzer]
 # if you want to use old version of DFAnalyzer
 # pip install dftracer[dfanalyzer_old]
