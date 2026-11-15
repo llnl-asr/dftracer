@@ -5,14 +5,14 @@
 # DFTracer
 
 [![Build and Test](https://github.com/llnl-asr/dftracer/actions/workflows/ci.yml/badge.svg)](https://github.com/llnl-asr/dftracer/actions/workflows/ci.yml)
-<!-- Disabled: Coveralls only receives coverage from pull requests, so the develop badge shows "unknown".
-[![Coverage Status](https://coveralls.io/repos/github/LLNL/dftracer/badge.svg?branch=develop)](https://coveralls.io/github/LLNL/dftracer?branch=develop)
--->
 [![Documentation Status](https://readthedocs.org/projects/dftracer/badge/?version=latest)](https://dftracer.readthedocs.io/en/latest/?badge=latest)
 ![PyPI - Version](https://img.shields.io/pypi/v/dftracer?label=PyPI)
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/dftracer?label=Wheel)
 ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/dftracer?label=Python)
 ![PyPI - License](https://img.shields.io/pypi/l/dftracer?label=License)
+<!-- Disabled: Coveralls only receives coverage from pull requests, so the develop badge shows "unknown".
+[![Coverage Status](https://coveralls.io/repos/github/LLNL/dftracer/badge.svg?branch=develop)](https://coveralls.io/github/LLNL/dftracer?branch=develop)
+-->
 
 ## Overview
 
