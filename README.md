@@ -187,8 +187,10 @@ def npz_calls(index):
 def main():
     log_events(0)
     npz_calls(1)
-    with get_context('spawn').Pool(1, initializer=init) as pool:
-        pool.map(posix_calls, ((2, True),))
+    pool = get_context('spawn').Pool(1, initializer=init)
+    pool.map(posix_calls, ((2, True),))
+    pool.close()
+    pool.join()
     log_inst.finalize()
 
 if __name__ == "__main__":
