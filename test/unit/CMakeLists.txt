@@ -33,18 +33,18 @@ add_dependencies(test_regression ${PROJECT_NAME}_core_dbg)
 
 # Test service
 add_executable(test_service test_service.cpp)
-target_link_libraries(test_service ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry)
-add_dependencies(test_service ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry)
+target_link_libraries(test_service ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry_dbg)
+add_dependencies(test_service ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry_dbg)
 
 # Test omnistat ingestion
 add_executable(test_omnistat test_omnistat.cpp)
-target_link_libraries(test_omnistat ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry yaml-cpp)
-add_dependencies(test_omnistat ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry)
+target_link_libraries(test_omnistat ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry_dbg yaml-cpp)
+add_dependencies(test_omnistat ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry_dbg)
 
 # Test variorum power ingestion
 add_executable(test_variorum test_variorum.cpp)
-target_link_libraries(test_variorum ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry yaml-cpp)
-add_dependencies(test_variorum ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry)
+target_link_libraries(test_variorum ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry_dbg yaml-cpp)
+add_dependencies(test_variorum ${PROJECT_NAME}_core_dbg ${PROJECT_NAME}_service_telemetry_dbg)
 
 # Test aggregated key hash
 add_executable(test_aggregated_key_hash test_aggregated_key_hash.cpp)
