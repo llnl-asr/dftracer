@@ -81,9 +81,8 @@ pip install git+https://github.com/llnl-asr/dftracer.git@${DFTRACER_VERSION}#egg
 ```bash
 git clone https://github.com/llnl-asr/dftracer.git
 cd dftracer
-# You can skip this for installing the dev branch.
-# for latest stable version use master branch.
-git checkout tags/<Release> -b <Release>
+# This builds the develop branch. For a release, check out its tag instead:
+# git checkout tags/<Release> -b <Release>
 pip install .
 ```
 
