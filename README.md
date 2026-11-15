@@ -38,8 +38,6 @@ This method works for both native Python and Conda environments.
 pip install dftracer
 # DFAnalyzer (trace analysis) is a separate package; it needs Python>=3.9
 pip install dftracer[dfanalyzer]
-# if you want to use old version of DFAnalyzer
-# pip install dftracer[dfanalyzer_old]
 ```
 
 This installs a prebuilt wheel that traces POSIX and STDIO I/O. It needs nothing
@@ -60,8 +58,6 @@ pip install dftracer==2.1.0.post5.dev0   # a specific one
 DFTRACER_VERSION=develop
 pip install git+https://github.com/llnl-asr/dftracer.git@${DFTRACER_VERSION}
 pip install git+https://github.com/llnl-asr/dftracer.git@${DFTRACER_VERSION}#egg=dftracer[dfanalyzer]
-# if you want to use old version of DFAnalyzer
-# pip install git+https://github.com/llnl-asr/dftracer.git@${DFTRACER_VERSION}#egg=dftracer[dfanalyzer_old]
 ```
 
 ### From Source
