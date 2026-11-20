@@ -756,6 +756,45 @@ At runtime, PAPI tracing can be turned off without rebuilding by setting:
 
     export DFTRACER_ENABLE_PAPI_TRACING=0
 
+AMD GPU counters
+................
+
+DFTracer also samples counters from other PAPI components, such as ``rocp_sdk`` for AMD GPUs.
+Build PAPI with that component and point DFTracer at it:
+
+.. code-block:: Bash
+
+    module load rocm
+    export PAPI_ROCP_SDK_ROOT=$ROCM_PATH
+    cd papi/src && ./configure --prefix=$HOME/papi --with-components="rocp_sdk" && make install
+    $HOME/papi/bin/papi_component_avail      # rocp_sdk must not be "Disabled"
+    PAPI_DIR=$HOME/papi ./autobuild.sh --enable-papi --enable-hip
+
+The Cray PAPI modules ship only the older ``rocm`` component, not ``rocp_sdk``.
+
+GPU counters are never picked by the build-time probe.
+Name them in ``DFTRACER_PAPI_EVENTS``, together with CPU counters if you want both.
+``papi_native_avail`` lists them.
+Keep ``PAPI_ROCP_SDK_ROOT`` set at run time:
+
+.. code-block:: Bash
+
+    export PAPI_ROCP_SDK_ROOT=$ROCM_PATH
+    export DFTRACER_PAPI_EVENTS="PAPI_TOT_INS,rocp_sdk:::SQ_WAVES:device=0,rocp_sdk:::GRBM_COUNT:device=0"
+
+Each component gets its own family, named after the component, so a sample writes one record for the CPU counters and one for the GPU counters:
+
+.. code-block:: JSON
+
+    {"name":"rocp_sdk","cat":"papi","type":11,"ts":1795196122790375,"ph":2,
+     "pid":3902335,"tid":3902335,"args":{"rocp_sdk:::SQ_WAVES:device=0":2621440,
+     "rocp_sdk:::SQ_WAVES:device=0_delta":0,"rocp_sdk:::GRBM_COUNT:device=0":12692695211,
+     "rocp_sdk:::GRBM_COUNT:device=0_delta":94109463,"multiplex":0}}
+
+GPU counters work in the ``rocp_sdk`` device sampling mode, which counts everything that runs on the device, not only the traced process.
+They are never multiplexed.
+Before the application first uses the GPU, a read fails with ``PAPI_ECMP`` and that sample is skipped.
+
 Build DFTracer Dependencies
 ********************************
 

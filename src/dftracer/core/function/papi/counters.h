@@ -58,6 +58,11 @@ class PAPICounterFunction : public dftracer::GenericFunction {
   std::shared_ptr<dftracer::ConfigurationManager> config;
   std::shared_ptr<dftracer::BufferManager> buffer_manager;
 
+  // The CPU component (perf_event). Only its event sets are attached to the
+  // process; other components, such as rocp_sdk for AMD GPUs, count the whole
+  // device and reject PAPI_attach and PAPI_INHERIT.
+  static constexpr int kCpuComponent = 0;
+
   // Counters are collected together in one event set -- as many as the CPU can
   // carry at once, multiplexed when there are more of them than slots -- and
   // only grouped when written out. A family becomes one record carrying all of
@@ -69,6 +74,7 @@ class PAPICounterFunction : public dftracer::GenericFunction {
   struct CounterGroup {
     std::string category;
     std::vector<std::string> events;
+    int component = kCpuComponent;
     int event_set = PAPI_NULL;
     bool multiplexed = false;
     std::vector<long long> last_values;
@@ -110,6 +116,9 @@ class PAPICounterFunction : public dftracer::GenericFunction {
   // Parse the build-time list "FAMILY:ev[,ev...][;FAMILY:...]" into the flat
   // counter list plus the family layout used when writing samples out.
   static std::vector<CounterGroup> parse_groups(const std::string &value);
+  // Moves counters of components other than the CPU into one family per
+  // component, named after it. Needs the library to be initialized.
+  static void split_by_component(std::vector<CounterGroup> &groups);
 
  public:
   PAPICounterFunction();
