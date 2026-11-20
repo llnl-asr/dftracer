@@ -129,7 +129,8 @@ case "$MODULE" in
           # assemble.py takes only the HDF5 variant from this tree.
           WITH_MPI=1
         fi ;;
-  papi) FLAGS+=(-DDFTRACER_ENABLE_PAPI_TRACING=ON)
+  # NEVER unless asked: a module job builds against the PAPI it was given.
+  papi) FLAGS+=(-DDFTRACER_ENABLE_PAPI_TRACING=ON "-DDFTRACER_BUILD_PAPI=${DFTRACER_BUILD_PAPI:-NEVER}")
         if [ -n "$PAPI" ]; then export PAPI_DIR=$PAPI; FLAGS+=("-DPAPI_DIR=$PAPI"); fi ;;
   hwloc) FLAGS+=(-DDFTRACER_DISABLE_HWLOC=OFF) ;;
   hip) [ -n "$ROCM" ] || { echo "--rocm is required for hip" >&2; exit 2; }

@@ -199,6 +199,94 @@ class Lock(unittest.TestCase):
             shutil.rmtree(tmp)
 
 
+class ProvidePapi(unittest.TestCase):
+    """When dftracer-compose builds PAPI; the build itself is mocked."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.tree = self.tmp / "lib64" / "dftracer" / "compose"
+        self.tree.mkdir(parents=True)
+        self.work = self.tmp / "work"
+        (self.work / "compose-build").mkdir(parents=True)
+        self.settings = {"disabled": [], "variants": {}}
+        env = {"ROCM_PATH": "/opt/rocm", "CMAKE_PREFIX_PATH": "/site"}
+        patcher = mock.patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def site_papi(self, rocp_sdk: bool) -> None:
+        library = self.tmp / "libpapi.so"
+        names = b"\0perf_event\0" + (b"rocp_sdk\0" if rocp_sdk else b"rocm_7001\0")
+        library.write_bytes(b"\x7fELF" + names)
+        (self.work / "compose-build" / "papi-library.txt").write_text(f"{library};/usr/lib/libm.so")
+
+    def provide(self, mode, hip="linked", papi="linked"):
+        records = [("papi", "papi-7.2", papi), ("hip", "rocprof-1.1", hip)]
+        with mock.patch.object(compose, "run") as run, quiet():
+            built = compose.provide_papi(mode, self.tree, self.work, self.settings, records)
+        return built, run
+
+    def test_rocm_machine_with_site_papi_lacking_rocp_sdk_builds(self):
+        self.site_papi(rocp_sdk=False)
+        built, run = self.provide("auto")
+        self.assertTrue(built)
+        cmd = run.call_args.args[0]
+        dest = self.tree.parent / "papi"
+        self.assertIn(f"-DDFTRACER_PAPI_PREFIX={dest}", cmd)
+        self.assertIn("-DDFTRACER_PAPI_ROCM_ROOT=/opt/rocm", cmd)
+        self.assertEqual(os.environ["CMAKE_PREFIX_PATH"], f"{dest}{os.pathsep}/site")
+        self.assertEqual(os.environ["PAPI_DIR"], str(dest))
+
+    def test_site_papi_with_rocp_sdk_is_kept(self):
+        self.site_papi(rocp_sdk=True)
+        built, run = self.provide("auto")
+        self.assertFalse(built)
+        run.assert_not_called()
+
+    def test_rocm_machine_without_papi_builds(self):
+        built, _ = self.provide("auto", papi="absent")
+        self.assertTrue(built)
+
+    def test_machine_without_rocm_is_left_alone(self):
+        self.site_papi(rocp_sdk=False)
+        built, run = self.provide("auto", hip="absent")
+        self.assertFalse(built)
+        run.assert_not_called()
+
+    def test_never_and_disabled_never_build(self):
+        self.site_papi(rocp_sdk=False)
+        self.assertFalse(self.provide("never")[0])
+        self.settings["disabled"] = ["papi"]
+        self.assertFalse(self.provide("always")[0])
+
+    def test_always_builds_without_rocm_and_without_rocp_sdk(self):
+        built, run = self.provide("always", hip="absent")
+        self.assertTrue(built)
+        self.assertIn("-DDFTRACER_PAPI_ROCM_ROOT=", run.call_args.args[0])
+
+    def test_a_papi_built_before_is_used_again_without_a_rebuild(self):
+        stamp = self.tree.parent / "papi" / "share" / "dftracer"
+        stamp.mkdir(parents=True)
+        (stamp / "papi-abc-rocp_sdk.stamp").write_text("x")
+        self.site_papi(rocp_sdk=True)
+        built, run = self.provide("auto", hip="absent")
+        self.assertTrue(built)
+        run.assert_not_called()
+        self.assertEqual(os.environ["PAPI_DIR"], str(self.tree.parent / "papi"))
+
+    def test_failed_build_keeps_site_papi_in_auto_and_fails_in_always(self):
+        self.site_papi(rocp_sdk=False)
+        failed = compose.StepFailed("no network")
+        with mock.patch.object(compose, "run", side_effect=failed), quiet():
+            records = [("papi", "papi-7.2", "linked"), ("hip", "rocprof-1.1", "linked")]
+            self.assertFalse(compose.provide_papi("auto", self.tree, self.work,
+                                                  self.settings, records))
+            self.assertEqual(os.environ["CMAKE_PREFIX_PATH"], "/site")
+            with self.assertRaises(compose.StepFailed):
+                compose.provide_papi("always", self.tree, self.work, self.settings, records)
+
+
 @unittest.skipIf(BUILD is None and "--build" not in sys.argv, "needs --build")
 class EndToEnd(unittest.TestCase):
     """dftracer-compose on the build's compose tree, installed in a prefix."""
