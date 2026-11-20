@@ -210,6 +210,19 @@ A source build needs CMake 3.24 or newer and a C/C++ compiler, and fetches
 DFTracer's dependencies (brahma, gotcha, ...) from GitHub. It uses the same
 loaded environment.
 
+On a ROCm machine whose PAPI is missing or has no ``rocp_sdk`` component (the
+Cray PAPI modules have none), ``dftracer-compose`` builds PAPI with
+``rocp_sdk`` into ``<libdir>/dftracer/papi`` and links the PAPI module against
+it, so GPU counters can be collected:
+
+.. code-block:: bash
+
+    dftracer-compose                       # --build-papi auto, the default
+    dftracer-compose --build-papi always   # also on a machine without ROCm
+    dftracer-compose --build-papi never    # keep the PAPI this machine has
+
+Later runs keep using that PAPI. ``DFTRACER_BUILD_PAPI`` sets the default.
+
 Changing a composition
 ======================
 

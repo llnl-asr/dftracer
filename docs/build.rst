@@ -162,7 +162,8 @@ passed to CMake. See `Build Variables`_ for the full list and `MPI and HDF5 Scen
    DFTRACER_ENABLE_HIP_TRACING        AMD GPU tracing; needs ROCm/rocprofiler-sdk (default OFF).
    DFTRACER_ENABLE_CUDA_TRACING       NVIDIA GPU tracing; needs a CUDA toolkit with CUPTI (default OFF).
    DFTRACER_CUDA_PATH                 CUDA toolkit root to build CUPTI tracing against (default: auto-detect).
-   DFTRACER_ENABLE_PAPI_TRACING       PAPI hardware counter sampling; needs libpapi-dev (default OFF).
+   DFTRACER_ENABLE_PAPI_TRACING       PAPI hardware counter sampling; uses the installed PAPI or builds one (default OFF).
+   DFTRACER_BUILD_PAPI                When to build PAPI from source: AUTO, ALWAYS, NEVER (default AUTO). See `AMD GPU counters`_.
    DFTRACER_ENABLE_VARIORUM           Node-level power counters via variorum; fetched and built if not installed (default OFF).
    DFTRACER_ENABLE_FTRACING           Function tracing via ``-finstrument-functions`` (default OFF).
    DFTRACER_ENABLE_PROFILING          Time each phase of dftracer's own pipeline, reported at finalize; compiled out when OFF (default OFF).
@@ -362,6 +363,9 @@ variables marked CMake only.
    * - ``DFTRACER_BUILD_VARIORUM``
      - STRING
      - When to build variorum from source: AUTO (only if none installed), ALWAYS, NEVER (default AUTO).
+   * - ``DFTRACER_BUILD_PAPI``
+     - STRING
+     - When to build PAPI from source: AUTO (if none is installed, or if HIP tracing is on and the installed PAPI has no ``rocp_sdk``), ALWAYS, NEVER (default AUTO).
    * - ``DFTRACER_DISABLE_HWLOC``
      - BOOL
      - Disable HWLOC (default ON).
@@ -760,17 +764,33 @@ AMD GPU counters
 ................
 
 DFTracer also samples counters from other PAPI components, such as ``rocp_sdk`` for AMD GPUs.
-Build PAPI with that component and point DFTracer at it:
+The Cray PAPI modules ship only the older ``rocm`` component, not ``rocp_sdk``.
+With PAPI tracing on and no PAPI installed, the build fetches PAPI and builds it into the install prefix.
+With HIP tracing on too, it also does this when the installed PAPI has no ``rocp_sdk``, and builds PAPI with ``rocp_sdk``:
 
 .. code-block:: Bash
 
     module load rocm
+    ./autobuild.sh --enable-papi --enable-hip     # --build-papi NEVER keeps the PAPI you have
+
+The configure step says which it did:
+
+.. code-block:: text
+
+    -- [DFTRACER] building PAPI: HIP tracing is on and /opt/cray/pe/papi/7.2.0.1/lib/libpapi.so has no rocp_sdk component
+
+``DFTRACER_BUILD_PAPI=ALWAYS`` builds PAPI even when one is installed.
+The build uses a pinned PAPI commit (``DFTRACER_PAPI_COMMIT``), because the PAPI 7.2.0 release does not compile against ROCm 7.
+A composable install does the same with ``dftracer-compose --build-papi`` (:doc:`composable_install`).
+
+To build PAPI yourself instead:
+
+.. code-block:: Bash
+
     export PAPI_ROCP_SDK_ROOT=$ROCM_PATH
     cd papi/src && ./configure --prefix=$HOME/papi --with-components="rocp_sdk" && make install
     $HOME/papi/bin/papi_component_avail      # rocp_sdk must not be "Disabled"
-    PAPI_DIR=$HOME/papi ./autobuild.sh --enable-papi --enable-hip
-
-The Cray PAPI modules ship only the older ``rocm`` component, not ``rocp_sdk``.
+    PAPI_DIR=$HOME/papi ./autobuild.sh --enable-papi --enable-hip --build-papi NEVER
 
 GPU counters are never picked by the build-time probe.
 Name them in ``DFTRACER_PAPI_EVENTS``, together with CPU counters if you want both.
@@ -794,6 +814,13 @@ Each component gets its own family, named after the component, so a sample write
 GPU counters work in the ``rocp_sdk`` device sampling mode, which counts everything that runs on the device, not only the traced process.
 They are never multiplexed.
 Before the application first uses the GPU, a read fails with ``PAPI_ECMP`` and that sample is skipped.
+
+.. warning::
+
+   GPU counters need the GPU's profiling lock.
+   When another process holds it, as can happen on a shared login node, rocprofiler-sdk stops the application with ``Could not set agent to be profiled``.
+   Collect GPU counters on a compute node that is yours alone.
+   CPU counters are not affected.
 
 Build DFTracer Dependencies
 ********************************
