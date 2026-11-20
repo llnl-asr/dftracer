@@ -137,6 +137,52 @@ PAPICounterFunction::parse_groups(const std::string &value) {
   return parsed;
 }
 
+void PAPICounterFunction::split_by_component(
+    std::vector<CounterGroup> &groups) {
+  std::vector<CounterGroup> device_groups;
+  for (auto &group : groups) {
+    std::vector<std::string> cpu_events;
+    for (const auto &name : group.events) {
+      int code = 0;
+      if (PAPI_event_name_to_code(const_cast<char *>(name.c_str()), &code) !=
+          PAPI_OK) {
+        // Kept, it would fail to fit the CPU set and force multiplexing.
+        DFTRACER_LOG_ERROR(
+            "PAPI counter %s is not known to this PAPI build; dropping it",
+            name.c_str());
+        continue;
+      }
+      const int component = PAPI_get_event_component(code);
+      if (component < 0 || component == kCpuComponent) {
+        cpu_events.push_back(name);
+        continue;
+      }
+      auto found = std::find_if(device_groups.begin(), device_groups.end(),
+                                [component](const CounterGroup &device) {
+                                  return device.component == component;
+                                });
+      if (found == device_groups.end()) {
+        CounterGroup device;
+        const PAPI_component_info_t *info = PAPI_get_component_info(component);
+        device.category = info != nullptr
+                              ? std::string(info->name)
+                              : "component" + std::to_string(component);
+        device.component = component;
+        device_groups.push_back(std::move(device));
+        found = device_groups.end() - 1;
+      }
+      found->events.push_back(name);
+    }
+    group.events = std::move(cpu_events);
+  }
+  groups.erase(std::remove_if(groups.begin(), groups.end(),
+                              [](const CounterGroup &group) {
+                                return group.events.empty();
+                              }),
+               groups.end());
+  for (auto &device : device_groups) groups.push_back(std::move(device));
+}
+
 // A preset PAPI computes by SUBTRACTING one native event from another --
 // PAPI_BR_NTK is RETIRED_BRANCH_INSTRUCTIONS minus
 // RETIRED_TAKEN_BRANCH_INSTRUCTIONS, for instance.
@@ -250,7 +296,8 @@ bool PAPICounterFunction::initialize_library() {
         "DFTRACER_PAPI_EVENTS to choose your own",
         "");
   } else {
-    // An explicit list carries no family information; it becomes one family.
+    // An explicit list carries no family information; it becomes one family
+    // per PAPI component.
     // This is the way to get exact counts: name no more counters than the
     // machine can hold, and take one run per set you care about.
     CounterGroup group;
@@ -269,6 +316,7 @@ bool PAPICounterFunction::initialize_library() {
     DFTRACER_LOG_WARN("PAPI tracing disabled: no counters configured", "");
     return false;
   }
+  split_by_component(groups);
 
   // Decide per family whether it has to be time-shared, by asking the hardware
   // rather than by counting names: a family fits only if every one of its
@@ -290,6 +338,7 @@ bool PAPICounterFunction::initialize_library() {
   std::vector<std::string> everything;
   size_t total_events = 0;
   for (const auto &group : groups) {
+    if (group.component != kCpuComponent) continue;
     everything.insert(everything.end(), group.events.begin(),
                       group.events.end());
     total_events += group.events.size();
@@ -314,6 +363,7 @@ bool PAPICounterFunction::initialize_library() {
 
   bool any_multiplexed = false;
   for (auto &group : groups) {
+    if (group.component != kCpuComponent) continue;
     const size_t fitting = count_fitting(group.events);
     group.multiplexed = fitting < group.events.size();
 
@@ -389,7 +439,17 @@ bool PAPICounterFunction::start_counters() {
       group.event_set = PAPI_NULL;
       continue;
     }
-    if (!bind_to_process(group.event_set, group.multiplexed)) {
+    bool bound = true;
+    if (group.component == kCpuComponent) {
+      bound = bind_to_process(group.event_set, group.multiplexed);
+    } else {
+      retval = PAPI_assign_eventset_component(group.event_set, group.component);
+      if (retval != PAPI_OK) {
+        log_papi_status("PAPI_assign_eventset_component", retval);
+        bound = false;
+      }
+    }
+    if (!bound) {
       PAPI_destroy_eventset(&group.event_set);
       group.event_set = PAPI_NULL;
       continue;
