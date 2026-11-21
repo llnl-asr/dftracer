@@ -817,8 +817,8 @@ Before the application first uses the GPU, a read fails with ``PAPI_ECMP`` and t
 
 .. warning::
 
-   GPU counters need the GPU's profiling lock.
-   When another process holds it, as can happen on a shared login node, rocprofiler-sdk stops the application with ``Could not set agent to be profiled``.
+   When the GPU does not run rocprofiler-sdk's setup packet within 1 second, rocprofiler-sdk stops the application with ``Could not set agent to be profiled``.
+   This was seen only on a shared login node.
    Collect GPU counters on a compute node that is yours alone.
    CPU counters are not affected.
 
