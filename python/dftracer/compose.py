@@ -264,6 +264,75 @@ def build_from_source(part: str, source: Path, tree: Path, work: Path,
         step(f"built {part} {variant.name}")
 
 
+# --- PAPI built from source ------------------------------------------------
+
+def papi_has_rocp_sdk(library: Path) -> bool:
+    """PAPI keeps each component's name as a string in the library."""
+    try:
+        return b"\0rocp_sdk\0" in library.read_bytes()
+    except OSError:
+        return False
+
+
+def detected_papi_library(work: Path) -> Path | None:
+    listing = work / "compose-build" / "papi-library.txt"
+    if not listing.exists():
+        return None
+    for item in listing.read_text().strip().split(";"):
+        if "libpapi" in Path(item).name:
+            return Path(item)
+    return None
+
+
+def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
+                 records: list[tuple[str, str, str]]) -> bool:
+    """Build PAPI into <libdir>/dftracer/papi when `mode` asks for it, and put
+    it first on CMAKE_PREFIX_PATH. True when detection must run again."""
+    if mode == "never" or "papi" in settings["disabled"]:
+        return False
+    dest = tree.parent / "papi"
+    status = {module: state for module, _, state in records}
+    rocm = os.environ.get("ROCM_PATH", "") if status.get("hip", "absent") != "absent" else ""
+    built_before = any((dest / "share" / "dftracer").glob("papi-*.stamp"))
+    reason = ""
+    if mode == "always":
+        reason = "--build-papi always"
+    elif built_before:
+        reason = "built by an earlier compose"
+    elif rocm:
+        library = detected_papi_library(work)
+        if library is None:
+            reason = "this ROCm machine has no PAPI"
+        elif not papi_has_rocp_sdk(library):
+            reason = f"{library} has no rocp_sdk component for GPU counters"
+    if not reason:
+        return False
+    if built_before and mode != "always":
+        # Not run again: on a node without ROCm it would rebuild without
+        # rocp_sdk over the PAPI that has it.
+        step(f"using the PAPI in {dest} ({reason})")
+    else:
+        step(f"building PAPI into {dest} ({reason}) ...")
+        script = tree / "DFTracerPapi.cmake"
+        try:
+            run(["cmake", f"-DDFTRACER_PAPI_PREFIX={dest}", f"-DDFTRACER_PAPI_ROCM_ROOT={rocm}",
+                 "-P", str(script)], work / "papi.log", cwd=work)
+        except StepFailed as error:
+            if mode == "always":
+                raise
+            # Not asked for by name: compose goes on with this machine's PAPI.
+            step(f"warning: PAPI did not build, keeping this machine's PAPI: {error}")
+            return False
+    # Before any prefix a site module put there, so detection, module builds
+    # and the relink all take this PAPI.
+    old = os.environ.get("CMAKE_PREFIX_PATH")
+    os.environ["CMAKE_PREFIX_PATH"] = str(dest) + (os.pathsep + old if old else "")
+    os.environ["PAPI_DIR"] = str(dest)
+    if rocm:
+        step(f"set PAPI_ROCP_SDK_ROOT={rocm} when you trace, for GPU counters")
+    return True
+
+
 # --- Saved composition settings --------------------------------------------
 
 def settings_path(tree: Path) -> Path:
@@ -449,6 +518,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cmake-arg", action="append", default=[],
                         help="extra CMake argument for source builds (repeatable)")
     parser.add_argument("--keep", action="store_true", help="keep the work dir")
+    parser.add_argument("--build-papi", choices=("auto", "always", "never"),
+                        default=os.environ.get("DFTRACER_BUILD_PAPI", "auto").lower(),
+                        help="build PAPI from source: auto builds it on a ROCm machine "
+                             "whose PAPI is missing or has no rocp_sdk component "
+                             "(default: $DFTRACER_BUILD_PAPI or auto)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="print each step's command and stream its output")
     edit = parser.add_argument_group("editing the composition (kept for later runs)")
@@ -514,6 +588,8 @@ def _main(args: argparse.Namespace, prefix: Path, tree: Path, forced: set[str],
     step("settings: " + describe_settings(settings))
     cmake_args = settings_cmake_args(settings)
     records = compose(tree, prefix, work, install=False, cmake_args=cmake_args)
+    if not args.check and provide_papi(args.build_papi, tree, work, settings, records):
+        records = compose(tree, prefix, work, install=False, cmake_args=cmake_args)
     needed = {m for m, _, status in records if status in ("missing", "stale")}
     detected = {m for m, _, status in records if status in ("linked", "missing", "stale")}
     to_build = sorted(needed | (forced & detected))

@@ -17,8 +17,6 @@
 #include <string_view>
 #include <unordered_map>
 
-#define MAX_EVENT_NAME_LENGTH 15
-
 // Compute the numeric API version we are compiling against.
 // ROCPROFILER_VERSION_MAJOR/MINOR/PATCH exist in all supported SDK versions:
 //   0.4.0 (ROCm 6.2) through 1.x.x (ROCm 7.x).
@@ -296,8 +294,6 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
       std::string event_name = std::string(
           function->client_kernels.at(record->dispatch_info.kernel_id)
               .kernel_name);
-      if (event_name.length() > MAX_EVENT_NAME_LENGTH)
-        event_name = event_name.substr(0, MAX_EVENT_NAME_LENGTH);
       event_name = std::to_string(record->dispatch_info.kernel_id) + event_name;
       function->logger->enter_event();
       function->logger->log(

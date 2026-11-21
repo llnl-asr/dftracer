@@ -209,6 +209,8 @@ class CMakeBuild(build_ext):
         cmake_args += [f"-DDFTRACER_ENABLE_VARIORUM={enable_variorum}"]
         build_variorum = os.environ.get("DFTRACER_BUILD_VARIORUM", "AUTO")
         cmake_args += [f"-DDFTRACER_BUILD_VARIORUM={build_variorum}"]
+        build_papi = os.environ.get("DFTRACER_BUILD_PAPI", "AUTO")
+        cmake_args += [f"-DDFTRACER_BUILD_PAPI={build_papi}"]
         generate_interfaces = os.environ.get("DFTRACER_GENERATE_INTERFACES", "OFF")
         cmake_args += [f"-DDFTRACER_GENERATE_INTERFACES={generate_interfaces}"]
         disable_hwloc = os.environ.get("DFTRACER_DISABLE_HWLOC", "ON")

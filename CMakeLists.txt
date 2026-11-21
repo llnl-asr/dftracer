@@ -213,6 +213,13 @@ option (DFTRACER_ENABLE_PAPI_TRACING "Enable PAPI counter tracing" OFF)
 if (DFTRACER_ENABLE_PAPI_TRACING)
         set(DFTRACER_PAPI_TRACING_ENABLE 1)
 endif()
+# AUTO   use an installed PAPI, build one when there is none, or when HIP
+#        tracing is on and the installed PAPI has no rocp_sdk component
+# ALWAYS build from source even when one is installed
+# NEVER  never build one
+set(DFTRACER_BUILD_PAPI "AUTO" CACHE STRING
+        "When to fetch and build PAPI: AUTO, ALWAYS or NEVER")
+set_property(CACHE DFTRACER_BUILD_PAPI PROPERTY STRINGS AUTO ALWAYS NEVER)
 option (DFTRACER_ENABLE_VARIORUM "Enable Variorum node power tracing" OFF)
 # AUTO   use an installed variorum, build one only if there is none
 # ALWAYS build from source even when one is installed. A distribution variorum
@@ -813,6 +820,47 @@ else()
         endif()
 
         find_package(PAPI QUIET)
+        # Like variorum, only when PAPI tracing was asked for by name: dynamic
+        # detection does not fetch a dependency the user never mentioned.
+        if(DFTRACER_ENABLE_PAPI_TRACING AND NOT DFTRACER_BUILD_PAPI STREQUAL "NEVER")
+                include(DFTracerPapi)
+                set(_dftracer_papi_rocm_root "")
+                if(rocprofiler-sdk_FOUND AND DFTRACER_ENABLE_HIP_TRACING)
+                        get_filename_component(_dftracer_papi_rocm_root
+                                "${rocprofiler-sdk_INCLUDE_DIR}" DIRECTORY)
+                endif()
+                set(_dftracer_papi_reason "")
+                if(DFTRACER_BUILD_PAPI STREQUAL "ALWAYS")
+                        set(_dftracer_papi_reason "DFTRACER_BUILD_PAPI=ALWAYS")
+                elseif(NOT PAPI_FOUND)
+                        set(_dftracer_papi_reason "no PAPI was found")
+                elseif(_dftracer_papi_rocm_root)
+                        dftracer_papi_has_rocp_sdk("${PAPI_LIBRARIES}" _dftracer_papi_rocp)
+                        if(NOT _dftracer_papi_rocp)
+                                set(_dftracer_papi_reason
+                                        "HIP tracing is on and ${PAPI_LIBRARIES} has no rocp_sdk component")
+                        endif()
+                endif()
+                if(_dftracer_papi_reason)
+                        message(STATUS "[DFTRACER] building PAPI: ${_dftracer_papi_reason}")
+                        dftracer_provision_papi("${CMAKE_INSTALL_PREFIX}" "${_dftracer_papi_rocm_root}")
+                        if(DFTRACER_PAPI_PROVISIONED)
+                                set(PAPI_DIR "${CMAKE_INSTALL_PREFIX}" CACHE PATH
+                                        "Installation directory of PAPI" FORCE)
+                                # Searched only in the prefix: CMAKE_PREFIX_PATH,
+                                # which a site module may set, comes before hints.
+                                unset(PAPI_INCLUDE_DIRS CACHE)
+                                unset(PAPI_LIBRARIES CACHE)
+                                unset(PAPI_LIBRARY_DIRS)
+                                find_path(PAPI_INCLUDE_DIRS NAMES papi.h
+                                        PATHS "${CMAKE_INSTALL_PREFIX}/include" NO_DEFAULT_PATH)
+                                find_library(PAPI_LIBRARIES NAMES papi
+                                        PATHS "${CMAKE_INSTALL_PREFIX}/lib" "${CMAKE_INSTALL_PREFIX}/lib64"
+                                        NO_DEFAULT_PATH)
+                                find_package(PAPI QUIET)
+                        endif()
+                endif()
+        endif()
         if (PAPI_FOUND AND (DFTRACER_ENABLE_PAPI_TRACING OR DFTRACER_ENABLE_DYNAMIC_DETECTION))
                 set(DFTRACER_PAPI_TRACING_ENABLE 1)
                 include_directories(${PAPI_INCLUDE_DIRS})
@@ -1632,6 +1680,7 @@ set(DFTRACER_COMPONENT_LINK "@_dftracer_link@")
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/DFTracerCompose.cmake
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/DFTracerDetect.cmake
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/FindPAPI.cmake
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/DFTracerPapi.cmake
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/FindHWLOC.cmake
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/FindCUPTI.cmake
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/mpi_detect.c
