@@ -192,7 +192,7 @@ else
   echo "$hash" >"$compose/core/source_hash"
   echo "$interface" >"$compose/core/interface_hash"
   # The shared libraries the core links from its dependency build (gotcha,
-  # libuv, libdeflate, cpp-logger), next to dftracer/compose as in a wheel:
+  # libuv, cpp-logger), next to dftracer/compose as in a wheel:
   # core.cmake names them by this job's paths, and composing on another
   # machine links the copies there instead.
   libdir=$(dirname "$(dirname "$compose")")

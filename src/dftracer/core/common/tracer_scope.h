@@ -17,10 +17,15 @@ inline thread_local int tl_tracer_depth = 0;
  */
 class TracerScope {
  public:
-  TracerScope() { ++tl_tracer_depth; }
-  ~TracerScope() { --tl_tracer_depth; }
+  TracerScope() : TracerScope(tl_tracer_depth) {}
+  /** With the calling thread's tl_tracer_depth, looked up once by a caller. */
+  explicit TracerScope(int& depth) : depth_(depth) { ++depth_; }
+  ~TracerScope() { --depth_; }
   TracerScope(const TracerScope&) = delete;
   TracerScope& operator=(const TracerScope&) = delete;
+
+ private:
+  int& depth_;
 };
 
 /** True while the calling thread runs dftracer's own code (TracerScope). */

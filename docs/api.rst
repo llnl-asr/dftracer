@@ -80,6 +80,8 @@ Any other value turns it off, where a default of 1 applies.
    DFTRACER_LOG_LEVEL               STRING  Logging level within DFTracer ``ERROR``/``WARN``/``INFO``/``DEBUG`` (default ``ERROR``).
    DFTRACER_TIME_METRIC             STRING  Time scale used for event timestamps ``US``/``NS``/``MS``/``SEC`` (default ``US``).
                                             Also emitted as a ``time_metric`` metadata event so it is recorded in every trace.
+   DFTRACER_TSC_CLOCK               INT     Read timestamps from the CPU time-stamp counter when the kernel clock source is ``tsc`` (default: 1).
+                                            Set to ``0`` to read every timestamp with ``gettimeofday``.
    DFTRACER_BIND_SIGNALS            INT     Install DFTracer signal and exception handlers (default: 0).
                                             When set to ``1``, DFTracer registers handlers for the following signals:
                                             ``SIGSEGV`` (segmentation fault), ``SIGABRT`` (abort / assertion failure),

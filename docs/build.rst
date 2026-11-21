@@ -226,11 +226,27 @@ The functions in the common set and in each family's compat set are listed in
 Dependencies
 *******************************
 
-The C/C++ dependencies (cpp-logger, GOTCHA, brahma, yaml-cpp, libuv, libdeflate)
+The C/C++ dependencies (cpp-logger, GOTCHA, brahma, yaml-cpp, libuv)
 are cloned and built automatically as part of the build, so a source install
-needs access to their GitHub repositories. An installed libdeflate (1.9 or newer,
-e.g. ``libdeflate-devel``) is used instead when found; traces are written as gzip
-members with it, so zlib is not needed.
+needs access to their GitHub repositories.
+
+Traces are written as gzip members with Intel ISA-L, so zlib is not needed. ISA-L
+is vendored: the build downloads a pinned release and builds it inside the main
+build. No system ISA-L package is used. The archive is linked statically into
+``libdftracer_core`` with its symbols hidden, so an application's own ISA-L does
+not clash with it.
+
+On x86-64 the ISA-L kernels need nasm 2.15 or newer. A nasm on ``PATH`` is used,
+or set ``DFTRACER_NASM_EXECUTABLE`` to one. Without a suitable nasm, the build
+compiles nasm from a pinned release first. On aarch64 nasm is not needed.
+
+To build without internet access, point these CMake cache variables at local
+mirrors:
+
+- ``DFTRACER_ISAL_URL``: the ISA-L source tarball.
+- ``DFTRACER_ISAL_SHA256``: the SHA256 of that tarball.
+- ``DFTRACER_NASM_URL``: the nasm source tarball.
+- ``DFTRACER_NASM_SHA256``: the SHA256 of that tarball.
 
 Verifying
 *******************************

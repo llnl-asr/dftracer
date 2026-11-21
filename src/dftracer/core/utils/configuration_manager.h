@@ -53,6 +53,7 @@ class ConfigurationManager {
   int gotcha_priority;
   cpplogger::LoggerType logger_level;
   TimeMetricType time_metric;
+  bool tsc_clock;
   bool io;
   bool posix;
   bool stdio;
@@ -100,10 +101,14 @@ class ConfigurationManager {
   // Age at which the service takes over a producer's unpublished block and
   // writes out a partial chunk; gzip level of the node trace.
   uint32_t pc_flush_ms;
+  // How long published blocks may wait in the ring (0: drain at once).
   int pc_compression_level;
   // Compressed MiB after which the node trace rolls over to a new file
   // (fractions allowed; 0: never).
   double pc_rollover_mb;
+  // Where the service's threads run: "auto" (off the clients' CPUs), "off"
+  // or a CPU list.
+  std::string pc_service_cpus;
   std::vector<std::string> aggregation_inclusion_rules;
   std::vector<std::string> aggregation_exclusion_rules;
   ConfigurationManager();

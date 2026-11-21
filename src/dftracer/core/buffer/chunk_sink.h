@@ -5,10 +5,9 @@
 
 namespace dftracer {
 /**
- * Where an attached LocalBufferManager hands a full chunk (see
- * LocalBufferManager::attach). The sink compresses and writes the first `len`
- * bytes of `chunk` before returning; the manager then starts the same chunk
- * over from the beginning.
+ * Where a LaneBuffer hands a full chunk (see LaneBuffer::attach). The sink
+ * compresses and writes the first `len` bytes of `chunk` before returning; the
+ * manager then starts the same chunk over from the beginning.
  */
 class ChunkSink {
  public:

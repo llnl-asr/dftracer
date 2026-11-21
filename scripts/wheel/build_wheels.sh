@@ -326,7 +326,7 @@ if [ -d /etc/pki/ca-trust/extracted ]; then
 fi
 [ -n "${DFTRACER_DEPS_MANIFEST:-}" ] && CIBW_ENV="$CIBW_ENV DFTRACER_DEPS_MANIFEST=$DFTRACER_DEPS_MANIFEST"
 DEPS_CMAKE_ARGS="-DCMAKE_PREFIX_PATH=$DEPS_PREFIX -DDFTRACER_INSTALL_DEPENDENCIES=OFF"
-for pkg in cpp-logger brahma gotcha yaml-cpp libuv libdeflate; do
+for pkg in cpp-logger brahma gotcha yaml-cpp libuv; do
   DEPS_CMAKE_ARGS="$DEPS_CMAKE_ARGS -D${pkg}_DIR=$DEPS_PREFIX/lib64/cmake/$pkg"
 done
 if [ "$USE_CACHE" -eq 1 ]; then

@@ -10,6 +10,7 @@
 #include <dftracer/core/common/cpp_typedefs.h>
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
+#include <dftracer/core/common/event_draft.h>
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/module_hooks.h>
 #include <dftracer/core/common/profiler.h>
@@ -20,6 +21,7 @@
 #include <dftracer/core/utils/fs_info.h>
 #include <dftracer/core/utils/md5.h>
 #include <dftracer/core/utils/posix_bypass.h>
+#include <dftracer/core/utils/tsc_clock.h>
 #include <dftracer/core/utils/utils.h>
 #include <libgen.h>
 #include <sys/time.h>
@@ -55,6 +57,10 @@ inline std::atomic<bool>& dftracer_mpi_fork_guard() {
   return in_forked_child_without_mpi_init;
 }
 
+namespace dftracer {
+class ServiceBufferManager;
+}
+
 class DFTLogger {
  private:
   std::shared_ptr<dftracer::ConfigurationManager> config;
@@ -78,14 +84,28 @@ class DFTLogger {
   // the FH (file) ones, which get "FS" records at finalize (emit_fs_records);
   // that walk is the only cost, so tracing pays nothing per operation.
   // Keyed by string_view over a copy of the string the table owns (freed in
-  // clear_hash_cache), so a lookup -- once per path-based call -- takes the
+  // clear_hash_cache), so a lookup, once per path-based call, takes the
   // caller's pointer as it is and allocates nothing.
   struct HashEntry {
     HashType hash;
     bool file;
   };
   std::unordered_map<std::string_view, HashEntry> computed_hash;
+  // Ids are handed to threads kIdBlock at a time, and each thread counts its
+  // own events, so no counter is written by every thread on every event. Ids
+  // stay unique in the process but are not dense; num_events() is the count.
   std::atomic_int index;
+  static constexpr int kIdBlock = 1024;
+  struct ThreadEvents {
+    explicit ThreadEvents(uint64_t e) : epoch(e) {}
+    const uint64_t epoch;
+    std::atomic<uint64_t> count{0};
+  };
+  // reinitialize() starts a new epoch. A thread's old ThreadEvents stays
+  // allocated, since the thread may still be counting into it.
+  std::atomic<uint64_t> events_epoch_{1};
+  std::mutex events_mtx_;
+  std::vector<std::unique_ptr<ThreadEvents>> thread_events_;
   [[maybe_unused]] bool is_aggregated;
   // Every logging thread sets it.
   std::atomic<bool> has_entry;
@@ -156,6 +176,8 @@ class DFTLogger {
 
  public:
   bool include_metadata;
+  // The buffer manager in pc mode with metadata, else null (log_site).
+  dftracer::ServiceBufferManager* site_sink_ = nullptr;
   DFTLogger(bool init_log = false)
       : is_init(false),
         dftracer_tid(false),
@@ -175,6 +197,7 @@ class DFTLogger {
     dftracer_tid = config->tids;
     throw_error = config->throw_error;
     min_duration_ns_ = config->min_duration_ns;
+    dftracer::TscClock::start(config->tsc_clock);
     switch (config->time_metric) {
       case TimeMetricType::TIME_METRIC_NS:
         ns_per_unit_ = 1;
@@ -192,6 +215,9 @@ class DFTLogger {
     }
     // The hwloc module loads the topology on first use.
     this->buffer_manager = dftracer::BufferManagerFactory::get_instance();
+    site_sink_ = include_metadata && this->buffer_manager != nullptr
+                     ? this->buffer_manager->as_service()
+                     : nullptr;
     this->is_init = true;
     fork_owner_.store(this, std::memory_order_release);
   }
@@ -210,6 +236,17 @@ class DFTLogger {
   void reinitialize() {
     DFTRACER_LOG_DEBUG("DFTLogger.reinitialize");
     index.store(0);
+    events_epoch_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  /** Events logged in this epoch, by every thread. */
+  uint64_t num_events() {
+    const uint64_t epoch = events_epoch_.load(std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(events_mtx_);
+    uint64_t total = 0;
+    for (const auto& e : thread_events_)
+      if (e->epoch == epoch) total += e->count.load(std::memory_order_relaxed);
+    return total;
   }
 
   // App-supplied metadata, folded into the "end" event's args at finalize().
@@ -283,6 +320,7 @@ class DFTLogger {
     HashType exec_hash;
     char hostname[256];
     gethostname(hostname, 256);
+    hostname[255] = '\0';
     hostname_hash = has_hash(hostname);
     if (hostname_hash == NO_HASH_DEFAULT) {
       hostname_hash = get_hash(hostname);
@@ -290,12 +328,8 @@ class DFTLogger {
     }
     if (this->buffer_manager != nullptr) {
       this->buffer_manager->initialize(log_file.c_str(), hostname_hash);
-      char hostname_event[256];
-      strcpy(hostname_event, hostname);
-      hostname_event[255] = '\0';
-      fix_str(hostname_event, sizeof(hostname_event));
       this->buffer_manager->log_metadata_event(
-          hostname_event, hostname_hash, METADATA_NAME_HOSTNAME_HASH,
+          hostname, hostname_hash, METADATA_NAME_HOSTNAME_HASH,
           TraceEventType::TRACE_TYPE_DFTRACER, this->process_id, tid, true);
       char thread_name[128];
       auto size =
@@ -308,39 +342,34 @@ class DFTLogger {
       this->buffer_manager->log_metadata_event(
           "time_metric", time_metric_value.c_str(), CUSTOM_METADATA,
           TraceEventType::TRACE_TYPE_DFTRACER, this->process_id, tid);
-      dftracer::Metadata* meta = nullptr;
-      if (include_metadata) {
-        meta = new dftracer::Metadata();
+      dftracer::DraftScope draft(include_metadata);
+      dftracer::EventDraft* meta = draft.get();
+      if (meta != nullptr) {
         char cwd[PATH_MAX];
         if (dftracer::POSIXBypass::get_instance().getcwd(cwd, sizeof(cwd)) !=
             NULL) {
           auto cwd_hash = hash_and_store(cwd, METADATA_NAME_FILE_HASH);
-          meta->insert_or_assign("cwd", cwd_hash);
+          meta->set("cwd", cwd_hash);
         }
-        // Both are arbitrary text from the environment and are stored
-        // verbatim in a metadata record, so they have to be made safe for the
-        // one-object-per-line format first.
-        fix_str(cmd.data(), cmd.size());
-        fix_str(exec_name.data(), exec_name.size());
         cmd_hash = hash_and_store(cmd.data(), METADATA_NAME_STRING_HASH);
         exec_hash = hash_and_store(exec_name.data(), METADATA_NAME_STRING_HASH);
 #ifdef DFTRACER_GIT_VERSION
-        meta->insert_or_assign("version", DFTRACER_GIT_VERSION);
+        meta->set("version", DFTRACER_GIT_VERSION);
 #else
 #ifdef DFTRACER_VERSION
-        meta->insert_or_assign("version", DFTRACER_VERSION);
+        meta->set("version", DFTRACER_VERSION);
 #endif
 #endif
-        meta->insert_or_assign("exec_hash", exec_hash);
-        meta->insert_or_assign("cmd_hash", cmd_hash);
+        meta->set("exec_hash", exec_hash);
+        meta->set("cmd_hash", cmd_hash);
         time_t ltime;       /* calendar time */
         ltime = time(NULL); /* get current cal time */
         char timestamp[1024];
         auto size = dftracer_logging_real_sprintf()(timestamp, "%s",
                                                     asctime(localtime(&ltime)));
         timestamp[size - 1] = '\0';
-        meta->insert_or_assign("date", std::string(timestamp));
-        meta->insert_or_assign("ppid", getppid());
+        meta->set("date", std::string(timestamp));
+        meta->set("ppid", getppid());
         this->buffer_manager->set_app_name(exec_name.c_str());
       }
       this->enter_event();
@@ -386,12 +415,35 @@ class DFTLogger {
     // level/stack tracking previously handled here has been removed.
   }
 
+  /** A new event's id, unique in the process; also counts the event. */
   inline int increment_index() {
-    // @Note @ray:
-    // This method is atomic and thread-safe
-    // ensuring that each event gets a unique index even in multi-threaded
-    // scenarios.
-    return ++index;
+    struct Slot {
+      const DFTLogger* owner = nullptr;
+      uint64_t epoch = 0;
+      int next = 0;
+      int end = 0;
+      ThreadEvents* events = nullptr;
+    };
+    thread_local Slot slot;
+    const uint64_t epoch = events_epoch_.load(std::memory_order_relaxed);
+    if (__builtin_expect(slot.owner != this || slot.epoch != epoch, 0)) {
+      auto events = std::make_unique<ThreadEvents>(epoch);
+      ThreadEvents* raw = events.get();
+      {
+        std::lock_guard<std::mutex> lock(events_mtx_);
+        thread_events_.push_back(std::move(events));
+      }
+      slot = Slot{this, epoch, 0, 0, raw};
+    }
+    if (slot.next == slot.end) {
+      slot.next = index.fetch_add(kIdBlock, std::memory_order_relaxed) + 1;
+      slot.end = slot.next + kIdBlock;
+    }
+    // Only this thread writes its count.
+    slot.events->count.store(
+        slot.events->count.load(std::memory_order_relaxed) + 1,
+        std::memory_order_relaxed);
+    return slot.next++;
   }
 
   inline HashType has_hash(std::string_view key) {
@@ -441,27 +493,10 @@ class DFTLogger {
 
   inline TimeResolution get_time() {
     DFTRACER_LOG_DEBUG("DFTLogger.get_time");
-    struct timeval tv{};
-    gettimeofday(&tv, NULL);
-    TimeResolution t;
-    switch (config->time_metric) {
-      case TimeMetricType::TIME_METRIC_NS:
-        t = (TimeResolution)tv.tv_sec * 1000000000ULL +
-            (TimeResolution)tv.tv_usec * 1000ULL;
-        break;
-      case TimeMetricType::TIME_METRIC_MS:
-        t = (TimeResolution)tv.tv_sec * 1000ULL +
-            (TimeResolution)tv.tv_usec / 1000ULL;
-        break;
-      case TimeMetricType::TIME_METRIC_SEC:
-        t = (TimeResolution)tv.tv_sec;
-        break;
-      case TimeMetricType::TIME_METRIC_US:
-      default:
-        t = (TimeResolution)tv.tv_sec * 1000000ULL + (TimeResolution)tv.tv_usec;
-        break;
-    }
-    return t;
+    const TimeResolution us = dftracer::TscClock::now_us();
+    if (__builtin_expect(ns_per_unit_ == 1000ULL, 1)) return us;
+    if (ns_per_unit_ == 1) return us * 1000ULL;
+    return us / (ns_per_unit_ / 1000ULL);
   }
 
   // Records this process's MPI rank once MPI is up. The MPI module asks MPI
@@ -491,58 +526,117 @@ class DFTLogger {
     }
   }
 
-  inline void log(ConstEventNameType event_name, ConstEventNameType category,
+  // An event shorter than DFTRACER_MIN_DURATION_NS is dropped before it takes
+  // an index. dftracer's own events always stay, and the rank is still noted.
+  inline bool too_short(TraceEventType type, TimeResolution duration) {
+    if (min_duration_ns_ == 0 || type == TraceEventType::TRACE_TYPE_DFTRACER ||
+        static_cast<uint64_t>(duration) * ns_per_unit_ >= min_duration_ns_)
+      return false;
+    handle_mpi(dftracer_tid ? df_gettid() : 0);
+    return true;
+  }
+
+  template <class Log>
+  inline void emit(ThreadID tid, TraceEventType type, Log log_event) {
+    const int index = this->increment_index();
+    handle_mpi(tid);
+    // finalize() resets buffer_manager, and a hook can still fire after it,
+    // such as a GOTCHA hook in Py_FinalizeEx.
+    if (this->buffer_manager == nullptr) return;
+    log_event(index);
+    note_logged(type);
+  }
+
+  // An interceptor's event, with the args it encoded (null without
+  // DFTRACER_INC_METADATA).
+  inline void log(std::string_view event_name, std::string_view category,
                   TraceEventType type, TimeResolution start_time,
-                  TimeResolution duration, dftracer::Metadata* metadata) {
+                  TimeResolution duration, const dftracer::EventDraft* args) {
     dftracer::TracerScope scope;
-    DFTRACER_LOG_DEBUG("DFTLogger.log");
-    // DFTRACER_MIN_DURATION_NS: an event shorter than it is dropped here,
-    // before it takes an index or reaches the buffer manager, so it costs
-    // nothing downstream in either mode. dftracer's own events always stay.
-    if (min_duration_ns_ != 0 && type != TraceEventType::TRACE_TYPE_DFTRACER &&
-        static_cast<uint64_t>(duration) * ns_per_unit_ < min_duration_ns_) {
-      dftracer::Metadata::release(metadata);
-      // The rank is still recorded, even if every event is this short.
-      handle_mpi(dftracer_tid ? df_gettid() : 0);
+    if (too_short(type, duration)) return;
+    log_draft(dftracer_tid ? df_gettid() : 0, event_name, category, type,
+              start_time, duration, args);
+  }
+
+  // log() of a fused interceptor (DFT_FAST_END) with the `info->count`
+  // entries at `args`. The buffer takes them as they are once the site's
+  // shape is in its block; only otherwise is an EventDraft built.
+  inline void log_site(const dftracer::SiteInfo& info,
+                       TimeResolution start_time, TimeResolution duration,
+                       const dftracer::EventDraft::Entry* args) {
+    if (too_short(info.type, duration)) return;
+    if (__builtin_expect(site_sink_ != nullptr, 1)) {
+      log_site_service(info, start_time, duration, args);
       return;
     }
+    const ThreadID tid = dftracer_tid ? df_gettid() : 0;
+    emit(tid, info.type, [&](int index) {
+      const dftracer::SiteEvent e{
+          &info, index, start_time, duration, args, this->process_id, tid};
+      if (include_metadata && this->buffer_manager->log_site_event(e)) return;
+      log_site_draft(e);
+    });
+  }
 
-    // Get thread id and process id from metadata if it exists
-    ThreadID tid = 0;
-    if (dftracer_tid) {
-      tid = df_gettid();
-      // WARN: Not tested with MPI enabled, so only taken without the MPI
-      // module.
-      if (dftracer_module_mpi_rank == nullptr && metadata != nullptr) {
-        auto iter = metadata->find("tid");
-        if (iter != metadata->end()) {
-          std::visit(
-              [&tid](const auto& v) {
-                if constexpr (std::is_arithmetic_v<std::decay_t<decltype(v)>>)
-                  tid = static_cast<ThreadID>(v);
-              },
-              std::get<1>(iter->second));
-          metadata->erase("tid");
-        }
-      }
+  // log_site() in pc mode with metadata: emit() and the service manager's
+  // log_site_event() in one frame. In service_buffer_manager.cpp, where that
+  // inlines.
+  __attribute__((noinline)) void log_site_service(
+      const dftracer::SiteInfo& info, TimeResolution start_time,
+      TimeResolution duration, const dftracer::EventDraft::Entry* args);
+
+  __attribute__((noinline)) void log_site_draft(const dftracer::SiteEvent& e) {
+    const dftracer::SiteInfo& info = *e.info;
+    if (!include_metadata) {
+      this->buffer_manager->log_data_event(
+          e.index, info.event_name, info.category, info.type, e.start_time,
+          e.duration, nullptr, e.process_id, e.tid);
+      return;
     }
+    dftracer::EventDraft draft;
+    draft.set_site(info.site);
+    for (uint16_t i = 0; i < info.count; ++i) draft.append(e.args[i]);
+    this->buffer_manager->log_data_event(
+        e.index, info.event_name, info.category, info.type, e.start_time,
+        e.duration, &draft, e.process_id, e.tid);
+  }
 
-    int current_index = this->increment_index();
-    handle_mpi(tid);
-    // Defensive null check: buffer_manager is reset during finalize(); any
-    // interceptor still firing after finalization (e.g. via GOTCHA hooks
-    // during Py_FinalizeEx) must not dereference a destroyed manager.
-    if (this->buffer_manager == nullptr) return;
-    this->buffer_manager->log_data_event(current_index, event_name, category,
-                                         type, start_time, duration, metadata,
-                                         this->process_id, tid);
-    has_entry.store(true, std::memory_order_relaxed);
+  // An event that ran on `thread`, such as a GPU API call reported later from
+  // a profiler thread. Without thread ids, `thread` goes in the args.
+  inline void log_on(ThreadID thread, std::string_view event_name,
+                     std::string_view category, TraceEventType type,
+                     TimeResolution start_time, TimeResolution duration,
+                     dftracer::EventDraft* args) {
+    dftracer::TracerScope scope;
+    if (too_short(type, duration)) return;
+    if (!dftracer_tid && args != nullptr) args->set("tid", thread);
+    log_draft(dftracer_tid ? thread : 0, event_name, category, type, start_time,
+              duration, args);
+  }
+
+  inline void log_draft(ThreadID tid, std::string_view event_name,
+                        std::string_view category, TraceEventType type,
+                        TimeResolution start_time, TimeResolution duration,
+                        const dftracer::EventDraft* args) {
+    emit(tid, type, [&](int index) {
+      this->buffer_manager->log_data_event(index, event_name, category, type,
+                                           start_time, duration, args,
+                                           this->process_id, tid);
+    });
+  }
+
+  // Read before writing: a store, even of the same value, takes the cache
+  // line from every other logging thread.
+  inline void note_logged(TraceEventType type) {
+    if (!has_entry.load(std::memory_order_relaxed))
+      has_entry.store(true, std::memory_order_relaxed);
     // Other projects' layers (DFTRACER_TRACE_TYPE_EXTERNAL up) are not
     // tracked here.
     if (type != TraceEventType::TRACE_TYPE_DFTRACER &&
         type < TraceEventType::TRACE_TYPE_MAX) {
-      used_layers_.fetch_or(1u << static_cast<uint32_t>(type),
-                            std::memory_order_relaxed);
+      const uint32_t bit = 1u << static_cast<uint32_t>(type);
+      if ((used_layers_.load(std::memory_order_relaxed) & bit) == 0)
+        used_layers_.fetch_or(bit, std::memory_order_relaxed);
     }
   }
 
@@ -563,45 +657,16 @@ class DFTLogger {
     return hash_and_store(static_cast<const char*>(filename), name);
   }
 
-  bool ignore_chars(char c) {
-    // Control characters, newline above all. Records are one JSON object per
-    // line, so a newline reaching the trace splits a record in two and makes
-    // the file unparseable. A traced agent is typically launched as
-    // `python -c "<multi-line script>"`, so the command line really does carry
-    // them.
-    if (static_cast<unsigned char>(c) < 0x20) return true;
-    switch (c) {
-      case '(':
-      case ')':
-      case '\\':
-      case '"':
-      case '\'':
-      case '|':
-        return true;
-      default:
-        return false;
-    }
-  }
-
-  void fix_str(char* str, size_t len) {
-    for (size_t i = 0; i < len && str[i] != '\0'; ++i) {
-      if (ignore_chars(str[i])) str[i] = ' ';
-    }
-  }
-
   inline HashType hash_and_store_str(char file[PATH_MAX],
                                      ConstEventNameType name) {
     HashType hash = has_hash(file);
     if (hash == NO_HASH_DEFAULT) {
       hash = get_hash(file);
-      // Keyed by the path as traced, before fix_str below, so finalize can
-      // still look the file up.
       insert_hash(file, hash, strcmp(name, METADATA_NAME_FILE_HASH) == 0);
       ThreadID tid = 0;
       if (dftracer_tid) {
         tid = df_gettid();
       }
-      fix_str(file, PATH_MAX);
       this->buffer_manager->log_metadata_event(
           file, hash, name, TraceEventType::TRACE_TYPE_DFTRACER,
           this->process_id, tid, true);
@@ -623,8 +688,8 @@ class DFTLogger {
   }
 
   // The common case, a string hashed already, is one lookup on the caller's
-  // string: no copy, no allocation. Only a new one is copied (bounded to
-  // PATH_MAX, as it is keyed) to hash it and to make its record line-safe.
+  // string: no copy, no allocation. Only a new one is copied, bounded to
+  // PATH_MAX as it is keyed.
   inline HashType hash_and_store(const char* filename,
                                  ConstEventNameType name) {
     if (filename == NULL) return NO_HASH_DEFAULT;
@@ -669,7 +734,7 @@ class DFTLogger {
       std::shared_lock<std::shared_mutex> lock(used_extra_mtx_);
       for (const auto& name : used_extra_) {
         if (!first) used_json << ",";
-        used_json << "\"" << name << "\":1";
+        used_json << dftracer::line_format::quoted(name) << ":1";
         first = false;
       }
     }
@@ -685,12 +750,12 @@ class DFTLogger {
       bool first_app = true;
       for (auto& entry : app_metadata_) {
         if (!first_app) app_json << ",";
-        app_json << "\"" << entry.first.view() << "\":";
+        app_json << dftracer::line_format::quoted(entry.first.view()) << ":";
         const dftracer::MetadataValue& value = std::get<1>(entry.second);
         if (const auto* i = std::get_if<int64_t>(&value)) {
           app_json << *i;
         } else if (const auto* s = std::get_if<std::string>(&value)) {
-          app_json << "\"" << *s << "\"";
+          app_json << dftracer::line_format::quoted(*s);
         }
         first_app = false;
       }
@@ -745,19 +810,23 @@ class DFTLogger {
     DFTRACER_LOG_DEBUG("DFTLogger.finalize");
     if (this->buffer_manager != nullptr) {
       if (config->fs_metadata) emit_fs_records();
-      auto meta = new dftracer::Metadata();
-      meta->insert_or_assign("num_events", index.load());
-      add_end_event_metadata(meta);
+      dftracer::Metadata meta;
+      meta.insert_or_assign("num_events", num_events());
+      add_end_event_metadata(&meta);
+      dftracer::DraftScope draft(true);
+      draft.get()->set_all(meta);
       int current_index = this->increment_index();
       auto tid = df_gettid();
       this->buffer_manager->log_data_event(
           current_index, "end", "dftracer", TraceEventType::TRACE_TYPE_DFTRACER,
-          this->get_time(), 0, meta, this->process_id, tid);
+          this->get_time(), 0, draft.get(), this->process_id, tid);
       this->exit_event();
-      this->buffer_manager->finalize(index.load(), this->process_id);
+      this->buffer_manager->finalize(static_cast<int>(num_events()),
+                                     this->process_id);
       // After the last compress and write, so they are in the totals.
       DFTRACER_PROFILE_REPORT(config->pc_mode ? "pc" : "local");
       DFTRACER_LOG_INFO("Released Logger");
+      site_sink_ = nullptr;
       this->buffer_manager.reset();
       this->is_init = false;
       clear_hash_cache();
@@ -772,17 +841,12 @@ class DFTLogger {
 #define DFT_LOGGER_INIT() dftracer::Singleton<DFTLogger>::get_instance()
 #define DFT_LOGGER_FINI() \
   dftracer::Singleton<DFTLogger>::get_instance()->finalize()
-#define DFT_LOGGER_UPDATE(value)                                    \
-  if (trace && this->logger->include_metadata) {                    \
-    dftracer::TracerScope dft_scope;                                \
-    metadata->insert_or_assign(dftracer::StaticKey{#value}, value); \
-  }
+#define DFT_LOGGER_UPDATE(value) \
+  if (metadata != nullptr) metadata->set(dftracer::StaticKey{#value}, value);
 
-#define DFT_LOGGER_UPDATE_TYPE(value, type)                               \
-  if (trace && this->logger->include_metadata) {                          \
-    dftracer::TracerScope dft_scope;                                      \
-    metadata->insert_or_assign(dftracer::StaticKey{#value}, value, type); \
-  }
+#define DFT_LOGGER_UPDATE_TYPE(value, type) \
+  if (metadata != nullptr)                  \
+    metadata->set(dftracer::StaticKey{#value}, value, type);
 
 #define DFT_LOGGER_UPDATE_HASH(value)                                 \
   if (trace && this->logger->include_metadata) {                      \
@@ -810,64 +874,124 @@ class DFTLogger {
     DFT_LOGGER_UPDATE(fhash);                                              \
   }
 
+// The interceptor's own static object, so the encoder can send its events
+// by their shape (EventDraft::shaped()). Its END names the event
+// __FUNCTION__, so the site also fixes the name.
+#define DFT_LOGGER_SITE() \
+  static char dft_site;   \
+  if (metadata != nullptr) metadata->set_site(&dft_site)
+
+// An is_traced() hash, from DFTLogger::get_hash(): always HASH_OUTPUT hex
+// digits, so its length needs no strlen.
+#define DFT_LOGGER_UPDATE_FHASH(value)         \
+  if (metadata != nullptr)                     \
+    metadata->set(dftracer::StaticKey{#value}, \
+                  std::string_view((value), HASH_OUTPUT));
+
+// Each half of an interceptor runs with the thread's tracer depth raised, so
+// what dftracer calls while it records the event is not traced. The real call
+// between them is outside it, so the calls it makes are traced as before.
+// dft_depth is the thread's tl_tracer_depth, looked up once per interceptor.
+#define DFT_TRACER_ENTER(entity)                \
+  int& dft_depth = dftracer::tl_tracer_depth;   \
+  HashType fhash = NO_HASH_DEFAULT;             \
+  if (dft_depth == 0) {                         \
+    dftracer::TracerScope dft_scope(dft_depth); \
+    fhash = is_traced(entity, __FUNCTION__);    \
+  }                                             \
+  bool trace = fhash != NO_HASH_DEFAULT;
+
 // With DFTRACER_ENABLE_PROFILING, the two halves of an interceptor are timed
 // as its layer's capture phase (the real call between them is not), and the
 // end half counts the event; an untraced call is timed as "filtered".
-// Each half of an interceptor runs in a TracerScope, so what dftracer calls
-// while it records the event is not traced. The real call between them is
-// outside it, so the calls it makes are traced as before.
-#define DFT_LOGGER_START(entity)                             \
+#define DFT_LOGGER_START(entity)                                          \
+  DFTRACER_PROFILE_BEGIN(dft_profile_start);                              \
+  DFT_TRACER_ENTER(entity);                                               \
+  TimeResolution start_time = 0;                                          \
+  if (trace) ++dft_depth;                                                 \
+  dftracer::DraftScope dft_draft(trace&& this->logger->include_metadata); \
+  dftracer::EventDraft* metadata = dft_draft.get();                       \
+  DFT_LOGGER_SITE();                                                      \
+  if (trace) {                                                            \
+    DFTRACER_LOG_DEBUG("Calling function %s", __FUNCTION__);              \
+    DFT_LOGGER_UPDATE_FHASH(fhash);                                       \
+    this->logger->enter_event();                                          \
+    start_time = this->logger->get_time();                                \
+    --dft_depth;                                                          \
+  }                                                                       \
+  DFTRACER_PROFILE_END_TRACED(dft_profile_start, trace,                   \
+                              DFTRACER_PROFILE_CAPTURE(TRACE_TYPE))
+#define DFT_LOGGER_START_ALWAYS()                                         \
+  DFTRACER_PROFILE_BEGIN(dft_profile_start);                              \
+  int& dft_depth = dftracer::tl_tracer_depth;                             \
+  /* skip if finalized */                                                 \
+  bool trace = dft_depth == 0 && this->logger->is_active();               \
+  TimeResolution start_time = 0;                                          \
+  if (trace) ++dft_depth;                                                 \
+  dftracer::DraftScope dft_draft(trace&& this->logger->include_metadata); \
+  dftracer::EventDraft* metadata = dft_draft.get();                       \
+  DFT_LOGGER_SITE();                                                      \
+  if (trace) {                                                            \
+    DFTRACER_LOG_DEBUG("Calling function %s", __FUNCTION__);              \
+    this->logger->enter_event();                                          \
+    start_time = this->logger->get_time();                                \
+    --dft_depth;                                                          \
+  }                                                                       \
+  DFTRACER_PROFILE_END(dft_profile_start,                                 \
+                       DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), false);
+#define DFT_LOGGER_LOG_END(name, site_fixes_name)                         \
+  if (trace) {                                                            \
+    if (!(site_fixes_name) && metadata != nullptr)                        \
+      metadata->set_site(nullptr);                                        \
+    DFTRACER_PROFILE_BEGIN(dft_profile_end);                              \
+    TimeResolution end_time = this->logger->get_time();                   \
+    this->logger->log(std::string_view(name), std::string_view(CATEGORY), \
+                      TRACE_TYPE, start_time, end_time - start_time,      \
+                      metadata);                                          \
+    this->logger->exit_event();                                           \
+    DFTRACER_PROFILE_END(dft_profile_end,                                 \
+                         DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), true);     \
+  }
+// A fused interceptor: no EventDraft while the real call runs. Its args,
+// each DFT_ARG(name, MetadataType), go to DFT_FAST_END after the call, in the
+// order DFT_LOGGER_UPDATE_TYPE would set them, after the fhash. The args are
+// numbers and the fhash has a fixed length, so the site's SiteInfo is built
+// once.
+#define DFT_FAST_START(entity)                               \
   DFTRACER_PROFILE_BEGIN(dft_profile_start);                 \
-  HashType fhash = NO_HASH_DEFAULT;                          \
-  TimeResolution start_time = 0;                             \
-  dftracer::Metadata* metadata = nullptr;                    \
-  if (!dftracer::in_tracer()) {                              \
-    dftracer::TracerScope dft_start_scope;                   \
-    fhash = is_traced(entity, __FUNCTION__);                 \
-  }                                                          \
-  bool trace = fhash != NO_HASH_DEFAULT;                     \
+  DFT_TRACER_ENTER(entity);                                  \
   if (trace) {                                               \
-    dftracer::TracerScope dft_start_scope;                   \
     DFTRACER_LOG_DEBUG("Calling function %s", __FUNCTION__); \
-    if (this->logger->include_metadata) {                    \
-      metadata = dftracer::Metadata::acquire();              \
-      DFT_LOGGER_UPDATE(fhash);                              \
-    }                                                        \
-    this->logger->enter_event();                             \
-    start_time = this->logger->get_time();                   \
   }                                                          \
+  TimeResolution start_time = 0;                             \
+  static char dft_site;                                      \
+  if (trace) start_time = this->logger->get_time();          \
   DFTRACER_PROFILE_END_TRACED(dft_profile_start, trace,      \
                               DFTRACER_PROFILE_CAPTURE(TRACE_TYPE))
-#define DFT_LOGGER_START_ALWAYS()                                   \
-  DFTRACER_PROFILE_BEGIN(dft_profile_start);                        \
-  /* skip if finalized */                                           \
-  bool trace = !dftracer::in_tracer() && this->logger->is_active(); \
-  TimeResolution start_time = 0;                                    \
-  dftracer::Metadata* metadata = nullptr;                           \
-  if (trace) {                                                      \
-    dftracer::TracerScope dft_start_scope;                          \
-    DFTRACER_LOG_DEBUG("Calling function %s", __FUNCTION__);        \
-    if (this->logger->include_metadata) {                           \
-      metadata = dftracer::Metadata::acquire();                     \
-    }                                                               \
-    this->logger->enter_event();                                    \
-    start_time = this->logger->get_time();                          \
-  }                                                                 \
-  DFTRACER_PROFILE_END(dft_profile_start,                           \
-                       DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), false);
-#define DFT_LOGGER_END_AS(name)                                          \
-  if (trace) {                                                           \
-    DFTRACER_PROFILE_BEGIN(dft_profile_end);                             \
-    {                                                                    \
-      dftracer::TracerScope dft_end_scope;                               \
-      TimeResolution end_time = this->logger->get_time();                \
-      this->logger->log((char*)(name), CATEGORY, TRACE_TYPE, start_time, \
-                        end_time - start_time, metadata);                \
-      this->logger->exit_event();                                        \
-    }                                                                    \
-    DFTRACER_PROFILE_END(dft_profile_end,                                \
-                         DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), true);    \
+#define DFT_ARG(value, type) \
+  dftracer::EventDraft::number(dftracer::StaticKey{#value}, value, type)
+#define DFT_FAST_END(...)                                                 \
+  if (trace) {                                                            \
+    DFTRACER_PROFILE_BEGIN(dft_profile_end);                              \
+    TimeResolution end_time = this->logger->get_time();                   \
+    const dftracer::EventDraft::Entry dft_args[] = {                      \
+        dftracer::EventDraft::entry(dftracer::StaticKey{"fhash"},         \
+                                    std::string_view(fhash, HASH_OUTPUT), \
+                                    MetadataType::MT_KEY),                \
+        __VA_ARGS__};                                                     \
+    static const dftracer::SiteInfo dft_info = dftracer::SiteInfo::of(    \
+        &dft_site, __FUNCTION__, CATEGORY, TRACE_TYPE, dft_args);         \
+    {                                                                     \
+      dftracer::TracerScope dft_end_scope(dft_depth);                     \
+      this->logger->log_site(dft_info, start_time, end_time - start_time, \
+                             dft_args);                                   \
+    }                                                                     \
+    DFTRACER_PROFILE_END(dft_profile_end,                                 \
+                         DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), true);     \
   }
-#define DFT_LOGGER_END() DFT_LOGGER_END_AS(__FUNCTION__)
+
+// A name other than __FUNCTION__ is not fixed by the site.
+#define DFT_LOGGER_END_AS(name) DFT_LOGGER_LOG_END(name, false)
+#define DFT_LOGGER_END() DFT_LOGGER_LOG_END(__FUNCTION__, true)
 
 #endif  // DFTRACER_GENERIC_LOGGER_H

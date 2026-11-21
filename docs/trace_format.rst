@@ -132,6 +132,11 @@ hash values (e.g. "hhash" in "args"). The actual string is recorded once, in
 a separate Metadata Event (see `Hash Events`_ below), rather than repeated in
 every event that references it.
 
+Every line is valid JSON. Names, categories, ``args`` keys and string values
+are escaped: ``"`` as ``\"``, ``\`` as ``\\`` and control characters as
+``\u00XX``. Other bytes, UTF-8 included, are written as they are, so the
+strings of `Hash Events`_ are the real names.
+
 ----------------------------------------
 Complete Events
 ----------------------------------------

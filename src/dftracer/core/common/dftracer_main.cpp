@@ -85,23 +85,21 @@ dftracer::DFTracerCore::DFTracerCore(ProfilerStage stage, ProfileType type,
   DFTRACER_LOG_DEBUG("DFTracerCore::DFTracerCore type %d", type);
 }
 
-bool dftracer::DFTracerCore::log(ConstEventNameType event_name,
-                                 ConstEventNameType category,
-                                 TraceEventType type, TimeResolution start_time,
+void dftracer::DFTracerCore::log(std::string_view event_name,
+                                 std::string_view category, TraceEventType type,
+                                 TimeResolution start_time,
                                  TimeResolution duration,
-                                 dftracer::Metadata* metadata) {
+                                 const dftracer::EventDraft* args) {
   DFTRACER_LOG_DEBUG("DFTracerCore::log");
   if (this->is_initialized && conf->enable) {
     if (logger != nullptr) {
       // PAPI counters are deliberately not sampled here: they are read on the
       // sampler's own libuv timer thread, so this path stays free of PAPI work.
-      logger->log(event_name, category, type, start_time, duration, metadata);
-      return true;
+      logger->log(event_name, category, type, start_time, duration, args);
     } else {
       DFTRACER_LOG_ERROR("DFTracerCore::log logger not initialized");
     }
   }
-  return false;
 }
 
 void dftracer::DFTracerCore::log_metadata(ConstEventNameType key,

@@ -1,9 +1,11 @@
 #ifndef DFTRACER_SERVER_COMMON_DATASTRUCTURE
 #define DFTRACER_SERVER_COMMON_DATASTRUCTURE
 
+#include <dftracer/core/buffer/compact_event.h>
 #include <dftracer/core/common/constants.h>
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
+#include <dftracer/core/serialization/json_line.h>
 
 #include <atomic>
 #include <cstddef>
@@ -14,8 +16,7 @@
 #include <unordered_map>
 
 namespace dftracer {
-class LocalBufferManager;
-class JsonLines;
+class LaneBuffer;
 
 struct CpuMetrics {
   unsigned long long user = 0;
@@ -114,7 +115,7 @@ struct NetworkMetrics {
 struct alignas(DFT_SHM_CACHE_LINE) DrainStats {
   uint64_t blocks = 0;
   uint64_t bytes = 0;
-  uint64_t records[SHM_KIND_GOODBYE + 1] = {};
+  uint64_t records[SHM_KIND_COMPACT + 1] = {};
   uint64_t malformed = 0;
   uint64_t taken = 0;  // blocks taken over from their producers
   uint64_t uncommitted =
@@ -177,6 +178,8 @@ struct DrainOptions {
   std::string hostname_hash;
   size_t chunk_size = DFT_SHM_DEFAULT_CHUNK_SIZE;
   int compression_level = DFT_SHM_DEFAULT_COMPRESSION_LEVEL;
+  // Where the service's threads run (DFTRACER_PC_SERVICE_CPUS, CpuPlacer).
+  std::string service_cpus = "auto";
   // Compressed bytes after which the node trace rolls over (0: never).
   uint64_t rollover_bytes = DFT_SHM_DEFAULT_ROLLOVER_MB << 20;
   // The service's own spill file, appended at stop with its clients'.
@@ -191,21 +194,27 @@ struct DrainScratch {
   ipc::DecodedHello hello;
   // The interned strings of the block being replayed (SHM_EVENT_INTERNED).
   ipc::InternTable intern;
+  // The COMPACT records of the block being replayed. After one fails to
+  // decode, the block's later ones may refer to what it held: they are
+  // counted as malformed too.
+  compact::Decoder compact;
+  // The JSON text of compact's shapes, reset with it.
+  ShapeLines lines;
+  bool compact_ok = true;
   // NUL-terminated copies of the METADATA and RECORD strings the serializer
   // takes as char*. DATA and COUNTER records need none (log_packed_event).
   std::string name, value, record_name;
 };
 
 /**
- * One producer thread of a client process. Its LocalBufferManager holds that
+ * One producer thread of a client process. Its LaneBuffer holds that
  * thread's aggregation state; aggregation keys carry the thread id, so lanes
  * aggregate exactly as the process would have. A drain thread holds `mtx`
  * while it replays one of the thread's blocks.
  */
 struct ClientLane {
   std::mutex mtx;
-  std::shared_ptr<LocalBufferManager> buffer;
-  std::shared_ptr<JsonLines> serializer;  // the one inside `buffer`
+  std::shared_ptr<LaneBuffer> buffer;
   uint64_t synced = 0;  // ClientProcess::version last applied to `buffer`
 };
 
@@ -218,7 +227,6 @@ struct ClientProcess {
   int rank = -1;
   uint64_t version = 0;  // bumped by SET_APP_NAME and SET_RANK
   bool said_goodbye = false;
-  int goodbye_index = 0;
   uint64_t goodbye_ns = 0;
   std::unordered_map<uint32_t, std::shared_ptr<ClientLane>> lanes;
 };

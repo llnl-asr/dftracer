@@ -131,8 +131,9 @@ class BlockTracker {
  * their producers still hold: one CAS on the block's own `committed` word, so
  * claims do not contend on a shared cursor, and a quiet producer does not hold
  * back the blocks after it. take_over() drains such a held block once it is
- * old enough, so it does not hold back producers either (they claim strictly
- * in order, and would otherwise wait for it on the next lap).
+ * old enough or the next lap is about to reach it, so it does not hold back
+ * producers either (they claim strictly in order, and would otherwise wait
+ * for it on the next lap).
  *
  * Releasing out of order is safe because producers claim blocks strictly in
  * order: a block released early just waits, armed, until `head` reaches it.
@@ -174,10 +175,14 @@ class ParallelBlockClaimer {
    * `older_than_ns` or earlier: IDLE -> TAKEN, or WRITING -> TAKEN when the
    * producer is dead. The caller then drains it with for_each_record(...,
    * salvage = true) and releases it like a claimed block. `pid` is the
-   * producer that held it.
+   * producer that held it. A held block whose slot `head` reaches within
+   * `lap_margin` claims is taken however young it is: producers claim in
+   * order, so on the next lap it would stop all of them.
    */
-  bool take_over(uint64_t& seq, uint64_t older_than_ns, uint32_t& pid) {
+  bool take_over(uint64_t& seq, uint64_t older_than_ns, uint32_t& pid,
+                 uint64_t lap_margin = 0) {
     const uint64_t head = ring_.header()->head.load(std::memory_order_acquire);
+    const uint64_t count = ring_.block_count();
     for (uint64_t s = advance(head); s < head; ++s) {
       BlockControl& block = ring_.block(s);
       const uint32_t epoch = ring_.epoch(s);
@@ -188,7 +193,9 @@ class ParallelBlockClaimer {
         continue;
       const uint64_t claimed_at =
           block.claim_ns.load(std::memory_order_relaxed);
-      if (claimed_at == 0 || claimed_at > older_than_ns) continue;
+      if (claimed_at == 0) continue;
+      if (claimed_at > older_than_ns && s + count >= head + lap_margin)
+        continue;
       const uint32_t owner_pid =
           block.owner_pid.load(std::memory_order_relaxed);
       // A record is being written: wait for it, unless nobody is left to

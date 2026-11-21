@@ -33,9 +33,11 @@ void DFTLogger::lock_for_fork() {
   mpi_file_mtx.lock();
   app_metadata_mtx_.lock();
   used_extra_mtx_.lock();
+  events_mtx_.lock();
 }
 
 void DFTLogger::unlock_in_parent() {
+  events_mtx_.unlock();
   used_extra_mtx_.unlock();
   app_metadata_mtx_.unlock();
   mpi_file_mtx.unlock();
@@ -48,4 +50,5 @@ void DFTLogger::reset_in_child() {
   new (&mpi_file_mtx) std::shared_mutex();
   new (&app_metadata_mtx_) std::mutex();
   new (&used_extra_mtx_) std::shared_mutex();
+  new (&events_mtx_) std::mutex();
 }

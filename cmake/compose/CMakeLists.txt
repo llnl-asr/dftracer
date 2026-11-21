@@ -48,8 +48,8 @@ include(DFTracerDetect)
 include("${_root}/core/core.cmake")
 
 # A library recorded at build time by an absolute path that is not on this
-# machine was bundled with the install (a wheel keeps gotcha, yaml-cpp, libuv,
-# libdeflate in the lib directory this tree sits in): link the copy there.
+# machine was bundled with the install (a wheel keeps gotcha, yaml-cpp and
+# libuv in the lib directory this tree sits in): link the copy there.
 get_filename_component(_libdir "${_root}/../.." ABSOLUTE)
 function(_dftracer_relocate out_var)
   set(_out "")
@@ -251,8 +251,9 @@ foreach(_suffix "" "_dbg")
     MODULE_NAMES ${_names} ${DFTRACER_CORE_BUILT_WITH}
     LIBRARIES ${_links} ${_core_link} ${_runtime}
     LANGUAGE ${_language})
-  # Instrumentation the core was built with (coverage, sanitizers): empty for
-  # a release build. A tree from an older build does not set it.
+  # Instrumentation the core was built with (coverage, sanitizers) and the
+  # flag that hides the bundled ISA-L. A tree from an older build does not
+  # set it.
   if(DFTRACER_CORE_LINK_OPTIONS)
     target_link_options(${_target} PRIVATE ${DFTRACER_CORE_LINK_OPTIONS})
   endif()
