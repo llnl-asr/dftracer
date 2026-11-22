@@ -552,6 +552,11 @@ class RingSink {
    * at the next tick. A pid read before its producer wrote it is seen at
    * the tick.
    */
+  void place(uint64_t now) {
+    placed_pids_ = client_pids();
+    placer_.update(placed_pids_, now, spilled(), backlogged());
+  }
+
   void watch_clients(uint64_t now) {
     if (clients_ == nullptr || placer_.mode() != CpuPlacer::Mode::kAuto) return;
     const ipc::RingView& ring = region_->ring();
@@ -567,8 +572,7 @@ class RingSink {
       if (pid == 0 || pid == self ||
           std::binary_search(placed_pids_.begin(), placed_pids_.end(), pid))
         continue;
-      placed_pids_ = client_pids();
-      placer_.update(placed_pids_, now, spilled(), backlogged());
+      place(now);
       return;
     }
   }
@@ -639,10 +643,8 @@ class RingSink {
         process_block(0, seq, true);
       }
     }
-    if (clients_ != nullptr && placer_.mode() == CpuPlacer::Mode::kAuto) {
-      placed_pids_ = client_pids();
-      placer_.update(placed_pids_, now, spilled(), backlogged());
-    }
+    if (clients_ != nullptr && placer_.mode() == CpuPlacer::Mode::kAuto)
+      place(now);
     if (clients_ != nullptr && now >= next_reap_) {
       next_reap_ = now + 1000000000ULL;
       for (auto& process : clients_->take_finished(now, 2 * options_.flush_ns))

@@ -142,7 +142,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
       gotcha_priority(1),
       logger_level(cpplogger::CPP_LOGGER_ERROR),
       time_metric(TimeMetricType::TIME_METRIC_US),
-      tsc_clock(true),
+      tsc_clock(TscClockMode::TSC_CLOCK_AUTO),
       io(true),
       posix(true),
       stdio(true),
@@ -442,8 +442,10 @@ dftracer::ConfigurationManager::ConfigurationManager()
                      to_string(this->time_metric).c_str());
   const char* env_tsc_clock = getenv(DFTRACER_TSC_CLOCK);
   if (env_tsc_clock != nullptr) {
-    this->tsc_clock = env_flag(env_tsc_clock);
+    convert(env_tsc_clock, this->tsc_clock);
   }
+  DFTRACER_LOG_DEBUG("ConfigurationManager.tsc_clock %s",
+                     to_string(this->tsc_clock).c_str());
   const char* env_enable = getenv(DFTRACER_ENABLE);
   if (env_flag(env_enable)) {
     this->enable = true;

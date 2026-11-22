@@ -11,6 +11,7 @@ SERVICE=${1:?dftracer_service binary}
 WORK=${2:?work dir}
 shift 2
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/service_lib.sh"
 shopt -s nullglob
 
 # A preloaded test gets its LD_PRELOAD as DFTRACER_TWIN_LD_PRELOAD, so that
@@ -70,13 +71,8 @@ rc_local=$?
 # events that did not fit in the ring spill to <log_file>-<hash>-spill.pfw.gz.
 export DFTRACER_SERVICE_SHM=/dftracer-twin-$$
 LOG=$WORK/service/app
-env -u DFTRACER_INIT DFTRACER_ENABLE=1 DFTRACER_ENABLE_PC_MODE=1 \
-  DFTRACER_LOG_FILE="$LOG" "$SERVICE" start >"$WORK/service.out" 2>&1
-for _ in $(seq 100); do
-  [ -s "/dev/shm$DFTRACER_SERVICE_SHM" ] && break
-  sleep 0.1
-done
-if [ ! -s "/dev/shm$DFTRACER_SERVICE_SHM" ]; then
+if ! pc_service_start "$SERVICE" -u DFTRACER_INIT DFTRACER_ENABLE=1 \
+  DFTRACER_ENABLE_PC_MODE=1 DFTRACER_LOG_FILE="$LOG" >"$WORK/service.out" 2>&1; then
   echo "dftracer_service did not come up"
   cat "$WORK/service.out" "$LOG"_*.log 2>/dev/null
   exit 1
@@ -84,11 +80,7 @@ fi
 reset_data
 DFTRACER_ENABLE_PC_MODE=1 DFTRACER_LOG_FILE="$LOG" app "$@" >"$WORK/pc.out" 2>&1
 rc_pc=$?
-DFTRACER_ENABLE=1 DFTRACER_LOG_FILE="$LOG" "$SERVICE" stop >>"$WORK/service.out" 2>&1
-for _ in $(seq 300); do
-  [ -e "/dev/shm$DFTRACER_SERVICE_SHM" ] || break
-  sleep 0.1
-done
+pc_service_stop "$SERVICE" "$LOG" 300 >>"$WORK/service.out" 2>&1
 grep -h "drained" "$LOG"_*.log 2>/dev/null
 
 if [ "$rc_local" -ne "$rc_pc" ]; then

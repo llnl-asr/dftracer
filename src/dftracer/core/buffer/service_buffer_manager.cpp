@@ -221,8 +221,7 @@ bool ServiceBufferManager::push(Slot* slot, ShmRecordKind kind, size_t bytes,
   if (result != ipc::RingProducer::Result::OK) return false;
   std::memcpy(r.payload, slot->scratch.data(), bytes);
   producer.commit(r);
-  slot->pushed.store(slot->pushed.load(std::memory_order_relaxed) + 1,
-                     std::memory_order_relaxed);
+  slot->count_push();
   return true;
 }
 
@@ -250,9 +249,9 @@ inline __attribute__((always_inline)) bool ServiceBufferManager::alive(
 
 bool ServiceBufferManager::service_alive() {
   if (service_gone_.load(std::memory_order_relaxed)) return false;
-  // Asked on every event, to look every DFT_SHM_LIVENESS_CHECK_NS (100 ms):
-  // the coarse clock (a read of the vDSO page, millisecond resolution) is
-  // plenty for that and much cheaper than CLOCK_MONOTONIC.
+  // Asked on every event, to look every DFT_SHM_LIVENESS_CHECK_NS: the coarse
+  // clock (a read of the vDSO page) is plenty for that and cheaper than
+  // CLOCK_MONOTONIC.
   const uint64_t now = ipc::monotonic_coarse_ns();
   uint64_t last = liveness_checked_ns_.load(std::memory_order_relaxed);
   if (now - last < DFT_SHM_LIVENESS_CHECK_NS) return true;
@@ -431,11 +430,11 @@ LocalBufferManager* ServiceBufferManager::spill_manager() {
   if (spill_lock_fd_ >= 0) flock(spill_lock_fd_, LOCK_EX);
   if (region_ != nullptr &&
       !region_->ring().announce_spill(spill_file_.c_str(), spill_file_.size()))
-    std::fprintf(stderr,
-                 "[DFTRACER] producer/consumer mode: pid %d: no room to "
-                 "announce %s to the service; it takes the file in only if "
-                 "this process's HELLO reached the ring\n",
-                 owner_pid_, spill_file_.c_str());
+    DFTRACER_LOG_ERROR(
+        "producer/consumer mode: pid %d: no room to announce %s to the "
+        "service; it takes the file in only if this process's HELLO reached "
+        "the ring",
+        owner_pid_, spill_file_.c_str());
   if (!app_name.empty()) manager->set_app_name(app_name.c_str());
   if (rank >= 0) manager->set_rank(rank);
   spill_ = std::move(manager);
@@ -513,21 +512,10 @@ int ServiceBufferManager::initialize(const char* filename,
   // Registered per process, so again in a forked child.
   fenced_ = syscall(SYS_membarrier, MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED,
                     0, 0) == 0;
-  switch (config->time_metric) {
-    case TimeMetricType::TIME_METRIC_NS:
-      liveness_units_ = DFT_SHM_LIVENESS_CHECK_NS;
-      break;
-    case TimeMetricType::TIME_METRIC_MS:
-      liveness_units_ = DFT_SHM_LIVENESS_CHECK_NS / 1000000ULL;
-      break;
-    case TimeMetricType::TIME_METRIC_SEC:
-      liveness_units_ = 1;
-      break;
-    case TimeMetricType::TIME_METRIC_US:
-    default:
-      liveness_units_ = DFT_SHM_LIVENESS_CHECK_NS / 1000ULL;
-      break;
-  }
+  liveness_units_ = std::max<TimeResolution>(
+      1, static_cast<TimeResolution>(
+             time_metric_units_per_second(config->time_metric) *
+             static_cast<double>(DFT_SHM_LIVENESS_CHECK_NS) / 1e9));
   log_file_ = filename == nullptr ? "" : filename;
   spill_file_ = spill_file_for(log_file_);
   hostname_hash_ = hostname_hash == nullptr ? "" : hostname_hash;
@@ -589,17 +577,6 @@ int ServiceBufferManager::finalize(int index, ProcessID process_id) {
   return 0;
 }
 
-void ServiceBufferManager::flush_idle(uint64_t max_age_ns) {
-  const uint64_t now = ipc::monotonic_ns();
-  std::lock_guard<std::mutex> lock(slots_mtx_);
-  for (auto& slot : slots_) {
-    // Logging right now, or gone: it publishes on its own.
-    if (!claim(slot.get(), 0)) continue;
-    if (slot->producer) slot->producer->flush_if_older(now, max_age_ns);
-    unclaim(slot.get());
-  }
-}
-
 void ServiceBufferManager::flush() {
   if (!is_ready()) return;
   flush_all(DFT_SHM_FINALIZE_WAIT_NS);
@@ -616,8 +593,8 @@ void ServiceBufferManager::flush_all(uint64_t wait_ns) {
     fenced = fence_all();
   }
   for (auto& slot : slots_) {
-    // A thread inside a log call holds its slot for a few hundred ns: wait
-    // for it rather than leave its block for the service to take over.
+    // A thread inside a log call holds its slot only briefly: wait for it
+    // rather than leave its block for the service to take over.
     if (fenced_ ? !await_claim(slot.get(), fenced, deadline)
                 : !claim(slot.get(), deadline))
       continue;

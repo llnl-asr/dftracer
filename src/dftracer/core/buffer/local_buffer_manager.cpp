@@ -358,8 +358,6 @@ void LocalBufferManager::render_block(ThreadBuffer& tb,
   }
   const HashType hostname_hash = this->serializer->hostname();
   const bool aggregate = this->config->aggregation_enable;
-  const bool selective = this->config->aggregation_type ==
-                         AggregationType::AGGREGATION_TYPE_SELECTIVE;
   ipc::DecodedEvent event;
   decoder.reset();
   tb.lines.reset();
@@ -378,12 +376,10 @@ void LocalBufferManager::render_block(ThreadBuffer& tb,
     if (kind == RecordKind::COMPACT ? !decoder.event(bytes, size, event)
                                     : !ipc::decode_event(bytes, size, event))
       continue;
-    if (aggregate && (event.head.flags & SHM_EVENT_NO_AGGREGATE) == 0 &&
-        event.category != "dftracer") {
+    if (aggregate) {
       if (tb.aggregator == nullptr)
         tb.aggregator = std::make_unique<Aggregator>(this->config);
-      if (!selective ||
-          tb.aggregator->should_aggregate(event, get_app_name(), &rank)) {
+      if (tb.aggregator->wants(event, get_app_name(), &rank)) {
         if (tb.aggregator->aggregate(event))
           tb.aggregator->drain(false, event.head.process_id, hostname_hash,
                                out);
@@ -409,7 +405,7 @@ void LocalBufferManager::drain_thread_aggregators(bool all,
   for (ThreadBuffer* tb : tbs) {
     std::lock_guard<std::mutex> render(tb->render_mtx);
     if (tb->aggregator != nullptr)
-      drain_packed(*tb->aggregator, all, process_id);
+      drain_events(*tb->aggregator, all, process_id);
   }
 }
 
@@ -561,8 +557,7 @@ int LocalBufferManager::initialize(const char* filename,
   this->compressor =
       dftracer::Singleton<dftracer::GzipCompression>::get_instance();
   this->compressor->initialize(this->config->write_buffer_size);
-  size_t size = this->serializer->initialize(buffer, hostname_hash);
-  compress_and_write_if_needed(size);
+  this->serializer->initialize(buffer, hostname_hash);
   fork_owner.store(this, std::memory_order_release);
   // Everything this object needs (config, buffer, compressor, serializer) is
   // now wired. Only from here is it safe for an asynchronous producer to log.
@@ -734,7 +729,7 @@ void LocalBufferManager::log_metadata_event(ConstEventNameType name,
   });
 }
 
-void LocalBufferManager::drain_packed(Aggregator& aggregator, bool all,
+void LocalBufferManager::drain_events(Aggregator& aggregator, bool all,
                                       ProcessID process_id) {
   // One row at a time, so a long drain writes the buffer out instead of
   // running past its slack.

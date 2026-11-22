@@ -92,7 +92,6 @@ const ipc::DecodedEvent& decoded(std::vector<uint8_t>& bytes,
 
 void test_json_lines_bytes() {
   JsonLines js;
-  js.set_include_metadata(true);
   char host[] = "hh";
   js.initialize(nullptr, host);
   static char buf[DFTRACER_SERIALIZATION_EVENT_MAX + 16];
@@ -162,7 +161,6 @@ void test_json_lines_bytes() {
             "\"level\":\"dir\"}}\n");
 
   // Without DFTRACER_INC_METADATA an event keeps no optional args.
-  js.set_include_metadata(false);
   args.reset();
   args.set("size", static_cast<int64_t>(1));
   n = js.data(buf,

@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -214,6 +215,23 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
 
   if (num_headers == 0 || headers == nullptr) return;
 
+  auto emit = [&function](
+                  std::optional<ThreadID> tid, const std::string& event_name,
+                  const std::string& kind_name, rocprofiler_timestamp_t start,
+                  rocprofiler_timestamp_t end, EventDraft* metadata) {
+    if (tid) {
+      function->logger->log_on(*tid, event_name, kind_name,
+                               TraceEventType::TRACE_TYPE_HIP,
+                               function->transform_timestamp(start),
+                               function->transform_time(end, start), metadata);
+    } else {
+      function->logger->log(event_name, kind_name,
+                            TraceEventType::TRACE_TYPE_HIP,
+                            function->transform_timestamp(start),
+                            function->transform_time(end, start), metadata);
+    }
+  };
+
   for (size_t i = 0; i < num_headers; ++i) {
     auto* header = headers[i];
 
@@ -244,16 +262,9 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
       const ThreadID event_tid = static_cast<ThreadID>(record->thread_id);
 
       std::string event_name =
-          std::string(client_name_info[record->kind][record->operation]);
-      function->logger->enter_event();
-      function->logger->log_on(
-          event_tid, event_name.c_str(), kind_name.c_str(),
-          TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+          std::string(client_name_info.at(record->kind, record->operation));
+      emit(event_tid, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 
       // ── HIP runtime API ───────────────────────────────────────────────────
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
@@ -271,16 +282,9 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
       const ThreadID event_tid = static_cast<ThreadID>(record->thread_id);
 
       std::string event_name =
-          std::string(client_name_info[record->kind][record->operation]);
-      function->logger->enter_event();
-      function->logger->log_on(
-          event_tid, event_name.c_str(), kind_name.c_str(),
-          TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+          std::string(client_name_info.at(record->kind, record->operation));
+      emit(event_tid, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 
       // ── Kernel dispatch ───────────────────────────────────────────────────
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
@@ -297,17 +301,10 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
           function->client_kernels.at(record->dispatch_info.kernel_id)
               .kernel_name);
       event_name = std::to_string(record->dispatch_info.kernel_id) + event_name;
-      function->logger->enter_event();
-      function->logger->log_on(
-          event_tid, event_name.c_str(), kind_name.c_str(),
-          TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+      emit(event_tid, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 
-      // ── Memory copy ───────────────────────────────────────────────────────
+      // ── Memory copy───────────────────────────────────────────────────────
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
                header->kind == ROCPROFILER_BUFFER_TRACING_MEMORY_COPY) {
       auto* record =
@@ -327,17 +324,10 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log_on(
-          event_tid, event_name.c_str(), kind_name.c_str(),
-          TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+      emit(event_tid, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 
-      // ── Scratch memory ────────────────────────────────────────────────────
+      // ── Scratch memory────────────────────────────────────────────────────
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
                header->kind == ROCPROFILER_BUFFER_TRACING_SCRATCH_MEMORY) {
       auto* record =
@@ -357,15 +347,8 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
       const ThreadID event_tid = static_cast<ThreadID>(record->thread_id);
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log_on(
-          event_tid, event_name.c_str(), kind_name.c_str(),
-          TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+      emit(event_tid, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 
       // ── Page migration
       // ────────────────────────────────────────────────────────
@@ -475,11 +458,8 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->timestamp), 0, metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->timestamp,
+           record->timestamp, metadata);
 
 #else
       // SDK 0.4.0–0.5.0: original union layout, start/end timestamps.
@@ -517,14 +497,8 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 #endif  // SDK < 1.0.0 inner split
 
 #else  // DFTRACER_ROCPROFILER_API_VERSION >= 1.0.0
@@ -551,11 +525,8 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->timestamp), 0, metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->timestamp,
+           record->timestamp, metadata);
 
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
                header->kind ==
@@ -573,11 +544,8 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->timestamp), 0, metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->timestamp,
+           record->timestamp, metadata);
 
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
                header->kind == ROCPROFILER_BUFFER_TRACING_KFD_EVENT_QUEUE) {
@@ -593,11 +561,8 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->timestamp), 0, metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->timestamp,
+           record->timestamp, metadata);
 
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
                header->kind ==
@@ -616,11 +581,8 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->timestamp), 0, metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->timestamp,
+           record->timestamp, metadata);
 
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
                header->kind ==
@@ -637,11 +599,8 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->timestamp), 0, metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->timestamp,
+           record->timestamp, metadata);
 
 #endif  // page migration version split
 
@@ -659,15 +618,8 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log_on(
-          event_tid, event_name.c_str(), kind_name.c_str(),
-          TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+      emit(event_tid, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 #endif  // SDK >= 0.5.0
 
     } else {

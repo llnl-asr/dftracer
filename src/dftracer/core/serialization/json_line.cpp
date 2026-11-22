@@ -11,30 +11,15 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
-#include <typeinfo>
 
 namespace dftracer {
 template <>
 std::shared_ptr<JsonLines> Singleton<JsonLines>::instance = nullptr;
 template <>
 bool Singleton<JsonLines>::stop_creating_instances = false;
-JsonLines::JsonLines() : include_metadata(false) {
-  auto conf = Singleton<ConfigurationManager>::get_instance();
-  include_metadata = conf->metadata;
-}
-
 size_t JsonLines::initialize(char* buffer, HashType hostname_hash) {
   this->hostname_hash = hostname_hash;
   return 0;
-}
-
-bool JsonLines::convert_metadata(Metadata* metadata,
-                                 std::stringstream& meta_stream) {
-  if (metadata == nullptr) return false;
-  metadata_json::Stream out(meta_stream);
-  bool has_meta = metadata_json::fields(out, *metadata, false) > 0;
-  Metadata::release(metadata);
-  return has_meta;
 }
 
 // The fixed parts of every line, split into pieces at compile time
@@ -42,12 +27,9 @@ bool JsonLines::convert_metadata(Metadata* metadata,
 // straight into the same buffer.
 namespace {
 DFTRACER_LINE_FORMAT(
-    SeriesHead,
-    R"({"name":"{}","cat":"{}","type":{},"ts":{},"ph":{},"pid":{},"tid":{})");
-DFTRACER_LINE_FORMAT(
     RecordHead,
     R"({"name":"{}","cat":"dftracer","type":{},"pid":{},"tid":{},"ph":{},"args":{"hhash":"{}")");
-DFTRACER_LINE_FORMAT(ArgsHead, R"(,"args":{"hhash":"{}")");
+using packed_json::ArgsHead;
 DFTRACER_LINE_FORMAT(StringValue, R"(,"name":"{}","value":"{}"}})");
 DFTRACER_LINE_FORMAT(RawValue, R"(,"name":"{}","value":{}}})");
 DFTRACER_LINE_FORMAT(RawFields, R"(,{}}})");
@@ -91,9 +73,8 @@ size_t JsonLines::series(char* buffer, int index, ConstEventNameType event_name,
     metadata = nullptr;
   }
   line_format::Line w(buffer);
-  line_format::append<SeriesHead>(w, event_name, category,
-                                  static_cast<unsigned>(type), start_time,
-                                  phase(phase_type), process_id, thread_id);
+  packed_json::series_head(w, event_name, category, static_cast<uint8_t>(type),
+                           phase_type, start_time, process_id, thread_id);
   return finish_with_args(w, this->hostname_hash, metadata, "JsonLines.series",
                           index);
 }

@@ -7,6 +7,7 @@
 #include <charconv>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <limits>
 #include <random>
 #include <string>
@@ -93,8 +94,7 @@ void test_shapes() {
   compact::Encoder enc;
   Block block;
   std::vector<Event> events;
-  std::vector<EventDraft> drafts;
-  drafts.reserve(1024);
+  std::deque<EventDraft> drafts;
   const auto add_event = [&](const Event& e) {
     events.push_back(e);
     add(block, enc, e, drafts.back());
@@ -336,9 +336,10 @@ void test_number() {
   }
 }
 
-// A fused interceptor's args (EventDraft::entry() and Encoder::site_event())
-// give the same bytes as the EventDraft of the same calls. Event i comes from
-// site site_of(i); more sites than the encoder keeps shapes for evict them.
+// A DFT_SITE_END interceptor's args (EventDraft::entry() and
+// Encoder::site_event()) give the same bytes as the EventDraft of the same
+// calls. Event i comes from site site_of(i); more sites than the encoder keeps
+// shapes for evict them.
 template <typename SiteOf>
 void test_site_event(int sites, SiteOf site_of) {
   static char site_storage[100];
@@ -350,13 +351,12 @@ void test_site_event(int sites, SiteOf site_of) {
   compact::Encoder plain_enc;
   compact::Encoder site_enc;
   Block plain;
-  Block fused;
+  Block by_site;
   int fused_hits = 0;
   int defined = 0;
   std::vector<SiteInfo> infos;
   std::vector<Event> events;
-  std::vector<EventDraft> drafts;
-  drafts.reserve(200);
+  std::deque<EventDraft> drafts;
   for (int i = 0; i < 200; ++i) {
     const char& site = site_storage[site_of(i)];
     const size_t count = 4096 + (i % 3);
@@ -395,8 +395,8 @@ void test_site_event(int sites, SiteOf site_of) {
     DFT_CHECK(sig == d.sig() && size == d.size());
     const size_t bound = compact::Encoder::bound(e.name, e.category, size, 4);
     DFT_CHECK(bound == compact::Encoder::bound(e.name, e.category, &d));
-    const size_t at = fused.bytes.size();
-    fused.bytes.resize(at + bound);
+    const size_t at = by_site.bytes.size();
+    by_site.bytes.resize(at + bound);
     if (infos.empty())
       for (int k = 0; k < sites; ++k)
         infos.push_back(
@@ -405,7 +405,7 @@ void test_site_event(int sites, SiteOf site_of) {
     DFT_CHECK(info.sig == sig && info.args_size == size && info.count == 4);
     DFT_CHECK(info.bound == bound);
     const SiteEvent se{&info, e.index, e.start, e.duration, args, e.pid, e.tid};
-    size_t n = site_enc.site_event(fused.bytes.data() + at, se, e.flags);
+    size_t n = site_enc.site_event(by_site.bytes.data() + at, se, e.flags);
     if (n != 0) {
       ++fused_hits;
     } else {
@@ -414,13 +414,13 @@ void test_site_event(int sites, SiteOf site_of) {
       back.set_site(&site);
       for (const EventDraft::Entry& a : args) back.append(a);
       DFT_CHECK(back.sig() == d.sig() && back.shaped());
-      n = site_enc.event(fused.bytes.data() + at, e.index, e.name, e.category,
+      n = site_enc.event(by_site.bytes.data() + at, e.index, e.name, e.category,
                          e.type, e.start, e.duration, &back, e.pid, e.tid,
                          e.flags);
     }
     DFT_CHECK(n > 0 && n <= bound);
-    fused.bytes.resize(at + n);
-    fused.ends.push_back(at + n);
+    by_site.bytes.resize(at + n);
+    by_site.ends.push_back(at + n);
     if (i == 99) {
       plain_enc.reset();
       site_enc.reset();
@@ -428,18 +428,18 @@ void test_site_event(int sites, SiteOf site_of) {
   }
   if (sites == 1) DFT_CHECK(fused_hits == 198);
   DFT_CHECK(fused_hits + defined == 200 && fused_hits > 0);
-  DFT_CHECK(fused.ends == plain.ends);
-  DFT_CHECK(fused.bytes == plain.bytes);
+  DFT_CHECK(by_site.ends == plain.ends);
+  DFT_CHECK(by_site.bytes == plain.bytes);
 
   compact::Decoder dec;
   ipc::DecodedEvent out;
   size_t at = 0;
   for (size_t i = 0; i < events.size(); ++i) {
     if (i == 100) dec.reset();
-    DFT_CHECK(dec.event(fused.bytes.data() + at, fused.ends[i] - at, out));
+    DFT_CHECK(dec.event(by_site.bytes.data() + at, by_site.ends[i] - at, out));
     check_head(out, events[i]);
     check_values(out, events[i], drafts[i]);
-    at = fused.ends[i];
+    at = by_site.ends[i];
   }
 }
 

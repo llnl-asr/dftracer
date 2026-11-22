@@ -26,29 +26,54 @@ namespace packed_json {
 /** The line writer JsonLines uses (line_format.h). */
 using Line = line_format::Line;
 
+/** A number of one of the three numeric tags. */
+union Number {
+  int64_t i;
+  uint64_t u;
+  double d;
+};
+
+/** The numeric value of `v` in `n`; false, and `n` untouched, for text. */
+inline bool to_number(const ipc::DecodedValue& v, Number& n) {
+  switch (v.tag) {
+    case SHM_VALUE_INT:
+      n.i = v.i;
+      return true;
+    case SHM_VALUE_UINT:
+      n.u = v.u;
+      return true;
+    case SHM_VALUE_DOUBLE:
+      n.d = v.d;
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** `n` as the type `tag` names. */
+inline void number(Line& w, uint8_t tag, Number n) {
+  if (tag == SHM_VALUE_INT)
+    w.i64(n.i);
+  else if (tag == SHM_VALUE_UINT)
+    w.u64(n.u);
+  else
+    w.f64(n.d);
+}
+
 /** "key":value of a decoded metadata entry. */
 inline void field(Line& w, const ipc::DecodedValue& v) {
   w.raw("\"");
   w.escaped(v.key);
   w.raw("\":");
-  switch (v.tag) {
-    case SHM_VALUE_INT:
-      w.i64(v.i);
-      break;
-    case SHM_VALUE_UINT:
-      w.u64(v.u);
-      break;
-    case SHM_VALUE_DOUBLE:
-      w.f64(v.d);
-      break;
-    case SHM_VALUE_STRING:
-      w.raw("\"");
-      w.escaped(v.s);
-      w.raw("\"");
-      break;
-    case SHM_VALUE_RAW_JSON:
-      w.raw(v.s);
-      break;
+  Number n;
+  if (to_number(v, n)) {
+    number(w, v.tag, n);
+  } else if (v.tag == SHM_VALUE_STRING) {
+    w.raw("\"");
+    w.escaped(v.s);
+    w.raw("\"");
+  } else {
+    w.raw(v.s);
   }
 }
 

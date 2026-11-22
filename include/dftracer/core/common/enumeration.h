@@ -37,6 +37,12 @@ enum TimeMetricType : uint8_t {
   TIME_METRIC_MS = 2,
   TIME_METRIC_SEC = 3
 };
+// DFTRACER_TSC_CLOCK: where timestamps come from.
+enum TscClockMode : uint8_t {
+  TSC_CLOCK_OFF = 0,   // always clock_gettime(CLOCK_REALTIME)
+  TSC_CLOCK_AUTO = 1,  // the TSC when the kernel clock source is tsc
+  TSC_CLOCK_FORCE = 2  // the TSC on any x86 CPU
+};
 enum class RuleOp { AND, OR, NOT, EQ, NEQ, GT, LT, GTE, LTE, IN, LIKE };
 
 // Instrumentation layer that produced an event, written as the integer "type"
@@ -226,6 +232,29 @@ inline std::string to_string(const TimeMetricType& type) {
     default:
       return "US";
   }
+}
+inline void convert(const std::string& s, TscClockMode& mode) {
+  std::string v;
+  for (char c : s) v += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+  if (v == "2" || v == "force") {
+    mode = TscClockMode::TSC_CLOCK_FORCE;
+  } else if (v == "1" || v == "auto" || v == "true" || v == "on" ||
+             v == "yes") {
+    mode = TscClockMode::TSC_CLOCK_AUTO;
+  } else {
+    mode = TscClockMode::TSC_CLOCK_OFF;
+  }
+}
+inline std::string to_string(const TscClockMode& mode) {
+  switch (mode) {
+    case TscClockMode::TSC_CLOCK_OFF:
+      return "OFF";
+    case TscClockMode::TSC_CLOCK_AUTO:
+      return "AUTO";
+    case TscClockMode::TSC_CLOCK_FORCE:
+      return "FORCE";
+  }
+  return "AUTO";
 }
 // Number of TIME_METRIC units in one second. Used by any consumer that needs
 // to convert a wall-clock quantity (e.g. a millisecond interval) into the

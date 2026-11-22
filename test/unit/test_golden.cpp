@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "check.h"
+#include "event_feed.h"
 #include "golden_events.h"
 #include "golden_lines.h"
 
@@ -48,11 +49,8 @@ void decode_ring(const golden::Event& e, bool include,
                  std::vector<uint8_t>& bytes, ipc::DecodedEvent& out) {
   EventDraft draft = draft_of(e);
   const EventDraft* args = e.has_metadata ? &draft : nullptr;
-  ipc::ByteWriter w(bytes);
-  ipc::encode_event_entries(w, golden::kIndex, e.name, e.category, e.type, e.ts,
-                            e.dur, args, golden::kPid, e.tid,
-                            flags_of(include, args));
-  DFT_CHECK(ipc::decode_event(bytes.data(), bytes.size(), out));
+  ring_decode(bytes, out, golden::kIndex, e.name, e.category, e.type, e.ts,
+              e.dur, args, golden::kPid, e.tid, flags_of(include, args));
 }
 
 // A block of compact records. The encoder keeps pointers to the strings it
@@ -114,7 +112,6 @@ void check_counter() {
   static char out[DFTRACER_SERIALIZATION_EVENT_MAX];
   const auto events = golden::line_events();
   for (int include : {0, 1}) {
-    js.set_include_metadata(include != 0);
     for (size_t i = 0; i < events.size(); ++i) {
       const golden::Event& e = events[i];
       size_t n =
@@ -138,13 +135,6 @@ void check_counter() {
   }
   std::cout << "counter lines match the golden lines" << std::endl;
 }
-
-struct Rows : Aggregator::RowSink {
-  std::vector<char> buffer = std::vector<char>(1 << 20);
-  size_t used = 0;
-  char* row() override { return buffer.data() + used; }
-  void wrote(size_t size) override { used += size; }
-};
 
 void check_rows(const char* what, Aggregator& aggregator) {
   Rows rows;

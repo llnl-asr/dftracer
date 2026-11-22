@@ -23,8 +23,6 @@
 #include <string_view>
 #include <tuple>
 #include <type_traits>
-#include <typeindex>
-#include <typeinfo>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -1093,6 +1091,10 @@ struct alignas(DFT_SHM_CACHE_LINE) ServiceSlot {
   // so counting costs nothing shared; read by pushed(). Drops are rare and
   // counted per process (ServiceBufferManager::count_drop).
   std::atomic<uint64_t> pushed{0};
+  void count_push() {
+    pushed.store(pushed.load(std::memory_order_relaxed) + 1,
+                 std::memory_order_relaxed);
+  }
 };
 }  // namespace dftracer
 

@@ -195,8 +195,8 @@ class LocalBufferManager : public BufferManager {
   void start_writer_locked();
   void run_writer();
   static void* writer_main(void* self);
-  // Writes the complete packed intervals (or all) into the buffer.
-  void drain_packed(Aggregator& aggregator, bool all, ProcessID process_id);
+  // Writes the complete intervals (or all) into the buffer.
+  void drain_events(Aggregator& aggregator, bool all, ProcessID process_id);
   char* buffer;
   size_t buffer_pos;
   std::shared_mutex mtx;

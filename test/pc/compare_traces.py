@@ -29,11 +29,12 @@ Exit 0 if equivalent.
 """
 import argparse
 import collections
-import gzip
 import json
 import os
 import re
 import sys
+
+from trace_io import iter_lines
 
 # Values that legitimately differ between two runs or between the two modes.
 # "capacity" is an FS mount record's free/used space at finalize, which any
@@ -79,16 +80,11 @@ MIN_KEPT_EVENTS = 5
 
 def load(path):
     events, bad = [], 0
-    opener = gzip.open if path.endswith(".gz") else open
-    with opener(path, "rt") as f:
-        for line in f:
-            line = line.strip().rstrip(",")
-            if not line or line in ("[", "]"):
-                continue
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                bad += 1
+    for line in iter_lines([path], objects_only=False):
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            bad += 1
     return events, bad
 
 

@@ -11,36 +11,11 @@
 #include <vector>
 
 #include "check.h"
+#include "event_feed.h"
 
 using namespace dftracer;
 
 namespace {
-
-// An event as the service decodes it from the ring.
-struct Feed {
-  const ipc::DecodedEvent& make(const char* category, const char* name,
-                                TraceEventType type, TimeResolution ts,
-                                TimeResolution dur, ProcessID pid, ThreadID tid,
-                                const EventDraft* args, int index = 0) {
-    ipc::ByteWriter w(bytes);
-    ipc::encode_event_entries(
-        w, index, name, category, type, ts, dur, args, pid, tid,
-        SHM_EVENT_INC_METADATA |
-            (args != nullptr ? SHM_EVENT_HAS_METADATA : 0));
-    DFT_CHECK(ipc::decode_event(bytes.data(), bytes.size(), event));
-    return event;
-  }
-  std::vector<uint8_t> bytes;
-  ipc::DecodedEvent event;
-};
-
-struct Rows : Aggregator::RowSink {
-  char* row() override { return buffer + used; }
-  void wrote(size_t size) override { used += size; }
-  std::string text() const { return std::string(buffer, used); }
-  char buffer[8192];
-  size_t used = 0;
-};
 
 // The rows of one event, aggregated alone.
 std::string aggregated_row(const ipc::DecodedEvent& event) {

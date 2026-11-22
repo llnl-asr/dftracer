@@ -93,13 +93,6 @@ class ServiceBufferManager : public BufferManager {
                          dftracer::Metadata* metadata) override;
 
   /**
-   * Publish the block of every thread that is not inside a log call right now
-   * and has held its block for at least `max_age_ns`. For a periodic timer;
-   * finalize() calls it with 0.
-   */
-  void flush_idle(uint64_t max_age_ns);
-
-  /**
    * Publish every thread's block, waiting up to `wait_ns` for a thread that
    * is inside a log call. finalize() uses it: nothing logged before it may
    * be left in a block only the service's take-over would find.

@@ -43,13 +43,7 @@ void LaneBuffer::log_packed_event(const ipc::DecodedEvent& event, bool counter,
     wrote(serializer_.counter(chunk_ + used_, event));
     return;
   }
-  // Everything but dftracer's own events and kinds that are never aggregated
-  // is, or under SELECTIVE what the rules pick.
-  if (aggregator_ != nullptr && event.category != "dftracer" &&
-      (event.head.flags & SHM_EVENT_NO_AGGREGATE) == 0 &&
-      (config_->aggregation_type !=
-           AggregationType::AGGREGATION_TYPE_SELECTIVE ||
-       aggregator_->should_aggregate(event, app_name(), &rank_))) {
+  if (aggregator_ != nullptr && aggregator_->wants(event, app_name(), &rank_)) {
     if (aggregator_->aggregate(event)) drain(false, event.head.process_id);
     return;
   }

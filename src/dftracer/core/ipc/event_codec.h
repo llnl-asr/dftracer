@@ -41,7 +41,7 @@ namespace ipc {
  *   HELLO           HelloHead | hostname_hash | log_file
  *   SET_APP_NAME    name
  *   SET_RANK        i32 rank
- *   GOODBYE         i32 index
+ *   GOODBYE         i32 index (the service reads it only for the size check)
  *
  * The fixed heads (EventHead, ...) and the decoded forms are in
  * core/common/datastructure.h.

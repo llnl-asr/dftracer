@@ -92,7 +92,6 @@ class EventDraft {
     shaped_ = true;
     site_ = nullptr;
   }
-  bool empty() const { return count_ == 0; }
   uint16_t count() const { return count_; }
   const Entry* entries() const { return entries_; }
   /** Bytes write_wire() writes. */
@@ -157,8 +156,8 @@ class EventDraft {
     write(key.name, false, std::forward<V>(value), type);
   }
   /**
-   * The entry set(key, value, type) would add, for an arg of a fused
-   * interceptor (DFT_FAST_END). A string value is borrowed, not copied.
+   * The entry set(key, value, type) would add, for an arg of a site
+   * interceptor (DFT_SITE_END). A string value is borrowed, not copied.
    */
   template <typename V>
   __attribute__((always_inline)) static Entry entry(StaticKey key,
@@ -177,19 +176,10 @@ class EventDraft {
       return entry(key, static_cast<std::underlying_type_t<D>>(value), type);
     } else {
       static_assert(std::is_arithmetic_v<D>,
-                    "a fused arg is a number or a "
+                    "a site arg is a number or a "
                     "string_view");
-      if constexpr (std::is_floating_point_v<D>) {
-        tag = SHM_VALUE_DOUBLE;
-        const double d = static_cast<double>(value);
-        std::memcpy(&e.bits, &d, 8);
-      } else if constexpr (std::is_signed_v<D>) {
-        tag = SHM_VALUE_INT;
-        e.bits = static_cast<uint64_t>(static_cast<int64_t>(value));
-      } else {
-        tag = SHM_VALUE_UINT;
-        e.bits = static_cast<uint64_t>(value);
-      }
+      tag = tag_of<D>();
+      e.bits = bits_of(value);
     }
     e.head = head_of(tag, type, static_cast<uint16_t>(key.name.size()));
     return e;
@@ -409,19 +399,29 @@ class EventDraft {
       put_string(key, copy_key, SHM_VALUE_STRING, type, v == nullptr ? "" : v,
                  v == nullptr ? 0 : std::strlen(v));
     } else {
-      constexpr ShmValueTag tag = std::is_floating_point_v<T> ? SHM_VALUE_DOUBLE
-                                  : std::is_signed_v<T>       ? SHM_VALUE_INT
-                                                              : SHM_VALUE_UINT;
-      Entry* e = add(key, copy_key, tag, type, 8, 0);
+      Entry* e = add(key, copy_key, tag_of<T>(), type, 8, 0);
       if (e == nullptr) return;
-      if constexpr (std::is_floating_point_v<T>) {
-        const double d = static_cast<double>(v);
-        std::memcpy(&e->bits, &d, 8);
-      } else if constexpr (std::is_signed_v<T>) {
-        e->bits = static_cast<uint64_t>(static_cast<int64_t>(v));
-      } else {
-        e->bits = static_cast<uint64_t>(v);
-      }
+      e->bits = bits_of(v);
+    }
+  }
+
+  template <typename T>
+  static constexpr ShmValueTag tag_of() {
+    return std::is_floating_point_v<T> ? SHM_VALUE_DOUBLE
+           : std::is_signed_v<T>       ? SHM_VALUE_INT
+                                       : SHM_VALUE_UINT;
+  }
+  template <typename T>
+  __attribute__((always_inline)) static uint64_t bits_of(T v) {
+    if constexpr (std::is_floating_point_v<T>) {
+      const double d = static_cast<double>(v);
+      uint64_t bits;
+      std::memcpy(&bits, &d, 8);
+      return bits;
+    } else if constexpr (std::is_signed_v<T>) {
+      return static_cast<uint64_t>(static_cast<int64_t>(v));
+    } else {
+      return static_cast<uint64_t>(v);
     }
   }
 
@@ -444,11 +444,6 @@ class EventDraft {
   const void* site_ = nullptr;
 };
 
-/**
- * What one fused call site (DFT_FAST_END) logs every time: its event's name,
- * category and type, and the site, sig(), size() and count() of a draft
- * that holds its args. Built once per site.
- */
 /** Largest varint, and room for the head bytes of an event field. */
 constexpr size_t kCompactVarintMax = 10;
 
@@ -459,6 +454,11 @@ constexpr size_t compact_bound(size_t name, size_t category, size_t args_size,
          count * (2 * kCompactVarintMax);
 }
 
+/**
+ * What one call site of DFT_SITE_END logs every time: its event's name,
+ * category and type, and the site, sig(), size() and count() of a draft
+ * that holds its args. Built once per site.
+ */
 struct SiteInfo {
   const void* site;
   std::string_view event_name;
@@ -502,7 +502,7 @@ struct SiteInfo {
 };
 
 /**
- * One event of a fused call site: what BufferManager::log_data_event()
+ * One event of a DFT_SITE_END call site: what BufferManager::log_data_event()
  * takes, with its args as the info->count entries at `args`.
  */
 struct SiteEvent {

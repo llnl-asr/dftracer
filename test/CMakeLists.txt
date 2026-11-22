@@ -314,35 +314,29 @@ set_tests_properties(check_events_${test_name} PROPERTIES DEPENDS ${test_name})
 add_executable(test_pc_stress cpp/test_pc_stress.cpp)
 target_link_libraries(test_pc_stress ${PROJECT_NAME}_core_dbg pthread)
 add_dependencies(test_pc_stress ${PROJECT_NAME}_core_dbg)
-set(test_name test_pc_stress)
-df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/${test_name} ${CMAKE_CURRENT_BINARY_DIR}/data 1)
-set_common_properties(${test_name})
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
 # About 10 s normally: a regression that slows events down (a map that keeps
 # growing, say) fails fast instead of hanging; the pc_ twin gets 2x + 60 s.
-set_tests_properties(${test_name} PROPERTIES TIMEOUT 120 RESOURCE_LOCK pc_stress_data)
-if(DFTRACER_TRACE_CHECK_PYTHON)
-    df_add_test(check_${test_name} ${DFTRACER_TRACE_CHECK_PYTHON}
-        ${CMAKE_CURRENT_SOURCE_DIR}/check_pc_stress.py
-        "${CMAKE_CURRENT_BINARY_DIR}/${test_name}-*.pfw*" 1)
-    set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
-endif()
 # 64 KiB blocks: each thread leaves several blocks for the exit, which renders
 # them on several threads and must still write each thread's events in order.
-set(test_name test_pc_stress_small_blocks)
-df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_pc_stress ${CMAKE_CURRENT_BINARY_DIR}/data 1)
-set_common_properties(${test_name})
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
-set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_WRITE_BUFFER_SIZE=65536)
-set_tests_properties(${test_name} PROPERTIES TIMEOUT 120 RESOURCE_LOCK pc_stress_data)
-if(DFTRACER_TRACE_CHECK_PYTHON)
-    df_add_test(check_${test_name} ${DFTRACER_TRACE_CHECK_PYTHON}
-        ${CMAKE_CURRENT_SOURCE_DIR}/check_pc_stress.py
-        "${CMAKE_CURRENT_BINARY_DIR}/${test_name}-*.pfw*" 1)
-    set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
-endif()
+function(add_pc_stress_test test_name)
+    cmake_parse_arguments(ARG "" "WRITE_BUFFER_SIZE" "" ${ARGN})
+    df_add_test(${test_name} ${CMAKE_BINARY_DIR}/bin/test_pc_stress ${CMAKE_CURRENT_BINARY_DIR}/data 1)
+    set_common_properties(${test_name})
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INIT=FUNCTION)
+    set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_INC_METADATA=1)
+    if(ARG_WRITE_BUFFER_SIZE)
+        set_property(TEST ${test_name} APPEND PROPERTY ENVIRONMENT DFTRACER_WRITE_BUFFER_SIZE=${ARG_WRITE_BUFFER_SIZE})
+    endif()
+    set_tests_properties(${test_name} PROPERTIES TIMEOUT 120 RESOURCE_LOCK pc_stress_data)
+    if(DFTRACER_TRACE_CHECK_PYTHON)
+        df_add_test(check_${test_name} ${DFTRACER_TRACE_CHECK_PYTHON}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_pc_stress.py
+            "${CMAKE_CURRENT_BINARY_DIR}/${test_name}-*.pfw*" 1)
+        set_tests_properties(check_${test_name} PROPERTIES DEPENDS ${test_name})
+    endif()
+endfunction()
+add_pc_stress_test(test_pc_stress)
+add_pc_stress_test(test_pc_stress_small_blocks WRITE_BUFFER_SIZE 65536)
 if(TARGET ${PROJECT_NAME}_service)
     # Everything spills (no service) and is aggregated there: the same
     # aggregated rows as in-process (deferred metadata hashes).
@@ -1496,6 +1490,18 @@ if(TARGET ${PROJECT_NAME}_service)
                      ${CMAKE_BINARY_DIR}/bin/dftracer_service
                      ${CMAKE_BINARY_DIR}/bin/c_overhead_dft
                      ${CMAKE_CURRENT_BINARY_DIR}/pc/spill)
+    set_common_linker_properties(${test_name})
+    set_tests_properties(${test_name} PROPERTIES LABELS pc TIMEOUT 300)
+
+    # ts and dur agree with the wall clock, in both modes and both clocks.
+    add_executable(pc_timing pc/timing.c)
+    target_link_libraries(pc_timing ${PROJECT_NAME}_core pthread)
+    set(test_name pc_test_timing)
+    add_test(NAME ${test_name}
+             COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/pc/run_pc_timing.sh
+                     ${CMAKE_BINARY_DIR}/bin/dftracer_service
+                     ${CMAKE_BINARY_DIR}/bin/pc_timing
+                     ${CMAKE_CURRENT_BINARY_DIR}/pc/timing)
     set_common_linker_properties(${test_name})
     set_tests_properties(${test_name} PROPERTIES LABELS pc TIMEOUT 300)
 endif()

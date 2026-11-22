@@ -10,10 +10,8 @@
 #include <dftracer/core/utils/configuration_manager.h>
 
 #include <cstddef>
-#include <iomanip>
 #include <sstream>
 #include <string>
-#include <typeinfo>
 #include <unordered_map>
 #include <vector>
 
@@ -60,11 +58,9 @@ class ShapeLines {
 };
 
 class JsonLines {
-  bool include_metadata;
-  HashType hostname_hash;
+  HashType hostname_hash{};
   // Shared layout for the timestamped, duration-less records: counters and
-  // aggregated events differ only in their phase. Takes ownership of metadata
-  // (convert_metadata() frees a non-empty map, series() an empty one).
+  // aggregated events differ only in their phase. Takes ownership of metadata.
   size_t series(char* buffer, int index, ConstEventNameType event_name,
                 ConstEventNameType category, TraceEventType type,
                 TracePhaseType phase_type, TimeResolution start_time,
@@ -72,14 +68,7 @@ class JsonLines {
                 dftracer::Metadata* metadata);
 
  public:
-  JsonLines();
-  // Writes the metadata as "key":value,... into meta_stream and frees it.
-  // Returns whether there was any.
-  static bool convert_metadata(Metadata* metadata,
-                               std::stringstream& meta_stream);
-  // The service serializes for many processes, each with its own setting.
-  void set_include_metadata(bool include) { include_metadata = include; }
-  bool includes_metadata() const { return include_metadata; }
+  JsonLines() = default;
   HashType hostname() const { return hostname_hash; }
   size_t initialize(char* buffer, HashType hostname_hash);
   // A data event, written straight from its decoded record.
@@ -148,11 +137,7 @@ inline size_t JsonLines::data(char* out, const ipc::DecodedEvent& e,
   const bool include = (h.flags & SHM_EVENT_INC_METADATA) != 0;
   if (shape == ShapeLines::kNoShape || (has_metadata && !include))
     return data(out, e);
-  struct Text {
-    std::string& text;
-    void raw(std::string_view v) { text.append(v.data(), v.size()); }
-    void escaped(std::string_view v) { line_format::escaped(*this, v); }
-  };
+  using line_format::Text;
   if (shape >= lines.shapes_.size()) lines.shapes_.resize(shape + 1);
   ShapeLines::Shape& sh = lines.shapes_[shape];
   if (!sh.built) {

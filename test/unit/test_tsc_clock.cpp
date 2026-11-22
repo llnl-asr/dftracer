@@ -22,8 +22,8 @@ static int fail(const char* what, long long a, long long b) {
   return 1;
 }
 
-static int check(bool wanted) {
-  TscClock::start(wanted);
+static int check(TscClockMode mode) {
+  TscClock::start(mode);
   uint64_t last = 0;
   long long worst = 0;
   const uint64_t until = wall_us() + 50000;
@@ -44,7 +44,7 @@ static int check(bool wanted) {
                                    : 0);
     if (d > worst) worst = d;
   }
-  std::printf("wanted=%d enabled=%d worst=%lldus\n", wanted,
+  std::printf("mode=%s enabled=%d worst=%lldus\n", to_string(mode).c_str(),
               TscClock::enabled(), worst);
   return 0;
 }
@@ -76,11 +76,18 @@ static int check_threads() {
 }
 
 int main() {
-  if (check(false) != 0) return EXIT_FAILURE;
+  if (check(TscClockMode::TSC_CLOCK_OFF) != 0) return EXIT_FAILURE;
   if (TscClock::enabled()) return fail("enabled when not wanted", 1, 0);
-  if (check(true) != 0) return EXIT_FAILURE;
+  if (check(TscClockMode::TSC_CLOCK_AUTO) != 0) return EXIT_FAILURE;
   if (!TscClock::enabled())
-    std::printf("SKIP counter path: clock source is not tsc\n");
+    std::printf("auto: clock source is not tsc, so clock_gettime\n");
+  if (check_threads() != 0) return EXIT_FAILURE;
+  // FORCE runs the counter path on any x86 machine, such as a CI VM whose
+  // clock source is not tsc.
+  if (check(TscClockMode::TSC_CLOCK_FORCE) != 0) return EXIT_FAILURE;
+#if defined(__x86_64__) || defined(__i386__)
+  if (!TscClock::enabled()) return fail("not enabled when forced", 0, 1);
+#endif
   if (check_threads() != 0) return EXIT_FAILURE;
   return EXIT_SUCCESS;
 }

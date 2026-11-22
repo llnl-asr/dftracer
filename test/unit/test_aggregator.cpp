@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "check.h"
+#include "event_feed.h"
 
 using namespace dftracer;
 
@@ -122,41 +123,14 @@ std::shared_ptr<ConfigurationManager> make_config(
   return config;
 }
 
-// An event as the service decodes it from the ring.
-struct Feed {
+struct AggFeed {
   const ipc::DecodedEvent& make(
       const char* category, const char* name, TimeResolution ts,
       TimeResolution dur, ThreadID tid, const EventDraft& args,
       TraceEventType type = TraceEventType::TRACE_TYPE_LIBC_IO) {
-    ipc::ByteWriter w(bytes);
-    ipc::encode_event_entries(w, 0, name, category, type, ts, dur, &args, kPid,
-                              tid,
-                              SHM_EVENT_INC_METADATA | SHM_EVENT_HAS_METADATA);
-    DFT_CHECK(ipc::decode_event(bytes.data(), bytes.size(), event));
-    return event;
+    return feed.make(category, name, type, ts, dur, kPid, tid, &args);
   }
-  std::vector<uint8_t> bytes;
-  ipc::DecodedEvent event;
-};
-
-struct Rows : Aggregator::RowSink {
-  std::vector<char> buffer = std::vector<char>(1 << 20);
-  size_t used = 0;
-  char* row() override { return buffer.data() + used; }
-  void wrote(size_t size) override { used += size; }
-  std::vector<std::string> lines() const {
-    std::vector<std::string> out;
-    std::string line;
-    for (size_t i = 0; i < used; ++i) {
-      if (buffer[i] == '\n') {
-        out.push_back(line);
-        line.clear();
-      } else {
-        line += buffer[i];
-      }
-    }
-    return out;
-  }
+  Feed feed;
 };
 
 std::vector<std::string> drain(Aggregator& aggregator, bool all) {
@@ -190,7 +164,7 @@ void test_aggregator_basic() {
   std::cout << "=== Test: Aggregator Basic Functionality ===\n" << std::endl;
 
   Aggregator aggregator(make_config("FULL", "1000"));
-  Feed feed;
+  AggFeed feed;
   EventDraft args;
   args.set("test", std::string("value"));
   const auto& event = feed.make("posix", "read", 1000000, 5000, 1, args);
@@ -219,7 +193,7 @@ void test_aggregator_selective() {
   std::cout << "=== Test: Aggregator Selective Mode ===\n" << std::endl;
 
   Aggregator aggregator(make_config("SELECTIVE", "1000", "cat == 'posix'"));
-  Feed feed;
+  AggFeed feed;
   EventDraft args;
   args.set("test", std::string("value"));
   int rank = 0;
@@ -239,7 +213,7 @@ void test_aggregator_with_metadata() {
             << std::endl;
 
   Aggregator aggregator(make_config("FULL", "1000"));
-  Feed feed;
+  AggFeed feed;
   const ThreadID tid = 12345;
 
   EventDraft first;
@@ -280,7 +254,7 @@ void test_aggregator_exclusion_rules() {
 
   Aggregator aggregator(
       make_config("SELECTIVE", "1000", "cat == 'posix'", "name == 'stat'"));
-  Feed feed;
+  AggFeed feed;
   EventDraft args;
   args.set("test", std::string("value"));
   int rank = 0;
@@ -303,7 +277,7 @@ void test_aggregator_time_intervals() {
             << std::endl;
 
   Aggregator aggregator(make_config("FULL", "500"));  // 500ms intervals
-  Feed feed;
+  AggFeed feed;
   EventDraft args;
   args.set("file", std::string("/tmp/test.txt"));
 
@@ -344,7 +318,7 @@ void test_aggregator_time_intervals() {
 void test_aggregator_finalize() {
   std::cout << "=== Test: Aggregator Finalize ===\n" << std::endl;
 
-  Feed feed;
+  AggFeed feed;
   EventDraft args;
   args.set("count", static_cast<int>(42));
   {
@@ -370,7 +344,7 @@ void test_aggregator_multiple_threads() {
             << std::endl;
 
   Aggregator aggregator(make_config("FULL", "1000"));
-  Feed feed;
+  AggFeed feed;
   EventDraft args;
   args.set("file", std::string("/data/file.bin"));
 
@@ -403,7 +377,7 @@ void test_aggregator_mt_keys() {
             << std::endl;
 
   Aggregator aggregator(make_config("FULL", "1000"));
-  Feed feed;
+  AggFeed feed;
   auto log = [&](const char* name, const char* fhash, int64_t size,
                  TimeResolution ts) {
     EventDraft args;

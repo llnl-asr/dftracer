@@ -18,7 +18,7 @@ namespace compact {
 
 /**
  * The form an interceptor's event takes in a thread buffer of this process
- * (LocalBufferManager), about a quarter of the ring's EventHead encoding, so
+ * (LocalBufferManager), smaller than the ring's EventHead encoding, so
  * blocks that wait to be compressed take less memory and memory traffic.
  *
  *   EVENT   u8 type | u8 flags | index | start | duration | pid | tid |
@@ -62,8 +62,6 @@ inline uint64_t unzigzag(uint64_t v) { return (v >> 1) ^ (0 - (v & 1)); }
 
 // Values of keys with an id below this are sent as changes.
 constexpr uint32_t kTrackedValues = 256;
-// Largest varint plus the head bytes of an entry or event field.
-constexpr size_t kVarintMax = kCompactVarintMax;
 // Flag bits of this encoding only; the decoder clears them.
 constexpr uint8_t kSameSource = 0x20;
 constexpr uint8_t kShapeNew = 0x40;
@@ -86,9 +84,9 @@ class Encoder {
     // Bit i: arg i is a string (or raw JSON), or a double.
     uint32_t strings;
     uint32_t doubles;
-    // Arg 0 is a string and the rest are integers, as at every fused site.
-    bool fused;
-    uint32_t heads[EventDraft::kShapeKeys];
+    // Arg 0 is a string and the rest are integers, as at every DFT_SITE_END
+    // site.
+    bool site_shape;
     uint64_t last[EventDraft::kShapeKeys];
   };
 
@@ -128,15 +126,9 @@ class Encoder {
       const EventDraft* args, ProcessID pid, ThreadID tid, uint8_t flags) {
     Shape* fresh = nullptr;
     if (args != nullptr && args->shaped()) {
-      const uint32_t h = shape_slot(args->site());
-      Shape* a = &shapes_[h];
-      Shape* b = &shapes_[h ^ 1];
-      const void* site = args->site();
-      const uint64_t sig = args->sig();
-      const uint16_t count = args->count();
-      Shape* s = matches(*a, site, sig, count)   ? a
-                 : matches(*b, site, sig, count) ? b
-                                                 : nullptr;
+      Shape* a;
+      Shape* b;
+      Shape* s = lookup(args->site(), args->sig(), args->count(), a, b);
       if (s != nullptr)
         return shaped(out, *s, index, type, start, duration, args->entries(),
                       pid, tid, flags);
@@ -197,17 +189,11 @@ class Encoder {
         uint32_t value_id;
         p = string(p, e.str, e.value_len, value_id, 3 + 2 * i);
       } else if (e.tag() == SHM_VALUE_DOUBLE) {
-        std::memcpy(p, &e.bits, 8);
-        p += 8;
+        p = put_double(p, e.bits);
       } else {
-        const uint64_t v = e.bits;
-        uint64_t last = 0;
-        if (id < kTrackedValues) {
-          last = values_[id];
-          values_[id] = v;
-        }
-        p = put_varint(p, zigzag(v - last));
-        if (fresh != nullptr) fresh->last[i] = v;
+        uint64_t untracked = 0;
+        p = put_delta(p, e.bits, id < kTrackedValues ? values_[id] : untracked);
+        if (fresh != nullptr) fresh->last[i] = e.bits;
       }
     }
     if (fresh != nullptr) define(*fresh, *args);
@@ -239,13 +225,35 @@ class Encoder {
     return p;
   }
 
+  __attribute__((always_inline)) static uint8_t* put_double(uint8_t* p,
+                                                            uint64_t bits) {
+    std::memcpy(p, &bits, 8);
+    return p + 8;
+  }
+
+  __attribute__((always_inline)) static uint8_t* put_delta(uint8_t* p,
+                                                           uint64_t v,
+                                                           uint64_t& last) {
+    p = put_varint(p, zigzag(v - last));
+    last = v;
+    return p;
+  }
+
   __attribute__((noinline)) Shape* find(const SiteInfo& info) {
-    const uint32_t h = shape_slot(info.site);
-    Shape* a = &shapes_[h];
-    Shape* b = &shapes_[h ^ 1];
-    return matches(*a, info.site, info.sig, info.count)   ? a
-           : matches(*b, info.site, info.sig, info.count) ? b
-                                                          : nullptr;
+    Shape* a;
+    Shape* b;
+    return lookup(info.site, info.sig, info.count, a, b);
+  }
+
+  __attribute__((always_inline)) Shape* lookup(const void* site, uint64_t sig,
+                                               uint16_t count, Shape*& a,
+                                               Shape*& b) {
+    const uint32_t h = shape_slot(site);
+    a = &shapes_[h];
+    b = &shapes_[h ^ 1];
+    return matches(*a, site, sig, count)   ? a
+           : matches(*b, site, sig, count) ? b
+                                           : nullptr;
   }
 
   static uint32_t shape_slot(const void* site) {
@@ -272,11 +280,10 @@ class Encoder {
     s.strings = 0;
     s.doubles = 0;
     for (uint16_t i = 0; i < s.count; ++i) {
-      s.heads[i] = es[i].head;
       if (es[i].is_string()) s.strings |= 1u << i;
       if (es[i].tag() == SHM_VALUE_DOUBLE) s.doubles |= 1u << i;
     }
-    s.fused = s.strings == 1 && s.doubles == 0;
+    s.site_shape = s.strings == 1 && s.doubles == 0;
   }
 
   __attribute__((always_inline)) size_t shaped(
@@ -295,14 +302,11 @@ class Encoder {
     const uint32_t strings = s.strings;
     const uint32_t doubles = s.doubles;
     uint64_t* last = s.last;
-    if (s.fused) {
+    if (s.site_shape) {
       uint32_t value_id;
       p = string(p, es[0].str, es[0].value_len, value_id, 3);
-      for (uint32_t i = 1; i < count; ++i) {
-        const uint64_t v = es[i].bits;
-        p = put_varint(p, zigzag(v - last[i]));
-        last[i] = v;
-      }
+      for (uint32_t i = 1; i < count; ++i)
+        p = put_delta(p, es[i].bits, last[i]);
       return static_cast<size_t>(p - out);
     }
     for (uint32_t i = 0; i < count; ++i) {
@@ -311,12 +315,9 @@ class Encoder {
         uint32_t value_id;
         p = string(p, e.str, e.value_len, value_id, 3 + 2 * i);
       } else if (((doubles >> i) & 1) != 0) {
-        std::memcpy(p, &e.bits, 8);
-        p += 8;
+        p = put_double(p, e.bits);
       } else {
-        const uint64_t v = e.bits;
-        p = put_varint(p, zigzag(v - last[i]));
-        last[i] = v;
+        p = put_delta(p, e.bits, last[i]);
       }
     }
     return static_cast<size_t>(p - out);
@@ -496,22 +497,13 @@ class Decoder {
       if (!string(c, d.key, id)) return false;
       switch (d.tag) {
         case SHM_VALUE_INT:
-        case SHM_VALUE_UINT: {
-          if (!varint(c, v)) return false;
+        case SHM_VALUE_UINT:
+        case SHM_VALUE_DOUBLE: {
           uint64_t last = 0;
           uint64_t* slot = id < kTrackedValues ? &values_[id] : &last;
-          *slot += unzigzag(v);
-          if (d.tag == SHM_VALUE_INT)
-            d.i = static_cast<int64_t>(*slot);
-          else
-            d.u = *slot;
+          if (!number(c, d, *slot)) return false;
           break;
         }
-        case SHM_VALUE_DOUBLE:
-          if (c.end - c.p < 8) return false;
-          std::memcpy(&d.d, c.p, 8);
-          c.p += 8;
-          break;
         case SHM_VALUE_STRING:
         case SHM_VALUE_RAW_JSON: {
           uint32_t value_id;
@@ -574,20 +566,9 @@ class Decoder {
       d.s = std::string_view();
       switch (d.tag) {
         case SHM_VALUE_INT:
-        case SHM_VALUE_UINT: {
-          uint64_t v;
-          if (!varint(c, v)) return false;
-          last.u += unzigzag(v);
-          if (d.tag == SHM_VALUE_INT)
-            d.i = static_cast<int64_t>(last.u);
-          else
-            d.u = last.u;
-          break;
-        }
+        case SHM_VALUE_UINT:
         case SHM_VALUE_DOUBLE:
-          if (c.end - c.p < 8) return false;
-          std::memcpy(&d.d, c.p, 8);
-          c.p += 8;
+          if (!number(c, d, last.u)) return false;
           break;
         default: {
           uint32_t value_id;
@@ -596,6 +577,25 @@ class Decoder {
         }
       }
     }
+    return true;
+  }
+
+  // An INT or UINT is a change to `slot`; a DOUBLE is its 8 bytes.
+  __attribute__((always_inline)) bool number(Cursor& c, ipc::DecodedValue& d,
+                                             uint64_t& slot) {
+    if (d.tag == SHM_VALUE_DOUBLE) {
+      if (c.end - c.p < 8) return false;
+      std::memcpy(&d.d, c.p, 8);
+      c.p += 8;
+      return true;
+    }
+    uint64_t v;
+    if (!varint(c, v)) return false;
+    slot += unzigzag(v);
+    if (d.tag == SHM_VALUE_INT)
+      d.i = static_cast<int64_t>(slot);
+    else
+      d.u = slot;
     return true;
   }
 

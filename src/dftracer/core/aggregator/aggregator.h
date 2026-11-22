@@ -4,6 +4,7 @@
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/common/typedef.h>
+#include <dftracer/core/serialization/packed_json.h>
 #include <dftracer/core/utils/configuration_manager.h>
 
 #include <cstdint>
@@ -32,7 +33,7 @@ class StringTable {
 };
 
 /**
- * Aggregation of the service's packed events (docs/design_pc_service.rst,
+ * Aggregation of the service's events (docs/design_pc_service.rst,
  * "Metadata in the service"), folded from the decoded record without a heap
  * Metadata or per-value allocations.
  *
@@ -51,6 +52,10 @@ class Aggregator {
   /** SELECTIVE aggregation: whether the rules aggregate `event`. */
   bool should_aggregate(const ipc::DecodedEvent& event, const char* app_name,
                         const int* rank) const;
+  /** Whether `event` is aggregated at all: not dftracer's own, not a kind
+   * that is never aggregated, and under SELECTIVE what the rules pick. */
+  bool wants(const ipc::DecodedEvent& event, const char* app_name,
+             const int* rank) const;
   /** Fold `event` in. True when it opened a later interval than any so far
    * (not the first), so the earlier intervals are complete. */
   bool aggregate(const ipc::DecodedEvent& event);
@@ -68,11 +73,7 @@ class Aggregator {
              RowSink& sink);
 
  private:
-  union Number {
-    int64_t i;
-    uint64_t u;
-    double d;
-  };
+  using Number = packed_json::Number;
   /** A key field of a bucket; `v.u` is a string id for STRING / RAW_JSON. */
   struct KeyField {
     uint32_t key;

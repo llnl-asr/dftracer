@@ -9,13 +9,67 @@
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "check.h"
 
 using namespace dftracer;
+
+namespace {
+std::string tmp_prefix(const char* name) {
+  return std::string("/tmp/") + name + "_" + std::to_string(getpid());
+}
+
+std::string service_binary() {
+  char exe_path[1024] = {0};
+  DFT_CHECK(readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1) > 0);
+  std::string bin_dir(exe_path);
+  const auto slash_pos = bin_dir.find_last_of('/');
+  DFT_CHECK(slash_pos != std::string::npos);
+  return bin_dir.substr(0, slash_pos) + "/dftracer_service";
+}
+
+class EnvGuard {
+ public:
+  EnvGuard(std::initializer_list<std::pair<const char*, std::string>> vars) {
+    for (const auto& v : vars) {
+      setenv(v.first, v.second.c_str(), 1);
+      names_.push_back(v.first);
+    }
+  }
+  ~EnvGuard() {
+    for (const char* n : names_) unsetenv(n);
+  }
+  EnvGuard(const EnvGuard&) = delete;
+  EnvGuard& operator=(const EnvGuard&) = delete;
+
+ private:
+  std::vector<const char*> names_;
+};
+
+bool wait_for(const std::function<bool()>& done, int deadline_ms = 30000) {
+  for (int waited = 0; waited < deadline_ms; waited += 50) {
+    if (done()) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return done();
+}
+
+bool file_exists(const std::string& path) {
+  struct stat st;
+  return stat(path.c_str(), &st) == 0;
+}
+
+bool file_nonempty(const std::string& path) {
+  struct stat st;
+  return stat(path.c_str(), &st) == 0 && st.st_size > 0;
+}
+}  // namespace
 
 // Helper function to create test files
 void create_test_proc_stat() {
@@ -112,12 +166,12 @@ void test_service_constructor() {
 
   // Set required environment variables
   setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_LOG_FILE", "/tmp/test_dftracer_service", 1);
+  setenv("DFTRACER_LOG_FILE", tmp_prefix("test_dftracer_service").c_str(), 1);
 
   // Ensure configuration has the expected log_file even if the singleton was
   // created before the environment variables above were set.
   auto conf = Singleton<ConfigurationManager>::get_instance();
-  conf->log_file = "/tmp/test_dftracer_service";
+  conf->log_file = tmp_prefix("test_dftracer_service");
 
   try {
     DFTracerService service;
@@ -172,12 +226,13 @@ void test_service_start_stop() {
             << std::endl;
 
   setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_LOG_FILE", "/tmp/test_dftracer_start_stop", 1);
+  setenv("DFTRACER_LOG_FILE", tmp_prefix("test_dftracer_start_stop").c_str(),
+         1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
 
   // Ensure configuration has log_file set (singleton may have stale state)
   auto conf = Singleton<ConfigurationManager>::get_instance();
-  conf->log_file = "/tmp/test_dftracer_start_stop";
+  conf->log_file = tmp_prefix("test_dftracer_start_stop");
 
   try {
     // Only test construction, not actual start/stop due to service memory issue
@@ -207,12 +262,13 @@ void test_service_destructor() {
       << std::endl;
 
   setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_LOG_FILE", "/tmp/test_dftracer_destructor", 1);
+  setenv("DFTRACER_LOG_FILE", tmp_prefix("test_dftracer_destructor").c_str(),
+         1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
 
   // Ensure configuration has log_file set
   auto conf = Singleton<ConfigurationManager>::get_instance();
-  conf->log_file = "/tmp/test_dftracer_destructor";
+  conf->log_file = tmp_prefix("test_dftracer_destructor");
 
   try {
     {
@@ -241,13 +297,14 @@ void test_service_with_compression() {
             << std::endl;
 
   setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_LOG_FILE", "/tmp/test_dftracer_compressed", 1);
+  setenv("DFTRACER_LOG_FILE", tmp_prefix("test_dftracer_compressed").c_str(),
+         1);
   setenv("DFTRACER_COMPRESSION", "1", 1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "100", 1);
 
   // Ensure configuration has log_file set
   auto conf = Singleton<ConfigurationManager>::get_instance();
-  conf->log_file = "/tmp/test_dftracer_compressed";
+  conf->log_file = tmp_prefix("test_dftracer_compressed");
 
   try {
     DFTracerService service;
@@ -273,12 +330,12 @@ void test_service_multiple_intervals() {
   std::cout << "  Note: Testing construction with custom interval" << std::endl;
 
   setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_LOG_FILE", "/tmp/test_dftracer_intervals", 1);
+  setenv("DFTRACER_LOG_FILE", tmp_prefix("test_dftracer_intervals").c_str(), 1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "100", 1);
 
   // Ensure configuration has log_file set
   auto conf = Singleton<ConfigurationManager>::get_instance();
-  conf->log_file = "/tmp/test_dftracer_intervals";
+  conf->log_file = tmp_prefix("test_dftracer_intervals");
 
   try {
     DFTracerService service;
@@ -302,12 +359,12 @@ void test_service_rapid_start_stop() {
   std::cout << "  Note: Testing construction only" << std::endl;
 
   setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_LOG_FILE", "/tmp/test_dftracer_rapid", 1);
+  setenv("DFTRACER_LOG_FILE", tmp_prefix("test_dftracer_rapid").c_str(), 1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "100", 1);
 
   // Ensure configuration has log_file set
   auto conf = Singleton<ConfigurationManager>::get_instance();
-  conf->log_file = "/tmp/test_dftracer_rapid";
+  conf->log_file = tmp_prefix("test_dftracer_rapid");
 
   try {
     DFTracerService service;
@@ -330,7 +387,7 @@ void test_service_log_file_creation() {
   std::cout << "=== Test: DFTracerService Log File Creation ===\n" << std::endl;
   std::cout << "  Note: Testing construction and log file naming" << std::endl;
 
-  std::string test_log_prefix = "/tmp/test_dftracer_logfile";
+  std::string test_log_prefix = tmp_prefix("test_dftracer_logfile");
   setenv("DFTRACER_ENABLE", "1", 1);
   setenv("DFTRACER_LOG_FILE", test_log_prefix.c_str(), 1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "100", 1);
@@ -370,12 +427,13 @@ void test_service_with_custom_interval() {
   std::cout << "  Note: Testing construction with custom interval" << std::endl;
 
   setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_LOG_FILE", "/tmp/test_dftracer_custom_interval", 1);
+  setenv("DFTRACER_LOG_FILE",
+         tmp_prefix("test_dftracer_custom_interval").c_str(), 1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "200", 1);
 
   // Ensure configuration has log_file set
   auto conf = Singleton<ConfigurationManager>::get_instance();
-  conf->log_file = "/tmp/test_dftracer_custom_interval";
+  conf->log_file = tmp_prefix("test_dftracer_custom_interval");
 
   try {
     DFTracerService service;
@@ -397,28 +455,21 @@ void test_service_with_custom_interval() {
 void test_proc_telemetry_generation_smoke() {
   std::cout << "=== Test: Proc Telemetry Generation Smoke ===\n" << std::endl;
 
-  char exe_path[1024] = {0};
-  if (readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1) <= 0) {
-    DFT_CHECK(false);
-  }
-  std::string test_bin_path(exe_path);
-  auto slash_pos = test_bin_path.find_last_of('/');
-  DFT_CHECK(slash_pos != std::string::npos);
-  std::string bin_dir = test_bin_path.substr(0, slash_pos);
-  std::string service_bin = bin_dir + "/dftracer_service";
+  const std::string service_bin = service_binary();
 
   std::ifstream service_check(service_bin);
   DFT_CHECK(service_check.good());
 
-  const std::string log_prefix = "/tmp/test_dftracer_proc_utils_ctest";
+  const std::string log_prefix = tmp_prefix("test_dftracer_proc_utils_ctest");
 
-  setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_LOG_FILE", log_prefix.c_str(), 1);
-  setenv("DFTRACER_TRACE_INTERVAL_MS", "200", 1);
+  EnvGuard env({{"DFTRACER_ENABLE", "1"},
+                {"DFTRACER_LOG_FILE", log_prefix},
+                {"DFTRACER_TRACE_INTERVAL_MS", "200"}});
 
   char hostname[256];
   gethostname(hostname, sizeof(hostname));
   std::string expected_trace = log_prefix + "_" + hostname + ".pfw.gz";
+  const std::string pid_path = log_prefix + "_" + hostname + ".pid";
   std::remove(expected_trace.c_str());
 
   // The service's .pid and .log go next to its trace, from the same prefix.
@@ -427,19 +478,16 @@ void test_proc_telemetry_generation_smoke() {
 
   std::this_thread::sleep_for(std::chrono::milliseconds(1200));
 
-  DFT_CHECK(std::ifstream(log_prefix + "_" + hostname + ".pid").good());
+  DFT_CHECK(std::ifstream(pid_path).good());
   std::string stop_cmd = service_bin + " stop";
   DFT_CHECK(system(stop_cmd.c_str()) == 0);
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  DFT_CHECK(wait_for(
+      [&] { return !file_exists(pid_path) && file_nonempty(expected_trace); }));
 
   std::ifstream trace(expected_trace, std::ios::binary | std::ios::ate);
   DFT_CHECK(trace.good());
   DFT_CHECK(trace.tellg() > 0);
-
-  unsetenv("DFTRACER_ENABLE");
-  unsetenv("DFTRACER_LOG_FILE");
-  unsetenv("DFTRACER_TRACE_INTERVAL_MS");
 
   std::cout << "✓ Proc telemetry generation smoke test passed\n" << std::endl;
 }
@@ -467,7 +515,7 @@ void test_run_wait_stop_smoke() {
   bin_dir = bin_dir.substr(0, bin_dir.find_last_of('/'));
   const std::string service_bin = bin_dir + "/dftracer_service";
 
-  const std::string log_prefix = "/tmp/test_dftracer_run_wait_ctest";
+  const std::string log_prefix = tmp_prefix("test_dftracer_run_wait_ctest");
   setenv("DFTRACER_ENABLE", "1", 1);
   setenv("DFTRACER_LOG_FILE", log_prefix.c_str(), 1);
   setenv("DFTRACER_TRACE_INTERVAL_MS", "200", 1);
@@ -501,10 +549,6 @@ void test_run_wait_stop_smoke() {
   std::ifstream trace(trace_path, std::ios::binary | std::ios::ate);
   DFT_CHECK(trace.good());
   DFT_CHECK(trace.tellg() > 0);
-
-  unsetenv("DFTRACER_ENABLE");
-  unsetenv("DFTRACER_LOG_FILE");
-  unsetenv("DFTRACER_TRACE_INTERVAL_MS");
 }
 
 // In producer/consumer mode the service reserves the whole ring soon after it
@@ -519,7 +563,7 @@ void test_ring_reserved_at_start() {
   bin_dir = bin_dir.substr(0, bin_dir.find_last_of('/'));
   const std::string service_bin = bin_dir + "/dftracer_service";
 
-  const std::string log_prefix = "/tmp/test_dftracer_ring_reserve_ctest";
+  const std::string log_prefix = tmp_prefix("test_dftracer_ring_reserve_ctest");
   const std::string shm = "/test-dftracer-ring-reserve";
   setenv("DFTRACER_ENABLE", "1", 1);
   setenv("DFTRACER_ENABLE_PC_MODE", "1", 1);
@@ -541,13 +585,6 @@ void test_ring_reserved_at_start() {
   }
   DFT_CHECK(reserved >= ring);
   DFT_CHECK(system((service_bin + " stop").c_str()) == 0);
-
-  unsetenv("DFTRACER_ENABLE");
-  unsetenv("DFTRACER_ENABLE_PC_MODE");
-  unsetenv("DFTRACER_LOG_FILE");
-  unsetenv("DFTRACER_SERVICE_SHM");
-  unsetenv("DFTRACER_PC_BLOCKS");
-  unsetenv("DFTRACER_PC_BLOCK_SIZE");
 }
 
 int main() {

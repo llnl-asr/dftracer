@@ -526,13 +526,13 @@ Kind                Payload
 ``COUNTER``         index, type, start, tid, name, category, metadata
 ``METADATA``        name, value, record name, type, tid, is_string
 ``RECORD``          record name, fields, type, tid
-``GOODBYE``         final index, dropped-event count
+``GOODBYE``         i32 index (the service reads it only for the size check)
 ``COMPACT``         one DATA event in the compact form of
                     ``core/buffer/compact_event.h``: an event of an interceptor
                     whose args all have fixed keys is sent as a shape id and
                     its values. It refers to the strings, values and shapes of
                     the ``COMPACT`` records before it in its block, so the
-                    service decodes a block's records in order (ABI 6)
+                    service decodes a block's records in order (ring ABI version 1)
 ``PAD``             none (block tail filler)
 ==================  ============================================================
 
@@ -758,8 +758,8 @@ Classes (``service/pipeline/``)
 
    class Stream {                           // one per client process
     public:
-     void on_hello(const HelloRecord&);     // builds LocalBufferManager(components)
-     LocalBufferManager& buffer();
+     void on_hello(const HelloRecord&);     // builds the lane's LaneBuffer
+     LaneBuffer& buffer();
      std::deque<Slice>& pending();          // bounded FIFO between S1 and S2, block-ordered
      bool busy;                             // an S2 task is in flight for this stream
      void on_goodbye(const GoodbyeRecord&); // flush aggregates, emit per-stream summary

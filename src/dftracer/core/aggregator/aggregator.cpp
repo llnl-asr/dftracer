@@ -94,6 +94,15 @@ bool Aggregator::should_aggregate(const ipc::DecodedEvent& event,
   return inclusion_rules_.satisfies(&key) && !exclusion_rules_.satisfies(&key);
 }
 
+bool Aggregator::wants(const ipc::DecodedEvent& event, const char* app_name,
+                       const int* rank) const {
+  return event.category != "dftracer" &&
+         (event.head.flags & SHM_EVENT_NO_AGGREGATE) == 0 &&
+         (config_->aggregation_type !=
+              AggregationType::AGGREGATION_TYPE_SELECTIVE ||
+          should_aggregate(event, app_name, rank));
+}
+
 bool Aggregator::aggregate(const ipc::DecodedEvent& event) {
   const bool first = is_first_;
   is_first_ = false;
@@ -112,21 +121,9 @@ bool Aggregator::aggregate(const ipc::DecodedEvent& event) {
   for (const ipc::DecodedValue& v : event.values) {
     if (v.mtype != MetadataType::MT_VALUE) continue;
     Number n;
-    switch (v.tag) {
-      case SHM_VALUE_INT:
-        n.i = v.i;
-        break;
-      case SHM_VALUE_UINT:
-        n.u = v.u;
-        break;
-      case SHM_VALUE_DOUBLE:
-        n.d = v.d;
-        break;
-      default:
-        // A string value only counts towards the row's dft_cnt; nothing else
-        // of it is written.
-        continue;
-    }
+    // A string value only counts towards the row's dft_cnt; nothing else of
+    // it is written.
+    if (!packed_json::to_number(v, n)) continue;
     fold(b.values, names_.intern(v.key), v.tag, n);
   }
   return !first && previous != last_interval_;
@@ -144,20 +141,8 @@ Aggregator::Bucket& Aggregator::bucket(Interval& interval,
     f.key = names_.intern(v.key);
     f.tag = v.tag;
     f.v.u = 0;
-    switch (v.tag) {
-      case SHM_VALUE_INT:
-        f.v.i = v.i;
-        break;
-      case SHM_VALUE_UINT:
-        f.v.u = v.u;
-        break;
-      case SHM_VALUE_DOUBLE:
-        f.v.d = v.d;
-        break;
-      default:
-        f.v.u = interval.key_strings.intern(v.s);
-        break;
-    }
+    if (!packed_json::to_number(v, f.v))
+      f.v.u = interval.key_strings.intern(v.s);
     scratch_.push_back(f);
   }
   std::sort(scratch_.begin(), scratch_.end(),
@@ -263,14 +248,6 @@ void Aggregator::write_row(char* out, size_t& size, const Interval& interval,
                            ProcessID process_id, HashType hostname_hash) const {
   // The bucket's keys, its dft_cnt, and per value either `key` (one event) or
   // key_sum, key_min and key_max.
-  const auto number = [](packed_json::Line& w, uint8_t tag, Number n) {
-    if (tag == SHM_VALUE_INT)
-      w.i64(n.i);
-    else if (tag == SHM_VALUE_UINT)
-      w.u64(n.u);
-    else
-      w.f64(n.d);
-  };
   packed_json::Line w(out);
   packed_json::series_head(w, names_.at(b.name), names_.at(b.category), b.type,
                            TracePhaseType::TRACE_PHASE_AGGREGATED, ts,
@@ -288,7 +265,7 @@ void Aggregator::write_row(char* out, size_t& size, const Interval& interval,
     } else if (f.tag == SHM_VALUE_RAW_JSON) {
       w.raw(interval.key_strings.at(static_cast<uint32_t>(f.v.u)));
     } else {
-      number(w, f.tag, f.v);
+      packed_json::number(w, f.tag, f.v);
     }
   }
   w.raw(",\"" DFTRACER_AGGREGATOR_COUNT "\":");
@@ -299,7 +276,7 @@ void Aggregator::write_row(char* out, size_t& size, const Interval& interval,
       w.raw(",\"");
       w.escaped(key);
       w.raw("\":");
-      number(w, a.tag, a.sum);
+      packed_json::number(w, a.tag, a.sum);
       continue;
     }
     const std::pair<const char*, Number> parts[] = {
@@ -309,7 +286,7 @@ void Aggregator::write_row(char* out, size_t& size, const Interval& interval,
       w.escaped(key);
       w.raw(suffix);
       w.raw("\":");
-      number(w, a.tag, n);
+      packed_json::number(w, a.tag, n);
     }
   }
   w.raw("}}");

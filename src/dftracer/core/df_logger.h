@@ -198,6 +198,10 @@ class DFTLogger {
     throw_error = config->throw_error;
     min_duration_ns_ = config->min_duration_ns;
     dftracer::TscClock::start(config->tsc_clock);
+    DFTRACER_LOG_INFO(
+        "timestamps from %s (DFTRACER_TSC_CLOCK=%s)",
+        dftracer::TscClock::enabled() ? "the TSC" : "clock_gettime",
+        to_string(config->tsc_clock).c_str());
     switch (config->time_metric) {
       case TimeMetricType::TIME_METRIC_NS:
         ns_per_unit_ = 1;
@@ -558,7 +562,7 @@ class DFTLogger {
               start_time, duration, args);
   }
 
-  // log() of a fused interceptor (DFT_FAST_END) with the `info->count`
+  // log() of a site interceptor (DFT_SITE_END) with the `info->count`
   // entries at `args`. The buffer takes them as they are once the site's
   // shape is in its block; only otherwise is an EventDraft built.
   inline void log_site(const dftracer::SiteInfo& info,
@@ -939,10 +943,8 @@ class DFTLogger {
   }                                                                       \
   DFTRACER_PROFILE_END(dft_profile_start,                                 \
                        DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), false);
-#define DFT_LOGGER_LOG_END(name, site_fixes_name)                         \
+#define DFT_LOGGER_LOG_END(name)                                          \
   if (trace) {                                                            \
-    if (!(site_fixes_name) && metadata != nullptr)                        \
-      metadata->set_site(nullptr);                                        \
     DFTRACER_PROFILE_BEGIN(dft_profile_end);                              \
     TimeResolution end_time = this->logger->get_time();                   \
     this->logger->log(std::string_view(name), std::string_view(CATEGORY), \
@@ -952,12 +954,12 @@ class DFTLogger {
     DFTRACER_PROFILE_END(dft_profile_end,                                 \
                          DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), true);     \
   }
-// A fused interceptor: no EventDraft while the real call runs. Its args,
-// each DFT_ARG(name, MetadataType), go to DFT_FAST_END after the call, in the
-// order DFT_LOGGER_UPDATE_TYPE would set them, after the fhash. The args are
-// numbers and the fhash has a fixed length, so the site's SiteInfo is built
+// A site interceptor (DFT_SITE_*): no EventDraft while the real call runs. Its
+// args, each DFT_ARG(name, MetadataType), go to DFT_SITE_END after the call, in
+// the order DFT_LOGGER_UPDATE_TYPE would set them, after the fhash. The args
+// are numbers and the fhash has a fixed length, so the site's SiteInfo is built
 // once.
-#define DFT_FAST_START(entity)                               \
+#define DFT_SITE_START(entity)                               \
   DFTRACER_PROFILE_BEGIN(dft_profile_start);                 \
   DFT_TRACER_ENTER(entity);                                  \
   if (trace) {                                               \
@@ -970,7 +972,7 @@ class DFTLogger {
                               DFTRACER_PROFILE_CAPTURE(TRACE_TYPE))
 #define DFT_ARG(value, type) \
   dftracer::EventDraft::number(dftracer::StaticKey{#value}, value, type)
-#define DFT_FAST_END(...)                                                 \
+#define DFT_SITE_END(...)                                                 \
   if (trace) {                                                            \
     DFTRACER_PROFILE_BEGIN(dft_profile_end);                              \
     TimeResolution end_time = this->logger->get_time();                   \
@@ -990,8 +992,6 @@ class DFTLogger {
                          DFTRACER_PROFILE_CAPTURE(TRACE_TYPE), true);     \
   }
 
-// A name other than __FUNCTION__ is not fixed by the site.
-#define DFT_LOGGER_END_AS(name) DFT_LOGGER_LOG_END(name, false)
-#define DFT_LOGGER_END() DFT_LOGGER_LOG_END(__FUNCTION__, true)
+#define DFT_LOGGER_END() DFT_LOGGER_LOG_END(__FUNCTION__)
 
 #endif  // DFTRACER_GENERIC_LOGGER_H

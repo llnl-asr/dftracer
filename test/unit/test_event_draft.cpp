@@ -108,7 +108,7 @@ int main() {
   DFT_CHECK(args[41].value == "41");
 
   d.reset();
-  DFT_CHECK(d.empty() && d.size() == 0);
+  DFT_CHECK(d.count() == 0 && d.size() == 0);
   d.set("a", 1);
   DFT_CHECK((keys_of(d) == std::vector<std::string>{"a"}));
   return 0;

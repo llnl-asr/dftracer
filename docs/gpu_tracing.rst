@@ -124,8 +124,8 @@ Clock alignment
 ***************
 
 CUPTI timestamps are nanoseconds on CUPTI's own monotonic clock, whereas
-DFTracer's events come from ``gettimeofday`` rendered in the configured
-``time_metric`` unit. The two are not comparable as-is.
+DFTracer's events come from the realtime clock (the TSC when
+``DFTRACER_TSC_CLOCK`` is on) rendered in the configured ``time_metric`` unit. The two are not comparable as-is.
 
 The CUPTI backend therefore rebases every record: it scales CUPTI nanoseconds
 into the active ``time_metric`` unit and adds a fixed offset sampled once by

@@ -1,6 +1,7 @@
 #ifndef DFTRACER_UTILS_TSC_CLOCK_H
 #define DFTRACER_UTILS_TSC_CLOCK_H
 
+#include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/utils/posix_bypass.h>
 #include <fcntl.h>
 #include <time.h>
@@ -19,8 +20,7 @@ namespace dftracer {
 /**
  * Wall-clock time in microseconds, read from the CPU's time-stamp counter
  * when the kernel itself uses it as its clock source (so it runs at a fixed
- * rate and agrees across cores), else from the realtime clock. A counter read
- * takes about a third of a clock_gettime call.
+ * rate and agrees across cores), else from the realtime clock.
  *
  * Each thread anchors to CLOCK_REALTIME once per millisecond of counter time,
  * so an error in the counter rate never adds up past that window. The rate is
@@ -31,11 +31,15 @@ namespace dftracer {
  */
 class TscClock {
  public:
-  /** Uses the counter when `wanted` and the kernel's clock source is tsc.
-   * Call once, before the threads that read the clock start. */
-  static void start(bool wanted) {
+  /** Uses the counter with TSC_CLOCK_AUTO when the kernel's clock source is
+   * tsc, and with TSC_CLOCK_FORCE on any x86 CPU (for tests, or when the
+   * counter is known to be stable). Call once, before the threads that read
+   * the clock start. */
+  static void start(TscClockMode mode) {
     rate_.store(0, std::memory_order_relaxed);
-    enabled_ = wanted && kernel_uses_tsc();
+    enabled_ = mode == TscClockMode::TSC_CLOCK_FORCE
+                   ? supported()
+                   : mode == TscClockMode::TSC_CLOCK_AUTO && kernel_uses_tsc();
 #ifdef DFTRACER_TSC_CLOCK_SUPPORTED
     if (enabled_) start_ns_ = sample(&start_tsc_);
 #endif
@@ -122,6 +126,14 @@ class TscClock {
     return t;
   }
 #endif
+
+  static constexpr bool supported() {
+#ifdef DFTRACER_TSC_CLOCK_SUPPORTED
+    return true;
+#else
+    return false;
+#endif
+  }
 
   static bool kernel_uses_tsc() {
 #ifdef DFTRACER_TSC_CLOCK_SUPPORTED

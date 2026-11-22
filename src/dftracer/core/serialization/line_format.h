@@ -106,14 +106,17 @@ inline void escaped(W& w, std::string_view s) {
   if (run < s.size()) w.raw(s.substr(run));
 }
 
+/** Appends to a std::string; the writer of the text that is built once. */
+struct Text {
+  std::string& text;
+  void raw(std::string_view v) { text.append(v.data(), v.size()); }
+  void escaped(std::string_view v) { line_format::escaped(*this, v); }
+};
+
 /** `s` as a JSON string literal, quotes included. */
 inline std::string quoted(std::string_view s) {
-  struct Out {
-    std::string& text;
-    void raw(std::string_view v) { text.append(v.data(), v.size()); }
-  };
   std::string text = "\"";
-  Out out{text};
+  Text out{text};
   escaped(out, s);
   text += '"';
   return text;

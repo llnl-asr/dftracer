@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <ostream>
 #include <string_view>
 #include <type_traits>
 #include <variant>
@@ -15,7 +14,7 @@
 /**
  * The args of an event or the fields of a record, written as "key":value,...
  * straight from its Metadata into whatever holds the line: the trace buffer
- * (packed_json::Line), the ring (ipc::encode_metadata) or a stream. A writer
+ * (packed_json::Line) or the ring (ipc::encode_metadata). A writer
  * has raw(std::string_view), escaped(std::string_view), i64(int64_t),
  * u64(uint64_t) and f64(double).
  *
@@ -24,20 +23,6 @@
  */
 namespace dftracer {
 namespace metadata_json {
-
-/** Writer over a std::ostream. */
-class Stream {
- public:
-  explicit Stream(std::ostream& out) : out_(out) {}
-  void raw(std::string_view s) { out_.write(s.data(), s.size()); }
-  void escaped(std::string_view s) { line_format::escaped(*this, s); }
-  void i64(int64_t v) { out_ << v; }
-  void u64(uint64_t v) { out_ << v; }
-  void f64(double v) { out_ << v; }
-
- private:
-  std::ostream& out_;
-};
 
 /** A JSON string literal. */
 template <typename W>
