@@ -8,6 +8,7 @@
 #include <dftracer/core/common/datastructure.h>
 #include <dftracer/core/common/module_hooks.h>
 #include <dftracer/core/common/singleton.h>
+#include <dftracer/core/serialization/line_format.h>
 #include <dftracer/core/utils/posix_bypass.h>
 #include <fcntl.h>
 #include <libgen.h>
@@ -141,6 +142,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
       gotcha_priority(1),
       logger_level(cpplogger::CPP_LOGGER_ERROR),
       time_metric(TimeMetricType::TIME_METRIC_US),
+      tsc_clock(TscClockMode::TSC_CLOCK_AUTO),
       io(true),
       posix(true),
       stdio(true),
@@ -177,6 +179,7 @@ dftracer::ConfigurationManager::ConfigurationManager()
       pc_flush_ms(DFT_SHM_DEFAULT_FLUSH_MS),
       pc_compression_level(DFT_SHM_DEFAULT_COMPRESSION_LEVEL),
       pc_rollover_mb(DFT_SHM_DEFAULT_ROLLOVER_MB),
+      pc_service_cpus("auto"),
       aggregation_inclusion_rules(),
       aggregation_exclusion_rules() {
   const char* env_conf = getenv(DFTRACER_CONFIGURATION);
@@ -437,6 +440,12 @@ dftracer::ConfigurationManager::ConfigurationManager()
   }
   DFTRACER_LOG_DEBUG("ConfigurationManager.time_metric %s",
                      to_string(this->time_metric).c_str());
+  const char* env_tsc_clock = getenv(DFTRACER_TSC_CLOCK);
+  if (env_tsc_clock != nullptr) {
+    convert(env_tsc_clock, this->tsc_clock);
+  }
+  DFTRACER_LOG_DEBUG("ConfigurationManager.tsc_clock %s",
+                     to_string(this->tsc_clock).c_str());
   const char* env_enable = getenv(DFTRACER_ENABLE);
   if (env_flag(env_enable)) {
     this->enable = true;
@@ -512,6 +521,8 @@ dftracer::ConfigurationManager::ConfigurationManager()
       if (env_pc_rollover != nullptr)
         this->pc_rollover_mb = strtod(env_pc_rollover, nullptr);
       if (!(this->pc_rollover_mb >= 0)) this->pc_rollover_mb = 0;
+      const char* env_pc_cpus = getenv(DFTRACER_PC_SERVICE_CPUS);
+      if (env_pc_cpus != nullptr) this->pc_service_cpus = env_pc_cpus;
       DFTRACER_LOG_DEBUG(
           "ENV ConfigurationManager.pc_mode service_shm %s blocks %u x %u "
           "consumers %u..%u",
@@ -846,32 +857,6 @@ void dftracer::ConfigurationManager::derive_configurations() {
                      "");
 }
 
-namespace {
-// Minimal JSON string escaping for arbitrary runtime values (e.g. a log file
-// path) that, unlike the fixed enum-derived strings elsewhere in this
-// function, aren't guaranteed free of quote/backslash/control characters.
-std::string json_escape(const std::string& s) {
-  std::string out;
-  out.reserve(s.size());
-  for (char c : s) {
-    switch (c) {
-      case '"':
-        out += "\\\"";
-        break;
-      case '\\':
-        out += "\\\\";
-        break;
-      case '\n':
-        out += "\\n";
-        break;
-      default:
-        out += c;
-    }
-  }
-  return out;
-}
-}  // namespace
-
 void dftracer::ConfigurationManager::populate_metadata(
     dftracer::Metadata* meta, bool bind, const std::string& log_file) const {
   std::ostringstream cfg;
@@ -902,8 +887,7 @@ void dftracer::ConfigurationManager::populate_metadata(
       // extension) — both runtime facts from DFTracerCore, not settable via
       // env/YAML, but important for reconstructing how a trace was produced.
       << "\"bind\":" << (int)bind << ","
-      << "\"log_file\":\"" << json_escape(log_file) << "\""
-      << "}";
+      << "\"log_file\":" << line_format::quoted(log_file) << "}";
   meta->insert_or_assign("cfg", dftracer::RawJson(cfg.str()));
 
   // Layer availability: what this build supports, regardless of whether it

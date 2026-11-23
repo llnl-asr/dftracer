@@ -95,7 +95,9 @@ function(dftracer_bundle_link_items out_items out_archives dir)
   set(_items "")
   set(_archives "")
   foreach(_item IN LISTS ARGN)
-    if(_item MATCHES "\\.a$" AND EXISTS "${_item}")
+    # An archive this build makes (ISA-L) does not exist yet at configure time.
+    string(FIND "${_item}" "${CMAKE_BINARY_DIR}/" _in_build)
+    if(_item MATCHES "\\.a$" AND (EXISTS "${_item}" OR _in_build EQUAL 0))
       list(APPEND _archives "${_item}")
       get_filename_component(_name "${_item}" NAME)
       list(APPEND _items "\${DFTRACER_COMPOSE_ROOT}/${dir}/${_name}")
@@ -261,6 +263,10 @@ function(dftracer_add_module)
     # For the libraries' usage requirements (include directories); a static
     # archive's private libraries are linked into whatever links it.
     target_link_libraries(${_target} PRIVATE ${M_LIBRARIES})
+    # Module sources include the core headers, which include ISA-L's.
+    if(TARGET dftracer_isal)
+      add_dependencies(${_target} dftracer_isal)
+    endif()
     if(_suffix STREQUAL "")
       target_compile_definitions(${_target} PRIVATE DFTRACER_LOGGER_LEVEL_ERROR)
     endif()

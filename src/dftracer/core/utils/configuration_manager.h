@@ -53,6 +53,7 @@ class ConfigurationManager {
   int gotcha_priority;
   cpplogger::LoggerType logger_level;
   TimeMetricType time_metric;
+  TscClockMode tsc_clock;
   bool io;
   bool posix;
   bool stdio;
@@ -104,6 +105,9 @@ class ConfigurationManager {
   // Compressed MiB after which the node trace rolls over to a new file
   // (fractions allowed; 0: never).
   double pc_rollover_mb;
+  // Where the service's threads run: "auto" (off the clients' CPUs), "off"
+  // or a CPU list.
+  std::string pc_service_cpus;
   std::vector<std::string> aggregation_inclusion_rules;
   std::vector<std::string> aggregation_exclusion_rules;
   ConfigurationManager();

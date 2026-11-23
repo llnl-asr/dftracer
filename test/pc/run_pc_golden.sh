@@ -11,6 +11,7 @@ BUILD=${1:?dftracer build dir}
 DEPS_LIB=${2:?lib dir holding brahma, gotcha, cpp-logger, libuv}
 OUT=${3:?output dir}
 SRC_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+. "$SRC_ROOT/test/pc/service_lib.sh"
 CC=${CC:-gcc}
 THREADS=${THREADS:-4}
 OPS=${OPS:-20000}
@@ -33,21 +34,13 @@ for agg in 0 1; do
     $APP >/dev/null
   # Aggregation is the service's to apply: it gets the same setting.
   # Service and application share one log_file.
-  env DFTRACER_ENABLE=1 DFTRACER_ENABLE_PC_MODE=1 \
-    DFTRACER_ENABLE_AGGREGATION=$agg DFTRACER_LOG_FILE="$dir/service/app" \
-    "$BUILD/bin/dftracer_service" start >/dev/null
-  for _ in $(seq 100); do
-    [ -s "/dev/shm$DFTRACER_SERVICE_SHM" ] && break
-    sleep 0.1
-  done
+  pc_service_start "$BUILD/bin/dftracer_service" DFTRACER_ENABLE=1 \
+    DFTRACER_ENABLE_PC_MODE=1 DFTRACER_ENABLE_AGGREGATION=$agg \
+    DFTRACER_LOG_FILE="$dir/service/app" >/dev/null
   sleep 0.5
   env $COMMON DFTRACER_ENABLE_AGGREGATION=$agg DFTRACER_ENABLE_PC_MODE=1 \
     DFTRACER_LOG_FILE="$dir/service/app" $APP >/dev/null
-  DFTRACER_ENABLE=1 DFTRACER_LOG_FILE="$dir/service/app" "$BUILD/bin/dftracer_service" stop >/dev/null
-  for _ in $(seq 100); do
-    [ -e "/dev/shm$DFTRACER_SERVICE_SHM" ] || break
-    sleep 0.1
-  done
+  pc_service_stop "$BUILD/bin/dftracer_service" "$dir/service/app" 100 >/dev/null
   grep -h "drained" "$dir"/service/app_*.log || true
   echo "aggregation=$agg:"
   python3 "$SRC_ROOT/test/pc/check_gzip_members.py" --min-members 2 \

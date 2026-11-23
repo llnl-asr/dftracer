@@ -9,7 +9,9 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <string>
+#include <string_view>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CUPTI activity record structs are versioned: NVIDIA appends a new numbered
@@ -143,13 +145,13 @@ namespace dftracer {
 // ── Time base alignment ─────────────────────────────────────────────────────
 //
 // CUPTI activity timestamps are nanoseconds on CUPTI's own monotonic clock,
-// whereas DFTLogger::get_time() is gettimeofday() rendered in the configured
-// time_metric unit.  Scale CUPTI ns into that unit, then add a fixed offset
-// sampled once by reading both clocks back to back.  This is exactly what the
-// HIP/rocprofiler backend does, so CUDA, HIP and CPU-side events all share one
-// timeline.
-// Nanoseconds per one unit of the configured time metric: ns -> 1, us -> 1000,
-// ms -> 1e6, s -> 1e9. Integer, so the conversion never goes through a double.
+// whereas DFTLogger::get_time() reads the realtime clock (or the TSC when
+// DFTRACER_TSC_CLOCK is on) rendered in the configured time_metric unit.  Scale
+// CUPTI ns into that unit, then add a fixed offset sampled once by reading both
+// clocks back to back.  This is exactly what the HIP/rocprofiler backend does,
+// so CUDA, HIP and CPU-side events all share one timeline. Nanoseconds per one
+// unit of the configured time metric: ns -> 1, us -> 1000, ms -> 1e6, s -> 1e9.
+// Integer, so the conversion never goes through a double.
 static uint64_t cupti_ns_per_time_metric_unit() {
   auto config =
       dftracer::Singleton<dftracer::ConfigurationManager>::get_instance();
@@ -181,12 +183,12 @@ TimeResolution CUDAFunction::transform_timestamp(uint64_t timestamp) {
     // unresolved and retry on the next record.
     if (cuptiGetTimestamp(&cupti_now) == CUPTI_SUCCESS && cupti_now != 0) {
       // SIGNED, and this is the whole bug. CUPTI's clock is the SAME epoch as
-      // gettimeofday() here (measured: they agree to ~1us), so this offset is
-      // ~0 and is as likely to be negative as positive. Computed in an unsigned
-      // type it wrapped to ~2^64; the old code then added that to a double and
-      // converted back, overflowing the unsigned range so EVERY timestamp after
-      // the offset resolved came out as exactly 0. Only the handful of events
-      // logged before resolution had correct times.
+      // the realtime clock here (measured: they agree to ~1us), so this offset
+      // is ~0 and is as likely to be negative as positive. Computed in an
+      // unsigned type it wrapped to ~2^64; the old code then added that to a
+      // double and converted back, overflowing the unsigned range so EVERY
+      // timestamp after the offset resolved came out as exactly 0. Only the
+      // handful of events logged before resolution had correct times.
       time_diff =
           (int64_t)logger->get_time() - (int64_t)cupti_ns_to_metric(cupti_now);
       time_diff_resolved = true;
@@ -290,6 +292,21 @@ static std::string truncate_name(const char *name, const char *fallback) {
   return result;
 }
 
+static void emit(CUDAFunction &function, std::optional<ThreadID> tid,
+                 std::string_view name, std::string_view category,
+                 uint64_t start, uint64_t end, EventDraft *metadata) {
+  if (tid) {
+    function.logger->log_on(*tid, name, category,
+                            TraceEventType::TRACE_TYPE_CUDA,
+                            function.transform_timestamp(start),
+                            function.transform_time(end, start), metadata);
+  } else {
+    function.logger->log(name, category, TraceEventType::TRACE_TYPE_CUDA,
+                         function.transform_timestamp(start),
+                         function.transform_time(end, start), metadata);
+  }
+}
+
 // ── Record translation ──────────────────────────────────────────────────────
 void CUDAFunction::process_record(CUpti_Activity *record) {
   auto function = dftracer::Singleton<dftracer::CUDAFunction>::get_instance();
@@ -304,24 +321,18 @@ void CUDAFunction::process_record(CUpti_Activity *record) {
       CUpti_CallbackDomain domain =
           is_runtime ? CUPTI_CB_DOMAIN_RUNTIME_API : CUPTI_CB_DOMAIN_DRIVER_API;
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("cbid", (unsigned int)api->cbid);
-      metadata->insert_or_assign("correlation_id",
-                                 (unsigned int)api->correlationId);
-      metadata->insert_or_assign("return_value",
-                                 (unsigned int)api->returnValue);
-      metadata->insert_or_assign("pid", (unsigned int)api->processId);
-      metadata->insert_or_assign("tid", (ThreadID)api->threadId);
+      DraftScope draft(true);
+      EventDraft *metadata = draft.get();
+      metadata->set("cbid", (unsigned int)api->cbid);
+      metadata->set("correlation_id", (unsigned int)api->correlationId);
+      metadata->set("return_value", (unsigned int)api->returnValue);
+      metadata->set("pid", (unsigned int)api->processId);
+      const ThreadID event_tid = static_cast<ThreadID>(api->threadId);
 
       std::string event_name = api_callback_name(domain, api->cbid);
-      function->logger->enter_event();
-      function->logger->log(event_name.c_str(),
-                            is_runtime ? "CUDA_RUNTIME_API" : "CUDA_DRIVER_API",
-                            TraceEventType::TRACE_TYPE_CUDA,
-                            function->transform_timestamp(api->start),
-                            function->transform_time(api->end, api->start),
-                            metadata);
-      function->logger->exit_event();
+      emit(*function, event_tid, event_name,
+           is_runtime ? "CUDA_RUNTIME_API" : "CUDA_DRIVER_API", api->start,
+           api->end, metadata);
       break;
     }
 
@@ -330,35 +341,29 @@ void CUDAFunction::process_record(CUpti_Activity *record) {
     case CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL: {
       auto *kernel = reinterpret_cast<DFT_CUPTI_KERNEL_T *>(record);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("device_id", (unsigned int)kernel->deviceId);
-      metadata->insert_or_assign("context_id", (unsigned int)kernel->contextId);
-      metadata->insert_or_assign("stream_id", (unsigned int)kernel->streamId);
-      metadata->insert_or_assign("correlation_id",
-                                 (unsigned int)kernel->correlationId);
-      metadata->insert_or_assign("grid_id", (long)kernel->gridId);
-      metadata->insert_or_assign("grid_x", (int)kernel->gridX);
-      metadata->insert_or_assign("grid_y", (int)kernel->gridY);
-      metadata->insert_or_assign("grid_z", (int)kernel->gridZ);
-      metadata->insert_or_assign("block_x", (int)kernel->blockX);
-      metadata->insert_or_assign("block_y", (int)kernel->blockY);
-      metadata->insert_or_assign("block_z", (int)kernel->blockZ);
-      metadata->insert_or_assign("static_shared_memory",
-                                 (int)kernel->staticSharedMemory);
-      metadata->insert_or_assign("dynamic_shared_memory",
-                                 (int)kernel->dynamicSharedMemory);
-      metadata->insert_or_assign("registers_per_thread",
-                                 (unsigned int)kernel->registersPerThread);
-      metadata->insert_or_assign("local_memory_per_thread",
-                                 (unsigned int)kernel->localMemoryPerThread);
+      DraftScope draft(true);
+      EventDraft *metadata = draft.get();
+      metadata->set("device_id", (unsigned int)kernel->deviceId);
+      metadata->set("context_id", (unsigned int)kernel->contextId);
+      metadata->set("stream_id", (unsigned int)kernel->streamId);
+      metadata->set("correlation_id", (unsigned int)kernel->correlationId);
+      metadata->set("grid_id", (long)kernel->gridId);
+      metadata->set("grid_x", (int)kernel->gridX);
+      metadata->set("grid_y", (int)kernel->gridY);
+      metadata->set("grid_z", (int)kernel->gridZ);
+      metadata->set("block_x", (int)kernel->blockX);
+      metadata->set("block_y", (int)kernel->blockY);
+      metadata->set("block_z", (int)kernel->blockZ);
+      metadata->set("static_shared_memory", (int)kernel->staticSharedMemory);
+      metadata->set("dynamic_shared_memory", (int)kernel->dynamicSharedMemory);
+      metadata->set("registers_per_thread",
+                    (unsigned int)kernel->registersPerThread);
+      metadata->set("local_memory_per_thread",
+                    (unsigned int)kernel->localMemoryPerThread);
 
       std::string event_name = truncate_name(kernel->name, "kernel");
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), "CUDA_KERNEL", TraceEventType::TRACE_TYPE_CUDA,
-          function->transform_timestamp(kernel->start),
-          function->transform_time(kernel->end, kernel->start), metadata);
-      function->logger->exit_event();
+      emit(*function, std::nullopt, event_name, "CUDA_KERNEL", kernel->start,
+           kernel->end, metadata);
       break;
     }
 
@@ -366,29 +371,19 @@ void CUDAFunction::process_record(CUpti_Activity *record) {
     case CUPTI_ACTIVITY_KIND_MEMCPY: {
       auto *memcpy_rec = reinterpret_cast<DFT_CUPTI_MEMCPY_T *>(record);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("device_id",
-                                 (unsigned int)memcpy_rec->deviceId);
-      metadata->insert_or_assign("context_id",
-                                 (unsigned int)memcpy_rec->contextId);
-      metadata->insert_or_assign("stream_id",
-                                 (unsigned int)memcpy_rec->streamId);
-      metadata->insert_or_assign("correlation_id",
-                                 (unsigned int)memcpy_rec->correlationId);
-      metadata->insert_or_assign("bytes", (unsigned long)memcpy_rec->bytes);
-      metadata->insert_or_assign("copy_kind",
-                                 (unsigned int)memcpy_rec->copyKind);
-      metadata->insert_or_assign("src_kind", (unsigned int)memcpy_rec->srcKind);
-      metadata->insert_or_assign("dst_kind", (unsigned int)memcpy_rec->dstKind);
+      DraftScope draft(true);
+      EventDraft *metadata = draft.get();
+      metadata->set("device_id", (unsigned int)memcpy_rec->deviceId);
+      metadata->set("context_id", (unsigned int)memcpy_rec->contextId);
+      metadata->set("stream_id", (unsigned int)memcpy_rec->streamId);
+      metadata->set("correlation_id", (unsigned int)memcpy_rec->correlationId);
+      metadata->set("bytes", (unsigned long)memcpy_rec->bytes);
+      metadata->set("copy_kind", (unsigned int)memcpy_rec->copyKind);
+      metadata->set("src_kind", (unsigned int)memcpy_rec->srcKind);
+      metadata->set("dst_kind", (unsigned int)memcpy_rec->dstKind);
 
-      function->logger->enter_event();
-      function->logger->log(
-          memcpy_kind_name(memcpy_rec->copyKind), "CUDA_MEMCPY",
-          TraceEventType::TRACE_TYPE_CUDA,
-          function->transform_timestamp(memcpy_rec->start),
-          function->transform_time(memcpy_rec->end, memcpy_rec->start),
-          metadata);
-      function->logger->exit_event();
+      emit(*function, std::nullopt, memcpy_kind_name(memcpy_rec->copyKind),
+           "CUDA_MEMCPY", memcpy_rec->start, memcpy_rec->end, metadata);
       break;
     }
 
@@ -397,29 +392,21 @@ void CUDAFunction::process_record(CUpti_Activity *record) {
     case CUPTI_ACTIVITY_KIND_MEMCPY2: {
       auto *p2p = reinterpret_cast<DFT_CUPTI_MEMCPY_P2P_T *>(record);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("device_id", (unsigned int)p2p->deviceId);
-      metadata->insert_or_assign("context_id", (unsigned int)p2p->contextId);
-      metadata->insert_or_assign("stream_id", (unsigned int)p2p->streamId);
-      metadata->insert_or_assign("correlation_id",
-                                 (unsigned int)p2p->correlationId);
-      metadata->insert_or_assign("bytes", (unsigned long)p2p->bytes);
-      metadata->insert_or_assign("copy_kind", (unsigned int)p2p->copyKind);
-      metadata->insert_or_assign("src_device_id",
-                                 (unsigned int)p2p->srcDeviceId);
-      metadata->insert_or_assign("dst_device_id",
-                                 (unsigned int)p2p->dstDeviceId);
-      metadata->insert_or_assign("src_context_id",
-                                 (unsigned int)p2p->srcContextId);
-      metadata->insert_or_assign("dst_context_id",
-                                 (unsigned int)p2p->dstContextId);
+      DraftScope draft(true);
+      EventDraft *metadata = draft.get();
+      metadata->set("device_id", (unsigned int)p2p->deviceId);
+      metadata->set("context_id", (unsigned int)p2p->contextId);
+      metadata->set("stream_id", (unsigned int)p2p->streamId);
+      metadata->set("correlation_id", (unsigned int)p2p->correlationId);
+      metadata->set("bytes", (unsigned long)p2p->bytes);
+      metadata->set("copy_kind", (unsigned int)p2p->copyKind);
+      metadata->set("src_device_id", (unsigned int)p2p->srcDeviceId);
+      metadata->set("dst_device_id", (unsigned int)p2p->dstDeviceId);
+      metadata->set("src_context_id", (unsigned int)p2p->srcContextId);
+      metadata->set("dst_context_id", (unsigned int)p2p->dstContextId);
 
-      function->logger->enter_event();
-      function->logger->log(
-          "MemcpyPtoP", "CUDA_MEMCPY_P2P", TraceEventType::TRACE_TYPE_CUDA,
-          function->transform_timestamp(p2p->start),
-          function->transform_time(p2p->end, p2p->start), metadata);
-      function->logger->exit_event();
+      emit(*function, std::nullopt, "MemcpyPtoP", "CUDA_MEMCPY_P2P", p2p->start,
+           p2p->end, metadata);
       break;
     }
 #endif
@@ -428,25 +415,17 @@ void CUDAFunction::process_record(CUpti_Activity *record) {
     case CUPTI_ACTIVITY_KIND_MEMSET: {
       auto *memset_rec = reinterpret_cast<DFT_CUPTI_MEMSET_T *>(record);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("device_id",
-                                 (unsigned int)memset_rec->deviceId);
-      metadata->insert_or_assign("context_id",
-                                 (unsigned int)memset_rec->contextId);
-      metadata->insert_or_assign("stream_id",
-                                 (unsigned int)memset_rec->streamId);
-      metadata->insert_or_assign("correlation_id",
-                                 (unsigned int)memset_rec->correlationId);
-      metadata->insert_or_assign("bytes", (unsigned long)memset_rec->bytes);
-      metadata->insert_or_assign("value", (unsigned int)memset_rec->value);
+      DraftScope draft(true);
+      EventDraft *metadata = draft.get();
+      metadata->set("device_id", (unsigned int)memset_rec->deviceId);
+      metadata->set("context_id", (unsigned int)memset_rec->contextId);
+      metadata->set("stream_id", (unsigned int)memset_rec->streamId);
+      metadata->set("correlation_id", (unsigned int)memset_rec->correlationId);
+      metadata->set("bytes", (unsigned long)memset_rec->bytes);
+      metadata->set("value", (unsigned int)memset_rec->value);
 
-      function->logger->enter_event();
-      function->logger->log(
-          "Memset", "CUDA_MEMSET", TraceEventType::TRACE_TYPE_CUDA,
-          function->transform_timestamp(memset_rec->start),
-          function->transform_time(memset_rec->end, memset_rec->start),
-          metadata);
-      function->logger->exit_event();
+      emit(*function, std::nullopt, "Memset", "CUDA_MEMSET", memset_rec->start,
+           memset_rec->end, metadata);
       break;
     }
 
@@ -455,23 +434,20 @@ void CUDAFunction::process_record(CUpti_Activity *record) {
     case CUPTI_ACTIVITY_KIND_MEMORY2: {
       auto *mem = reinterpret_cast<DFT_CUPTI_MEMORY_T *>(record);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("device_id", (unsigned int)mem->deviceId);
-      metadata->insert_or_assign("context_id", (unsigned int)mem->contextId);
-      metadata->insert_or_assign("stream_id", (unsigned int)mem->streamId);
-      metadata->insert_or_assign("correlation_id",
-                                 (unsigned int)mem->correlationId);
-      metadata->insert_or_assign("bytes", (unsigned long)mem->bytes);
-      metadata->insert_or_assign("address", (unsigned long)mem->address);
-      metadata->insert_or_assign("memory_kind", (unsigned int)mem->memoryKind);
-      metadata->insert_or_assign("pid", (unsigned int)mem->processId);
+      DraftScope draft(true);
+      EventDraft *metadata = draft.get();
+      metadata->set("device_id", (unsigned int)mem->deviceId);
+      metadata->set("context_id", (unsigned int)mem->contextId);
+      metadata->set("stream_id", (unsigned int)mem->streamId);
+      metadata->set("correlation_id", (unsigned int)mem->correlationId);
+      metadata->set("bytes", (unsigned long)mem->bytes);
+      metadata->set("address", (unsigned long)mem->address);
+      metadata->set("memory_kind", (unsigned int)mem->memoryKind);
+      metadata->set("pid", (unsigned int)mem->processId);
 
-      function->logger->enter_event();
-      function->logger->log(memory_operation_name(mem->memoryOperationType),
-                            "CUDA_MEMORY", TraceEventType::TRACE_TYPE_CUDA,
-                            function->transform_timestamp(mem->timestamp), 0,
-                            metadata);
-      function->logger->exit_event();
+      emit(*function, std::nullopt,
+           memory_operation_name(mem->memoryOperationType), "CUDA_MEMORY",
+           mem->timestamp, mem->timestamp, metadata);
       break;
     }
 #endif
@@ -480,21 +456,15 @@ void CUDAFunction::process_record(CUpti_Activity *record) {
     case CUPTI_ACTIVITY_KIND_SYNCHRONIZATION: {
       auto *sync = reinterpret_cast<DFT_CUPTI_SYNC_T *>(record);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("context_id", (unsigned int)sync->contextId);
-      metadata->insert_or_assign("stream_id", (unsigned int)sync->streamId);
-      metadata->insert_or_assign("correlation_id",
-                                 (unsigned int)sync->correlationId);
-      metadata->insert_or_assign("cuda_event_id",
-                                 (unsigned int)sync->cudaEventId);
+      DraftScope draft(true);
+      EventDraft *metadata = draft.get();
+      metadata->set("context_id", (unsigned int)sync->contextId);
+      metadata->set("stream_id", (unsigned int)sync->streamId);
+      metadata->set("correlation_id", (unsigned int)sync->correlationId);
+      metadata->set("cuda_event_id", (unsigned int)sync->cudaEventId);
 
-      function->logger->enter_event();
-      function->logger->log(sync_type_name(sync->type), "CUDA_SYNC",
-                            TraceEventType::TRACE_TYPE_CUDA,
-                            function->transform_timestamp(sync->start),
-                            function->transform_time(sync->end, sync->start),
-                            metadata);
-      function->logger->exit_event();
+      emit(*function, std::nullopt, sync_type_name(sync->type), "CUDA_SYNC",
+           sync->start, sync->end, metadata);
       break;
     }
 
@@ -502,19 +472,13 @@ void CUDAFunction::process_record(CUpti_Activity *record) {
     case CUPTI_ACTIVITY_KIND_OVERHEAD: {
       auto *overhead = reinterpret_cast<DFT_CUPTI_OVERHEAD_T *>(record);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("object_kind",
-                                 (unsigned int)overhead->objectKind);
-      metadata->insert_or_assign("overhead_kind",
-                                 (unsigned int)overhead->overheadKind);
+      DraftScope draft(true);
+      EventDraft *metadata = draft.get();
+      metadata->set("object_kind", (unsigned int)overhead->objectKind);
+      metadata->set("overhead_kind", (unsigned int)overhead->overheadKind);
 
-      function->logger->enter_event();
-      function->logger->log(
-          overhead_kind_name(overhead->overheadKind), "CUDA_OVERHEAD",
-          TraceEventType::TRACE_TYPE_CUDA,
-          function->transform_timestamp(overhead->start),
-          function->transform_time(overhead->end, overhead->start), metadata);
-      function->logger->exit_event();
+      emit(*function, std::nullopt, overhead_kind_name(overhead->overheadKind),
+           "CUDA_OVERHEAD", overhead->start, overhead->end, metadata);
       break;
     }
 
@@ -522,24 +486,20 @@ void CUDAFunction::process_record(CUpti_Activity *record) {
     case CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER: {
       auto *um = reinterpret_cast<DFT_CUPTI_UM_T *>(record);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("counter_kind", (unsigned int)um->counterKind);
-      metadata->insert_or_assign("value", (unsigned long)um->value);
-      metadata->insert_or_assign("address", (unsigned long)um->address);
-      metadata->insert_or_assign("src_id", (unsigned int)um->srcId);
-      metadata->insert_or_assign("dst_id", (unsigned int)um->dstId);
-      metadata->insert_or_assign("stream_id", (unsigned int)um->streamId);
-      metadata->insert_or_assign("pid", (unsigned int)um->processId);
+      DraftScope draft(true);
+      EventDraft *metadata = draft.get();
+      metadata->set("counter_kind", (unsigned int)um->counterKind);
+      metadata->set("value", (unsigned long)um->value);
+      metadata->set("address", (unsigned long)um->address);
+      metadata->set("src_id", (unsigned int)um->srcId);
+      metadata->set("dst_id", (unsigned int)um->dstId);
+      metadata->set("stream_id", (unsigned int)um->streamId);
+      metadata->set("pid", (unsigned int)um->processId);
 
       // Some unified-memory counters report a point in time rather than a
       // span; CUPTI then sets end == start, which yields a zero duration.
-      function->logger->enter_event();
-      function->logger->log("UnifiedMemoryCounter", "CUDA_UNIFIED_MEMORY",
-                            TraceEventType::TRACE_TYPE_CUDA,
-                            function->transform_timestamp(um->start),
-                            function->transform_time(um->end, um->start),
-                            metadata);
-      function->logger->exit_event();
+      emit(*function, std::nullopt, "UnifiedMemoryCounter",
+           "CUDA_UNIFIED_MEMORY", um->start, um->end, metadata);
       break;
     }
 
@@ -548,20 +508,16 @@ void CUDAFunction::process_record(CUpti_Activity *record) {
     case CUPTI_ACTIVITY_KIND_GRAPH_TRACE: {
       auto *graph = reinterpret_cast<DFT_CUPTI_GRAPH_T *>(record);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("graph_id", (unsigned int)graph->graphId);
-      metadata->insert_or_assign("device_id", (unsigned int)graph->deviceId);
-      metadata->insert_or_assign("context_id", (unsigned int)graph->contextId);
-      metadata->insert_or_assign("stream_id", (unsigned int)graph->streamId);
-      metadata->insert_or_assign("correlation_id",
-                                 (unsigned int)graph->correlationId);
+      DraftScope draft(true);
+      EventDraft *metadata = draft.get();
+      metadata->set("graph_id", (unsigned int)graph->graphId);
+      metadata->set("device_id", (unsigned int)graph->deviceId);
+      metadata->set("context_id", (unsigned int)graph->contextId);
+      metadata->set("stream_id", (unsigned int)graph->streamId);
+      metadata->set("correlation_id", (unsigned int)graph->correlationId);
 
-      function->logger->enter_event();
-      function->logger->log(
-          "GraphTrace", "CUDA_GRAPH", TraceEventType::TRACE_TYPE_CUDA,
-          function->transform_timestamp(graph->start),
-          function->transform_time(graph->end, graph->start), metadata);
-      function->logger->exit_event();
+      emit(*function, std::nullopt, "GraphTrace", "CUDA_GRAPH", graph->start,
+           graph->end, metadata);
       break;
     }
 #endif
@@ -570,20 +526,17 @@ void CUDAFunction::process_record(CUpti_Activity *record) {
     case CUPTI_ACTIVITY_KIND_MARKER: {
       auto *marker = reinterpret_cast<CUpti_ActivityMarker2 *>(record);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("marker_id", (unsigned int)marker->id);
-      metadata->insert_or_assign("flags", (unsigned int)marker->flags);
-      metadata->insert_or_assign("object_kind",
-                                 (unsigned int)marker->objectKind);
+      DraftScope draft(true);
+      EventDraft *metadata = draft.get();
+      metadata->set("marker_id", (unsigned int)marker->id);
+      metadata->set("flags", (unsigned int)marker->flags);
+      metadata->set("object_kind", (unsigned int)marker->objectKind);
       if (marker->domain != nullptr)
-        metadata->insert_or_assign("domain", std::string(marker->domain));
+        metadata->set("domain", std::string(marker->domain));
 
       std::string event_name = truncate_name(marker->name, "marker");
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), "CUDA_MARKER", TraceEventType::TRACE_TYPE_CUDA,
-          function->transform_timestamp(marker->timestamp), 0, metadata);
-      function->logger->exit_event();
+      emit(*function, std::nullopt, event_name, "CUDA_MARKER",
+           marker->timestamp, marker->timestamp, metadata);
       break;
     }
 

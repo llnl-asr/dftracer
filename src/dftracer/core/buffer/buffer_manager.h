@@ -2,12 +2,15 @@
 #define DFTRACER_BUFFER_MANAGER_H
 #include <dftracer/core/common/cpp_typedefs.h>
 #include <dftracer/core/common/enumeration.h>
+#include <dftracer/core/common/event_draft.h>
 #include <dftracer/core/common/typedef.h>
 
 #include <atomic>
 #include <memory>
 #include <string>
+#include <string_view>
 namespace dftracer {
+class ServiceBufferManager;
 /**
  * Where a process's events go. Two implementations, chosen once per process
  * by BufferManagerFactory:
@@ -78,12 +81,24 @@ class BufferManager {
 
   virtual int finalize(int index, ProcessID process_id) = 0;
 
-  virtual void log_data_event(int index, ConstEventNameType event_name,
-                              ConstEventNameType category, TraceEventType type,
+  // A data event with the args its caller encoded. Does not take ownership
+  // of `args`, which may be null.
+  virtual void log_data_event(int index, std::string_view event_name,
+                              std::string_view category, TraceEventType type,
                               TimeResolution start_time,
                               TimeResolution duration,
-                              dftracer::Metadata* metadata,
+                              const dftracer::EventDraft* args,
                               ProcessID process_id, ThreadID tid) = 0;
+
+  /**
+   * log_data_event() of `e`. False, with nothing logged, when the manager
+   * needs the EventDraft: the caller then calls log_data_event() with the
+   * same index.
+   */
+  virtual bool log_site_event(const SiteEvent& /*e*/) { return false; }
+
+  /** This manager when it sends events to the pc-mode service, else null. */
+  virtual ServiceBufferManager* as_service() { return nullptr; }
 
   // Metadata record whose args are the fields (see JsonLines::record). Does
   // not take ownership of fields.

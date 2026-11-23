@@ -3,6 +3,7 @@
 
 #include <dftracer/core/common/logging.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -31,15 +32,95 @@ static constexpr size_t DFTRACER_SERIALIZATION_EVENT_MAX = 16 * 1024;
  * Splitting the format into literal pieces, counting the placeholders and
  * checking every argument's type all happen at compile time: a wrong count or
  * an unsupported type does not compile. What is left at run time is copying
- * each piece (a memcpy of constant size) and converting each argument --
- * integers with std::to_chars, strings copied as they are (no escaping, as
- * the snprintf("%s") this replaces did). Nothing allocates.
+ * each piece (a memcpy of constant size) and converting each argument:
+ * integers with std::to_chars, strings escaped for a JSON string (a format
+ * puts the quotes around the placeholder). Nothing allocates.
  *
  * Arguments: integers (not bool or character types; cast enums), const
- * char* / char* (null writes nothing), std::string_view, std::string.
+ * char* / char* (null writes nothing), std::string_view, std::string, and
+ * Raw for text that is already JSON.
  */
 namespace dftracer {
 namespace line_format {
+
+/** Text written as it is: JSON that the caller guarantees is valid. */
+struct Raw {
+  std::string_view value;
+};
+
+/**
+ * `s` as the inside of a JSON string: quote and backslash escaped, control
+ * characters as \u00XX. Other bytes, UTF-8 too, are copied.
+ */
+namespace detail {
+// Whether any of the 8 bytes of `x` is a quote, a backslash or below 0x20.
+// From the "determine if a word has a byte less than n" bit hacks (Sean
+// Eron Anderson, Bit Twiddling Hacks, public domain).
+inline bool needs_escape8(uint64_t x) {
+  constexpr uint64_t ones = 0x0101010101010101ull;
+  constexpr uint64_t high = 0x8080808080808080ull;
+  const uint64_t quote = x ^ (ones * '"');
+  const uint64_t slash = x ^ (ones * '\\');
+  return (((x - ones * 0x20) & ~x) | ((quote - ones) & ~quote) |
+          ((slash - ones) & ~slash)) &
+         high;
+}
+
+// The length of the prefix of `s` that needs no escaping, in 8-byte steps:
+// a smaller value than the exact one is possible, a larger one is not.
+inline size_t plain_prefix(std::string_view s) {
+  size_t i = 0;
+  for (uint64_t x; i + 8 <= s.size(); i += 8) {
+    std::memcpy(&x, s.data() + i, 8);
+    if (needs_escape8(x)) break;
+  }
+  return i;
+}
+}  // namespace detail
+
+/** Whether `s` is the same text inside a JSON string, with no escaping. */
+inline bool plain(std::string_view s) {
+  for (size_t i = detail::plain_prefix(s); i < s.size(); ++i) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    if (c == '"' || c == '\\' || c < 0x20) return false;
+  }
+  return true;
+}
+
+template <typename W>
+inline void escaped(W& w, std::string_view s) {
+  size_t i = detail::plain_prefix(s);
+  size_t run = 0;
+  for (; i < s.size(); ++i) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    if (c != '"' && c != '\\' && c >= 0x20) continue;
+    if (i > run) w.raw(s.substr(run, i - run));
+    char esc[8];
+    if (c < 0x20)
+      std::snprintf(esc, sizeof(esc), "\\u%04x", c);
+    else
+      std::snprintf(esc, sizeof(esc), "\\%c", c);
+    w.raw(esc);
+    run = i + 1;
+  }
+  if (run < s.size()) w.raw(s.substr(run));
+}
+
+/** Appends to a std::string; the writer of the text that is built once. */
+struct Text {
+  std::string& text;
+  void raw(std::string_view v) { text.append(v.data(), v.size()); }
+  void escaped(std::string_view v) { line_format::escaped(*this, v); }
+};
+
+/** `s` as a JSON string literal, quotes included. */
+inline std::string quoted(std::string_view s) {
+  std::string text = "\"";
+  Text out{text};
+  escaped(out, s);
+  text += '"';
+  return text;
+}
 
 /**
  * Bounded writer for one line of at most DFTRACER_SERIALIZATION_EVENT_MAX
@@ -47,6 +128,118 @@ namespace line_format {
  * metadata_json writes an event's args into, so a line and its args go
  * straight into the trace buffer.
  */
+namespace detail {
+// Writes `v` in decimal so that it ends at `end`; returns where it starts.
+// Two digits per step from a table, after Andrei Alexandrescu, "Three
+// Optimization Tips for C++" (2012); no pass to count the digits first.
+inline constexpr char kPairs[] =
+    "00010203040506070809101112131415161718192021222324252627282930313233"
+    "34353637383940414243444546474849505152535455565758596061626364656667"
+    "6869707172737475767778798081828384858687888990919293949596979899";
+
+// Exactly 8 digits of v < 10^8 at p. The four pairs do not depend on each
+// other, unlike the pairs of the loop below.
+__attribute__((always_inline)) inline void eight_digits(char* p, uint32_t v) {
+  const uint32_t hi = v / 10000;
+  const uint32_t lo = v - hi * 10000;
+  const uint32_t a = hi / 100, b = hi - a * 100;
+  const uint32_t c = lo / 100, d = lo - c * 100;
+  std::memcpy(p, kPairs + a * 2, 2);
+  std::memcpy(p + 2, kPairs + b * 2, 2);
+  std::memcpy(p + 4, kPairs + c * 2, 2);
+  std::memcpy(p + 6, kPairs + d * 2, 2);
+}
+
+inline char* decimal_back(char* end, uint64_t v) {
+  while (v >= 100000000) {
+    const uint64_t q = v / 100000000;
+    end -= 8;
+    eight_digits(end, static_cast<uint32_t>(v - q * 100000000));
+    v = q;
+  }
+  uint32_t w = static_cast<uint32_t>(v);
+  while (w >= 100) {
+    const uint32_t i = (w % 100) * 2;
+    w /= 100;
+    end -= 2;
+    std::memcpy(end, kPairs + i, 2);
+  }
+  if (w >= 10) {
+    end -= 2;
+    std::memcpy(end, kPairs + w * 2, 2);
+  } else {
+    *--end = static_cast<char>('0' + w);
+  }
+  return end;
+}
+
+// n <= 64 bytes with overlapping moves of one size class, so a short piece
+// costs no memcpy call.
+__attribute__((always_inline)) inline void copy_short(char* d, const char* s,
+                                                      size_t n) {
+  if (n > 32) {
+    char a[32], b[32];
+    std::memcpy(a, s, 32);
+    std::memcpy(b, s + n - 32, 32);
+    std::memcpy(d, a, 32);
+    std::memcpy(d + n - 32, b, 32);
+  } else if (n >= 16) {
+    char a[16], b[16];
+    std::memcpy(a, s, 16);
+    std::memcpy(b, s + n - 16, 16);
+    std::memcpy(d, a, 16);
+    std::memcpy(d + n - 16, b, 16);
+  } else if (n >= 8) {
+    uint64_t a, b;
+    std::memcpy(&a, s, 8);
+    std::memcpy(&b, s + n - 8, 8);
+    std::memcpy(d, &a, 8);
+    std::memcpy(d + n - 8, &b, 8);
+  } else if (n >= 4) {
+    uint32_t a, b;
+    std::memcpy(&a, s, 4);
+    std::memcpy(&b, s + n - 4, 4);
+    std::memcpy(d, &a, 4);
+    std::memcpy(d + n - 4, &b, 4);
+  } else if (n != 0) {
+    const char a = s[0], b = s[n / 2], c = s[n - 1];
+    d[0] = a;
+    d[n / 2] = b;
+    d[n - 1] = c;
+  }
+}
+
+// Writers for text the caller knows fits: each returns the new end, so the
+// position stays in a register.
+__attribute__((always_inline)) inline char* emit(char* p, std::string_view s) {
+  if (s.size() <= 64)
+    copy_short(p, s.data(), s.size());
+  else
+    std::memcpy(p, s.data(), s.size());
+  return p + s.size();
+}
+
+__attribute__((always_inline)) inline char* emit(char* p, uint64_t v) {
+  if (v < 100) {
+    const size_t n = v < 10 ? 1 : 2;
+    std::memcpy(p, kPairs + v * 2 + (2 - n), 2);
+    return p + n;
+  }
+  char tmp[24];
+  char* const end = tmp + sizeof(tmp);
+  const char* begin = decimal_back(end, v);
+  return emit(p, std::string_view(begin, static_cast<size_t>(end - begin)));
+}
+
+__attribute__((always_inline)) inline char* emit(char* p, int64_t v) {
+  if (v < 0) {
+    *p++ = '-';
+    return emit(p, 0 - static_cast<uint64_t>(v));
+  }
+  return emit(p, static_cast<uint64_t>(v));
+}
+}  // namespace detail
+
 class Line {
  public:
   explicit Line(char* out)
@@ -54,36 +247,53 @@ class Line {
         p_(out),
         end_(out + DFTRACER_SERIALIZATION_EVENT_MAX - 2) {}
 
-  void raw(std::string_view s) {
+  __attribute__((always_inline)) void raw(std::string_view s) {
     size_t n = s.size();
     if (n > static_cast<size_t>(end_ - p_)) {
       n = static_cast<size_t>(end_ - p_);
       cut_ = true;
     }
-    std::memcpy(p_, s.data(), n);
+    if (n <= 64)
+      detail::copy_short(p_, s.data(), n);
+    else
+      std::memcpy(p_, s.data(), n);
     p_ += n;
   }
-  void raw(const char* s) {
+  __attribute__((always_inline)) void raw(const char* s) {
     if (s != nullptr) raw(std::string_view(s));
   }
-  void i64(int64_t v) { number(v); }
-  void u64(uint64_t v) { number(v); }
+  void escaped(std::string_view s) { line_format::escaped(*this, s); }
+  __attribute__((always_inline)) void i64(int64_t v) { number(v); }
+  __attribute__((always_inline)) void u64(uint64_t v) { number(v); }
   void f64(double v) {
     // ostream's default for double: %g with precision 6.
     char tmp[32];
     const int n = std::snprintf(tmp, sizeof(tmp), "%g", v);
-    raw(std::string_view(tmp, n > 0 ? static_cast<size_t>(n) : 0));
+    const size_t len = n > 0 ? static_cast<size_t>(n) : 0;
+    raw(std::string_view(tmp, std::min(len, sizeof(tmp) - 1)));
   }
   template <typename T>
-  void number(T v) {
+  __attribute__((always_inline)) void number(T v) {
     // 20 digits and a sign hold any 64-bit integer.
-    if (static_cast<size_t>(end_ - p_) >= 24) {
-      p_ = std::to_chars(p_, end_, v).ptr;
+    char tmp[24];
+    char* const end = tmp + sizeof(tmp);
+    char* begin;
+    // A negative v is a large uint64_t here.
+    if (static_cast<uint64_t>(v) < 100) {
+      const size_t n = v < 10 ? 1 : 2;
+      std::memcpy(tmp, detail::kPairs + v * 2 + (2 - n), 2);
+      raw(std::string_view(tmp, n));
       return;
     }
-    char tmp[24];
-    auto r = std::to_chars(tmp, tmp + sizeof(tmp), v);
-    raw(std::string_view(tmp, static_cast<size_t>(r.ptr - tmp)));
+    if constexpr (std::is_signed_v<T>) {
+      const uint64_t u =
+          v < 0 ? 0 - static_cast<uint64_t>(v) : static_cast<uint64_t>(v);
+      begin = detail::decimal_back(end, u);
+      if (v < 0) *--begin = '-';
+    } else {
+      begin = detail::decimal_back(end, static_cast<uint64_t>(v));
+    }
+    raw(std::string_view(begin, static_cast<size_t>(end - begin)));
   }
   bool cut() const { return cut_; }
   size_t size() const { return static_cast<size_t>(p_ - begin_); }
@@ -171,7 +381,7 @@ constexpr bool is_str =
     std::is_same_v<T, std::string_view> || std::is_same_v<T, std::string>;
 
 template <typename T>
-constexpr bool is_arg = is_int<T> || is_str<T>;
+constexpr bool is_arg = is_int<T> || is_str<T> || std::is_same_v<T, Raw>;
 
 }  // namespace detail
 
@@ -202,11 +412,13 @@ inline void put(W& w, const T& v) {
                 "a string");
   if constexpr (is_int<T>) {
     w.number(v);
+  } else if constexpr (std::is_same_v<T, Raw>) {
+    w.raw(v.value);
   } else if constexpr (std::is_same_v<T, const char*> ||
                        std::is_same_v<T, char*>) {
-    w.raw(static_cast<const char*>(v));
+    if (v != nullptr) w.escaped(std::string_view(v));
   } else {
-    w.raw(std::string_view(v));
+    w.escaped(std::string_view(v));
   }
 }
 

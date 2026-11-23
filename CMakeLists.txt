@@ -1066,54 +1066,12 @@ else()
                 endif()
         endif()
 
-        # libdeflate writes the gzip members of every trace (one-shot, a whole
-        # buffer per member; about 2.5x faster than zlib at the same level).
-        # Its CMake package comes from dependency/CMakeLists.txt or the wheel's
-        # build_deps.sh; distribution packages (libdeflate-devel) ship only the
-        # header and library, so look for those too.
-        set(DFTRACER_LIBDEFLATE_LINK_LIBS "")
-        find_package(libdeflate 1.9 CONFIG QUIET)
-        if(TARGET libdeflate::libdeflate_shared)
-                # Link the file, not the imported target: dftracer's exported
-                # package would otherwise name libdeflate::libdeflate_shared,
-                # which a project using find_package(dftracer) does not define.
-                # An imported target keeps its path per configuration.
-                foreach(_ld_prop IMPORTED_LOCATION_RELEASE IMPORTED_LOCATION_RELWITHDEBINFO
-                                 IMPORTED_LOCATION_NOCONFIG IMPORTED_LOCATION)
-                        get_target_property(_ld_location libdeflate::libdeflate_shared ${_ld_prop})
-                        if(_ld_location)
-                                break()
-                        endif()
-                endforeach()
-                get_target_property(_ld_include libdeflate::libdeflate_shared INTERFACE_INCLUDE_DIRECTORIES)
-                if(_ld_location)
-                        list(APPEND DFTRACER_LIBDEFLATE_LINK_LIBS ${_ld_location})
-                endif()
-                if(_ld_include)
-                        include_directories(${_ld_include})
-                endif()
-        endif()
-        if(NOT DFTRACER_LIBDEFLATE_LINK_LIBS)
-                find_path(DFTRACER_LIBDEFLATE_INCLUDE_DIR libdeflate.h
-                        HINTS ${CMAKE_INSTALL_PREFIX}/include)
-                find_library(DFTRACER_LIBDEFLATE_LIBRARY NAMES deflate libdeflate
-                        HINTS ${CMAKE_INSTALL_PREFIX}/lib64 ${CMAKE_INSTALL_PREFIX}/lib)
-                if(DFTRACER_LIBDEFLATE_INCLUDE_DIR AND DFTRACER_LIBDEFLATE_LIBRARY)
-                        include_directories(${DFTRACER_LIBDEFLATE_INCLUDE_DIR})
-                        list(APPEND DFTRACER_LIBDEFLATE_LINK_LIBS ${DFTRACER_LIBDEFLATE_LIBRARY})
-                        set(_ld_location ${DFTRACER_LIBDEFLATE_LIBRARY})
-                endif()
-        endif()
-        if(NOT DFTRACER_LIBDEFLATE_LINK_LIBS)
-                message(FATAL_ERROR "-- [DFTRACER] libdeflate is needed for ${PROJECT_NAME} build "
-                        "(install libdeflate-devel / libdeflate-dev, or build with -DDFTRACER_INSTALL_DEPENDENCIES=ON)")
-        endif()
-        message(STATUS "[DFTRACER] found libdeflate: ${DFTRACER_LIBDEFLATE_LINK_LIBS}")
-        set(DEPENDENCY_LIB ${DEPENDENCY_LIB} ${DFTRACER_LIBDEFLATE_LINK_LIBS})
-        if(_ld_location AND IS_ABSOLUTE "${_ld_location}")
-                get_filename_component(_ld_dir "${_ld_location}" DIRECTORY)
-                list(APPEND DEPENDENCY_LIBRARY_DIRS ${_ld_dir})
-        endif()
+        # ISA-L compresses every trace; see cmake/modules/DFTracerIsal.cmake.
+        # The archive is linked only while building: an installed dftracer
+        # carries it inside its own libraries.
+        include(DFTracerIsal)
+        include_directories(${DFTRACER_ISAL_INCLUDE_DIR})
+        set(DEPENDENCY_LIB ${DEPENDENCY_LIB} "$<BUILD_INTERFACE:${DFTRACER_ISAL_LIBRARY}>")
 
         # print_all_variables()
 
@@ -1180,11 +1138,11 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/serialization/json_line.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/compression/gzip_compression.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/buffer/local_buffer_manager.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/buffer/lane_buffer.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/buffer/buffer_manager_factory.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/buffer/service_buffer_manager.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/writer/stdio_writer.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/aggregator.cpp
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/packed_aggregator.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/datastructure.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/rules.cpp)
 
@@ -1242,7 +1200,6 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/singleton.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/utils/configuration_manager.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/aggregator.h
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/aggregator/packed_aggregator.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/serialization/packed_json.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dftracer/core/common/datastructure.h)
 
@@ -1400,6 +1357,14 @@ else()
         target_compile_definitions(${PROJECT_NAME}_core_dbg PUBLIC ${DFTRACER_BRAHMA_DEFINITIONS})
         target_link_libraries(${PROJECT_NAME}_core_dbg PUBLIC ${DEPENDENCY_LIB} ${DFTRACER_CPP_LOGGER_LIB})
         target_link_libraries(${PROJECT_NAME}_core_dbg PRIVATE ${DFTRACER_BRAHMA_CORE_LIB})
+        foreach(_isal_user ${PROJECT_NAME}_core_base ${PROJECT_NAME}_core_base_dbg)
+                add_dependencies(${_isal_user} dftracer_isal)
+        endforeach()
+        foreach(_isal_user ${PROJECT_NAME}_core ${PROJECT_NAME}_core_dbg)
+                add_dependencies(${_isal_user} dftracer_isal)
+                # Keep ISA-L's symbols out of the library's exports.
+                target_link_options(${_isal_user} PRIVATE "LINKER:--exclude-libs,isa-l.a")
+        endforeach()
         add_library(${PROJECT_NAME}_preload SHARED)
         add_library(dftracer::dftracer_preload ALIAS ${PROJECT_NAME}_preload)
         target_link_libraries(${PROJECT_NAME}_preload ${DEPENDENCY_LIB} ${PROJECT_NAME}_core)
@@ -1621,6 +1586,8 @@ else()
                 list(APPEND _dftracer_core_link_options --coverage)
         endif()
         list(REMOVE_DUPLICATES _dftracer_core_link_options)
+        # The bundled ISA-L archive stays out of the composed library's exports.
+        list(APPEND _dftracer_core_link_options "LINKER:--exclude-libs,isa-l.a")
         file(CONFIGURE OUTPUT ${_dftracer_compose_build}/core/core.cmake CONTENT [[
 # Generated by DFTracer's build: how the core archive links on this system.
 set(DFTRACER_COMPOSE_VERSION "@DFTRACER_LIBRARY_VERSION@")

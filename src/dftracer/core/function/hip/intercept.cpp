@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -214,6 +215,23 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
 
   if (num_headers == 0 || headers == nullptr) return;
 
+  auto emit = [&function](
+                  std::optional<ThreadID> tid, const std::string& event_name,
+                  const std::string& kind_name, rocprofiler_timestamp_t start,
+                  rocprofiler_timestamp_t end, EventDraft* metadata) {
+    if (tid) {
+      function->logger->log_on(*tid, event_name, kind_name,
+                               TraceEventType::TRACE_TYPE_HIP,
+                               function->transform_timestamp(start),
+                               function->transform_time(end, start), metadata);
+    } else {
+      function->logger->log(event_name, kind_name,
+                            TraceEventType::TRACE_TYPE_HIP,
+                            function->transform_timestamp(start),
+                            function->transform_time(end, start), metadata);
+    }
+  };
+
   for (size_t i = 0; i < num_headers; ++i) {
     auto* header = headers[i];
 
@@ -234,25 +252,19 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
       auto* record = static_cast<rocprofiler_buffer_tracing_hsa_api_record_t*>(
           header->payload);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("context", context.handle);
-      metadata->insert_or_assign("buffer_id", buffer_id.handle);
-      metadata->insert_or_assign("extern_cid",
-                                 record->correlation_id.external.value);
-      metadata->insert_or_assign("kind", record->kind);
-      metadata->insert_or_assign("operation", record->operation);
-      metadata->insert_or_assign("tid", record->thread_id);
+      DraftScope draft(true);
+      EventDraft* metadata = draft.get();
+      metadata->set("context", context.handle);
+      metadata->set("buffer_id", buffer_id.handle);
+      metadata->set("extern_cid", record->correlation_id.external.value);
+      metadata->set("kind", record->kind);
+      metadata->set("operation", record->operation);
+      const ThreadID event_tid = static_cast<ThreadID>(record->thread_id);
 
       std::string event_name =
-          std::string(client_name_info[record->kind][record->operation]);
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+          std::string(client_name_info.at(record->kind, record->operation));
+      emit(event_tid, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 
       // ── HIP runtime API ───────────────────────────────────────────────────
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
@@ -260,25 +272,19 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
       auto* record = static_cast<rocprofiler_buffer_tracing_hip_api_record_t*>(
           header->payload);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("context", context.handle);
-      metadata->insert_or_assign("buffer_id", buffer_id.handle);
-      metadata->insert_or_assign("extern_cid",
-                                 record->correlation_id.external.value);
-      metadata->insert_or_assign("kind", record->kind);
-      metadata->insert_or_assign("operation", record->operation);
-      metadata->insert_or_assign("tid", record->thread_id);
+      DraftScope draft(true);
+      EventDraft* metadata = draft.get();
+      metadata->set("context", context.handle);
+      metadata->set("buffer_id", buffer_id.handle);
+      metadata->set("extern_cid", record->correlation_id.external.value);
+      metadata->set("kind", record->kind);
+      metadata->set("operation", record->operation);
+      const ThreadID event_tid = static_cast<ThreadID>(record->thread_id);
 
       std::string event_name =
-          std::string(client_name_info[record->kind][record->operation]);
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+          std::string(client_name_info.at(record->kind, record->operation));
+      emit(event_tid, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 
       // ── Kernel dispatch ───────────────────────────────────────────────────
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
@@ -287,80 +293,62 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
           static_cast<rocprofiler_buffer_tracing_kernel_dispatch_record_t*>(
               header->payload);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("tid", record->thread_id);
-      metadata->insert_or_assign("correlation_id",
-                                 record->correlation_id.external.value);
+      DraftScope draft(true);
+      EventDraft* metadata = draft.get();
+      const ThreadID event_tid = static_cast<ThreadID>(record->thread_id);
+      metadata->set("correlation_id", record->correlation_id.external.value);
       std::string event_name = std::string(
           function->client_kernels.at(record->dispatch_info.kernel_id)
               .kernel_name);
       event_name = std::to_string(record->dispatch_info.kernel_id) + event_name;
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+      emit(event_tid, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 
-      // ── Memory copy ───────────────────────────────────────────────────────
+      // ── Memory copy───────────────────────────────────────────────────────
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
                header->kind == ROCPROFILER_BUFFER_TRACING_MEMORY_COPY) {
       auto* record =
           static_cast<rocprofiler_buffer_tracing_memory_copy_record_t*>(
               header->payload);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("context", context.handle);
-      metadata->insert_or_assign("buffer_id", buffer_id.handle);
-      metadata->insert_or_assign("extern_cid",
-                                 record->correlation_id.external.value);
-      metadata->insert_or_assign("kind", record->kind);
-      metadata->insert_or_assign("operation", record->operation);
-      metadata->insert_or_assign("src_agent_id", record->src_agent_id.handle);
-      metadata->insert_or_assign("dst_agent_id", record->dst_agent_id.handle);
-      metadata->insert_or_assign("tid", record->thread_id);
+      DraftScope draft(true);
+      EventDraft* metadata = draft.get();
+      metadata->set("context", context.handle);
+      metadata->set("buffer_id", buffer_id.handle);
+      metadata->set("extern_cid", record->correlation_id.external.value);
+      metadata->set("kind", record->kind);
+      metadata->set("operation", record->operation);
+      metadata->set("src_agent_id", record->src_agent_id.handle);
+      metadata->set("dst_agent_id", record->dst_agent_id.handle);
+      const ThreadID event_tid = static_cast<ThreadID>(record->thread_id);
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+      emit(event_tid, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 
-      // ── Scratch memory ────────────────────────────────────────────────────
+      // ── Scratch memory────────────────────────────────────────────────────
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
                header->kind == ROCPROFILER_BUFFER_TRACING_SCRATCH_MEMORY) {
       auto* record =
           static_cast<rocprofiler_buffer_tracing_scratch_memory_record_t*>(
               header->payload);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("context", context.handle);
-      metadata->insert_or_assign("buffer_id", buffer_id.handle);
-      metadata->insert_or_assign("extern_cid",
-                                 record->correlation_id.external.value);
-      metadata->insert_or_assign("kind", record->kind);
-      metadata->insert_or_assign("operation", record->operation);
-      metadata->insert_or_assign("agent_id", record->agent_id.handle);
-      metadata->insert_or_assign("queue_id", record->queue_id.handle);
-      metadata->insert_or_assign("flags", record->flags);
-      metadata->insert_or_assign("tid", record->thread_id);
+      DraftScope draft(true);
+      EventDraft* metadata = draft.get();
+      metadata->set("context", context.handle);
+      metadata->set("buffer_id", buffer_id.handle);
+      metadata->set("extern_cid", record->correlation_id.external.value);
+      metadata->set("kind", record->kind);
+      metadata->set("operation", record->operation);
+      metadata->set("agent_id", record->agent_id.handle);
+      metadata->set("queue_id", record->queue_id.handle);
+      metadata->set("flags", record->flags);
+      const ThreadID event_tid = static_cast<ThreadID>(record->thread_id);
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+      emit(event_tid, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 
       // ── Page migration
       // ────────────────────────────────────────────────────────
@@ -387,163 +375,130 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
           static_cast<rocprofiler_buffer_tracing_page_migration_record_t*>(
               header->payload);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("kind", record->kind);
-      metadata->insert_or_assign("operation", record->operation);
+      DraftScope draft(true);
+      EventDraft* metadata = draft.get();
+      metadata->set("kind", record->kind);
+      metadata->set("operation", record->operation);
 
 #if DFTRACER_ROCPROFILER_API_VERSION >= DFTRACER_GET_VERSION(0, 6, 0)
       // SDK 0.6.0: redesigned args union, renamed ops, single timestamp.
       switch (record->operation) {
         case ROCPROFILER_PAGE_MIGRATION_PAGE_MIGRATE_START: {
-          metadata->insert_or_assign(
-              "start_addr", record->args.page_migrate_start.start_addr);
-          metadata->insert_or_assign("end_addr",
-                                     record->args.page_migrate_start.end_addr);
-          metadata->insert_or_assign(
-              "from_agent", record->args.page_migrate_start.from_agent.handle);
-          metadata->insert_or_assign(
-              "to_agent", record->args.page_migrate_start.to_agent.handle);
-          metadata->insert_or_assign(
-              "prefetch_agent",
-              record->args.page_migrate_start.prefetch_agent.handle);
-          metadata->insert_or_assign(
-              "preferred_agent",
-              record->args.page_migrate_start.preferred_agent.handle);
-          metadata->insert_or_assign("trigger",
-                                     record->args.page_migrate_start.trigger);
+          metadata->set("start_addr",
+                        record->args.page_migrate_start.start_addr);
+          metadata->set("end_addr", record->args.page_migrate_start.end_addr);
+          metadata->set("from_agent",
+                        record->args.page_migrate_start.from_agent.handle);
+          metadata->set("to_agent",
+                        record->args.page_migrate_start.to_agent.handle);
+          metadata->set("prefetch_agent",
+                        record->args.page_migrate_start.prefetch_agent.handle);
+          metadata->set("preferred_agent",
+                        record->args.page_migrate_start.preferred_agent.handle);
+          metadata->set("trigger", record->args.page_migrate_start.trigger);
           break;
         }
         case ROCPROFILER_PAGE_MIGRATION_PAGE_MIGRATE_END: {
-          metadata->insert_or_assign("start_addr",
-                                     record->args.page_migrate_end.start_addr);
-          metadata->insert_or_assign("end_addr",
-                                     record->args.page_migrate_end.end_addr);
-          metadata->insert_or_assign(
-              "from_agent", record->args.page_migrate_end.from_agent.handle);
-          metadata->insert_or_assign(
-              "to_agent", record->args.page_migrate_end.to_agent.handle);
-          metadata->insert_or_assign("trigger",
-                                     record->args.page_migrate_end.trigger);
-          metadata->insert_or_assign("error_code",
-                                     record->args.page_migrate_end.error_code);
+          metadata->set("start_addr", record->args.page_migrate_end.start_addr);
+          metadata->set("end_addr", record->args.page_migrate_end.end_addr);
+          metadata->set("from_agent",
+                        record->args.page_migrate_end.from_agent.handle);
+          metadata->set("to_agent",
+                        record->args.page_migrate_end.to_agent.handle);
+          metadata->set("trigger", record->args.page_migrate_end.trigger);
+          metadata->set("error_code", record->args.page_migrate_end.error_code);
           break;
         }
         case ROCPROFILER_PAGE_MIGRATION_PAGE_FAULT_START: {
-          metadata->insert_or_assign(
-              "agent_id", record->args.page_fault_start.agent_id.handle);
-          metadata->insert_or_assign(
+          metadata->set("agent_id",
+                        record->args.page_fault_start.agent_id.handle);
+          metadata->set(
               "read_fault",
               static_cast<uint32_t>(record->args.page_fault_start.read_fault));
-          metadata->insert_or_assign("address",
-                                     record->args.page_fault_start.address);
+          metadata->set("address", record->args.page_fault_start.address);
           break;
         }
         case ROCPROFILER_PAGE_MIGRATION_PAGE_FAULT_END: {
-          metadata->insert_or_assign(
-              "agent_id", record->args.page_fault_end.agent_id.handle);
-          metadata->insert_or_assign(
-              "migrated",
-              static_cast<uint32_t>(record->args.page_fault_end.migrated));
-          metadata->insert_or_assign("address",
-                                     record->args.page_fault_end.address);
+          metadata->set("agent_id",
+                        record->args.page_fault_end.agent_id.handle);
+          metadata->set("migrated", static_cast<uint32_t>(
+                                        record->args.page_fault_end.migrated));
+          metadata->set("address", record->args.page_fault_end.address);
           break;
         }
         case ROCPROFILER_PAGE_MIGRATION_QUEUE_EVICTION: {
-          metadata->insert_or_assign(
-              "agent_id", record->args.queue_eviction.agent_id.handle);
-          metadata->insert_or_assign("trigger",
-                                     record->args.queue_eviction.trigger);
+          metadata->set("agent_id",
+                        record->args.queue_eviction.agent_id.handle);
+          metadata->set("trigger", record->args.queue_eviction.trigger);
           break;
         }
         case ROCPROFILER_PAGE_MIGRATION_QUEUE_RESTORE: {
-          metadata->insert_or_assign(
-              "agent_id", record->args.queue_restore.agent_id.handle);
-          metadata->insert_or_assign(
+          metadata->set("agent_id", record->args.queue_restore.agent_id.handle);
+          metadata->set(
               "rescheduled",
               static_cast<uint32_t>(record->args.queue_restore.rescheduled));
           break;
         }
         case ROCPROFILER_PAGE_MIGRATION_UNMAP_FROM_GPU: {
-          metadata->insert_or_assign(
-              "agent_id", record->args.unmap_from_gpu.agent_id.handle);
-          metadata->insert_or_assign("start_addr",
-                                     record->args.unmap_from_gpu.start_addr);
-          metadata->insert_or_assign("end_addr",
-                                     record->args.unmap_from_gpu.end_addr);
-          metadata->insert_or_assign("trigger",
-                                     record->args.unmap_from_gpu.trigger);
+          metadata->set("agent_id",
+                        record->args.unmap_from_gpu.agent_id.handle);
+          metadata->set("start_addr", record->args.unmap_from_gpu.start_addr);
+          metadata->set("end_addr", record->args.unmap_from_gpu.end_addr);
+          metadata->set("trigger", record->args.unmap_from_gpu.trigger);
           break;
         }
         case ROCPROFILER_PAGE_MIGRATION_DROPPED_EVENT: {
-          metadata->insert_or_assign(
-              "dropped_events_count",
-              record->args.dropped_event.dropped_events_count);
+          metadata->set("dropped_events_count",
+                        record->args.dropped_event.dropped_events_count);
           break;
         }
         default:
-          delete metadata;
           continue;
       }
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->timestamp), 0, metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->timestamp,
+           record->timestamp, metadata);
 
 #else
       // SDK 0.4.0–0.5.0: original union layout, start/end timestamps.
       switch (record->operation) {
         case ROCPROFILER_PAGE_MIGRATION_PAGE_MIGRATE: {
-          metadata->insert_or_assign("node_id", record->page_fault.node_id);
-          metadata->insert_or_assign("address", record->page_fault.address);
+          metadata->set("node_id", record->page_fault.node_id);
+          metadata->set("address", record->page_fault.address);
           break;
         }
         case ROCPROFILER_PAGE_MIGRATION_PAGE_FAULT: {
-          metadata->insert_or_assign("start_addr",
-                                     record->page_migrate.start_addr);
-          metadata->insert_or_assign("end_addr", record->page_migrate.end_addr);
-          metadata->insert_or_assign("from_node",
-                                     record->page_migrate.from_node);
-          metadata->insert_or_assign("to_node", record->page_migrate.to_node);
-          metadata->insert_or_assign("prefetch_node",
-                                     record->page_migrate.prefetch_node);
-          metadata->insert_or_assign("preferred_node",
-                                     record->page_migrate.preferred_node);
-          metadata->insert_or_assign("trigger", record->page_migrate.trigger);
+          metadata->set("start_addr", record->page_migrate.start_addr);
+          metadata->set("end_addr", record->page_migrate.end_addr);
+          metadata->set("from_node", record->page_migrate.from_node);
+          metadata->set("to_node", record->page_migrate.to_node);
+          metadata->set("prefetch_node", record->page_migrate.prefetch_node);
+          metadata->set("preferred_node", record->page_migrate.preferred_node);
+          metadata->set("trigger", record->page_migrate.trigger);
           break;
         }
         case ROCPROFILER_PAGE_MIGRATION_QUEUE_SUSPEND: {
-          metadata->insert_or_assign("node_id", record->queue_suspend.node_id);
-          metadata->insert_or_assign("trigger", record->queue_suspend.trigger);
+          metadata->set("node_id", record->queue_suspend.node_id);
+          metadata->set("trigger", record->queue_suspend.trigger);
           break;
         }
         case ROCPROFILER_PAGE_MIGRATION_UNMAP_FROM_GPU: {
-          metadata->insert_or_assign("node_id", record->unmap_from_gpu.node_id);
-          metadata->insert_or_assign("start_addr",
-                                     record->unmap_from_gpu.start_addr);
-          metadata->insert_or_assign("end_addr",
-                                     record->unmap_from_gpu.end_addr);
-          metadata->insert_or_assign("trigger", record->unmap_from_gpu.trigger);
+          metadata->set("node_id", record->unmap_from_gpu.node_id);
+          metadata->set("start_addr", record->unmap_from_gpu.start_addr);
+          metadata->set("end_addr", record->unmap_from_gpu.end_addr);
+          metadata->set("trigger", record->unmap_from_gpu.trigger);
           break;
         }
         default:
-          delete metadata;
           continue;
       }
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 #endif  // SDK < 1.0.0 inner split
 
 #else  // DFTRACER_ROCPROFILER_API_VERSION >= 1.0.0
@@ -556,26 +511,22 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
           rocprofiler_buffer_tracing_kfd_event_page_migrate_record_t*>(
           header->payload);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("operation", record->operation);
-      metadata->insert_or_assign("pid", record->pid);
-      metadata->insert_or_assign("start_address", record->start_address.handle);
-      metadata->insert_or_assign("end_address", record->end_address.handle);
-      metadata->insert_or_assign("src_agent", record->src_agent.handle);
-      metadata->insert_or_assign("dst_agent", record->dst_agent.handle);
-      metadata->insert_or_assign("prefetch_agent",
-                                 record->prefetch_agent.handle);
-      metadata->insert_or_assign("preferred_agent",
-                                 record->preferred_agent.handle);
-      metadata->insert_or_assign("error_code", record->error_code);
+      DraftScope draft(true);
+      EventDraft* metadata = draft.get();
+      metadata->set("operation", record->operation);
+      metadata->set("pid", record->pid);
+      metadata->set("start_address", record->start_address.handle);
+      metadata->set("end_address", record->end_address.handle);
+      metadata->set("src_agent", record->src_agent.handle);
+      metadata->set("dst_agent", record->dst_agent.handle);
+      metadata->set("prefetch_agent", record->prefetch_agent.handle);
+      metadata->set("preferred_agent", record->preferred_agent.handle);
+      metadata->set("error_code", record->error_code);
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->timestamp), 0, metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->timestamp,
+           record->timestamp, metadata);
 
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
                header->kind ==
@@ -584,19 +535,17 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
           rocprofiler_buffer_tracing_kfd_event_page_fault_record_t*>(
           header->payload);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("operation", record->operation);
-      metadata->insert_or_assign("pid", record->pid);
-      metadata->insert_or_assign("agent_id", record->agent_id.handle);
-      metadata->insert_or_assign("address", record->address.handle);
+      DraftScope draft(true);
+      EventDraft* metadata = draft.get();
+      metadata->set("operation", record->operation);
+      metadata->set("pid", record->pid);
+      metadata->set("agent_id", record->agent_id.handle);
+      metadata->set("address", record->address.handle);
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->timestamp), 0, metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->timestamp,
+           record->timestamp, metadata);
 
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
                header->kind == ROCPROFILER_BUFFER_TRACING_KFD_EVENT_QUEUE) {
@@ -604,18 +553,16 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
           static_cast<rocprofiler_buffer_tracing_kfd_event_queue_record_t*>(
               header->payload);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("operation", record->operation);
-      metadata->insert_or_assign("pid", record->pid);
-      metadata->insert_or_assign("agent_id", record->agent_id.handle);
+      DraftScope draft(true);
+      EventDraft* metadata = draft.get();
+      metadata->set("operation", record->operation);
+      metadata->set("pid", record->pid);
+      metadata->set("agent_id", record->agent_id.handle);
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->timestamp), 0, metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->timestamp,
+           record->timestamp, metadata);
 
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
                header->kind ==
@@ -624,20 +571,18 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
           rocprofiler_buffer_tracing_kfd_event_unmap_from_gpu_record_t*>(
           header->payload);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("operation", record->operation);
-      metadata->insert_or_assign("pid", record->pid);
-      metadata->insert_or_assign("agent_id", record->agent_id.handle);
-      metadata->insert_or_assign("start_address", record->start_address.handle);
-      metadata->insert_or_assign("end_address", record->end_address.handle);
+      DraftScope draft(true);
+      EventDraft* metadata = draft.get();
+      metadata->set("operation", record->operation);
+      metadata->set("pid", record->pid);
+      metadata->set("agent_id", record->agent_id.handle);
+      metadata->set("start_address", record->start_address.handle);
+      metadata->set("end_address", record->end_address.handle);
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->timestamp), 0, metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->timestamp,
+           record->timestamp, metadata);
 
     } else if (header->category == ROCPROFILER_BUFFER_CATEGORY_TRACING &&
                header->kind ==
@@ -646,18 +591,16 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
           rocprofiler_buffer_tracing_kfd_event_dropped_events_record_t*>(
           header->payload);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("operation", record->operation);
-      metadata->insert_or_assign("pid", record->pid);
-      metadata->insert_or_assign("dropped_events_count", record->count);
+      DraftScope draft(true);
+      EventDraft* metadata = draft.get();
+      metadata->set("operation", record->operation);
+      metadata->set("pid", record->pid);
+      metadata->set("dropped_events_count", record->count);
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->timestamp), 0, metadata);
-      function->logger->exit_event();
+      emit(std::nullopt, event_name, kind_name, record->timestamp,
+           record->timestamp, metadata);
 
 #endif  // page migration version split
 
@@ -667,22 +610,16 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
       auto* record = static_cast<rocprofiler_buffer_tracing_rccl_api_record_t*>(
           header->payload);
 
-      auto metadata = new Metadata();
-      metadata->insert_or_assign("operation", record->operation);
-      metadata->insert_or_assign("tid", record->thread_id);
-      metadata->insert_or_assign("correlation_id",
-                                 record->correlation_id.external.value);
+      DraftScope draft(true);
+      EventDraft* metadata = draft.get();
+      metadata->set("operation", record->operation);
+      const ThreadID event_tid = static_cast<ThreadID>(record->thread_id);
+      metadata->set("correlation_id", record->correlation_id.external.value);
 
       std::string event_name =
           std::string(client_name_info.at(record->kind, record->operation));
-      function->logger->enter_event();
-      function->logger->log(
-          event_name.c_str(), kind_name.c_str(), TraceEventType::TRACE_TYPE_HIP,
-          function->transform_timestamp(record->start_timestamp),
-          function->transform_time(record->end_timestamp,
-                                   record->start_timestamp),
-          metadata);
-      function->logger->exit_event();
+      emit(event_tid, event_name, kind_name, record->start_timestamp,
+           record->end_timestamp, metadata);
 #endif  // SDK >= 0.5.0
 
     } else {

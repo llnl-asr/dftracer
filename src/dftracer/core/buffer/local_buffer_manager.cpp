@@ -1,15 +1,20 @@
 #include <dftracer/core/buffer/local_buffer_manager.h>
+#include <dftracer/core/common/event_draft.h>
 #include <dftracer/core/common/event_types.h>
 #include <dftracer/core/common/profiler.h>
 #include <dftracer/core/common/tracer_scope.h>
-#include <dftracer/core/serialization/packed_json.h>
+#include <dftracer/core/ipc/event_codec.h>
 #include <pthread.h>
 #include <signal.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstring>
+#include <exception>
 #include <new>
+#include <vector>
 template <>
 std::shared_ptr<dftracer::LocalBufferManager>
     dftracer::Singleton<dftracer::LocalBufferManager>::instance = nullptr;
@@ -21,27 +26,43 @@ namespace dftracer {
 
 namespace {
 
-thread_local char line_scratch[DFTRACER_SERIALIZATION_EVENT_MAX];
-
 std::atomic<LocalBufferManager*> fork_owner{nullptr};
 
 constexpr size_t kMaxThreadChunk = 1024 * 1024;
 // Blocks waiting for the writer before a full thread compresses its own.
 constexpr size_t kMaxQueued = 2;
 constexpr size_t kMaxFreeBlocks = 8;
-
-// The calling thread's buffer, and the epoch it was handed out in.
+// A record's size and kind, ahead of its payload.
+constexpr size_t kRecordHead = sizeof(uint16_t) + sizeof(uint8_t);
+static_assert(compact::Decoder::kNoShape == ShapeLines::kNoShape,
+              "a decoder's no-shape is the renderer's");
+static_assert(DFTRACER_SERIALIZATION_EVENT_MAX <= 0xffff,
+              "a record's size is a u16");
+// Room past a block's chunk_size for the record that crosses it.
+constexpr size_t kBlockSlack = DFTRACER_SERIALIZATION_EVENT_MAX + kRecordHead;
+// The calling thread's buffer, and the epoch it was handed out in. Trivially
+// destructible, so a lookup is one TLS read with no init guard;
+// SlotReaper releases the buffer at thread exit.
 struct ThreadSlot {
-  LocalBufferManager* owner = nullptr;
-  uint64_t epoch = 0;
-  LocalBufferManager::ThreadBuffer* tb = nullptr;
-  ~ThreadSlot() {
-    if (owner != nullptr && tb != nullptr &&
-        fork_owner.load(std::memory_order_acquire) == owner)
-      owner->release_thread_buffer(tb, epoch);
+  LocalBufferManager* owner;
+  uint64_t epoch;
+  LocalBufferManager::ThreadBuffer* tb;
+};
+thread_local ThreadSlot thread_slot{};
+
+struct SlotReaper {
+  ~SlotReaper() {
+    ThreadSlot& slot = thread_slot;
+    if (slot.owner != nullptr && slot.tb != nullptr &&
+        fork_owner.load(std::memory_order_acquire) == slot.owner)
+      slot.owner->release_thread_buffer(slot.tb, slot.epoch);
+    slot = ThreadSlot{};
   }
 };
-thread_local ThreadSlot thread_slot;
+void arm_slot_reaper() {
+  thread_local SlotReaper reaper;
+  (void)reaper;
+}
 
 // Registered at load so the child handler releases the locks before
 // DFTracerCore's child handler logs again.
@@ -70,23 +91,27 @@ LocalBufferManager::~LocalBufferManager() {
   for (char* block : free_blocks) free(block);
 }
 
+// Rendering holds a thread's render_mtx while it takes write_mtx and
+// free_mtx, and appending holds its mtx while it takes queue_mtx and free_mtx.
 void LocalBufferManager::lock_for_fork() {
   mtx.lock();
-  write_mtx.lock();
   registry_mtx.lock();
+  for (auto& tb : thread_buffers) tb->render_mtx.lock();
+  write_mtx.lock();
+  for (auto& tb : thread_buffers) tb->mtx.lock();
   queue_mtx.lock();
   free_mtx.lock();
   pool_mtx.lock();
-  this->aggregator->lock_for_fork();
 }
 
 void LocalBufferManager::unlock_in_parent() {
-  this->aggregator->unlock_in_parent();
   pool_mtx.unlock();
   free_mtx.unlock();
   queue_mtx.unlock();
-  registry_mtx.unlock();
+  for (auto& tb : thread_buffers) tb->mtx.unlock();
   write_mtx.unlock();
+  for (auto& tb : thread_buffers) tb->render_mtx.unlock();
+  registry_mtx.unlock();
   mtx.unlock();
 }
 
@@ -102,40 +127,35 @@ void LocalBufferManager::reset_in_child() {
   new (&pool_mtx) std::mutex();
   new (&queue_cv) std::condition_variable();
   new (&idle_cv) std::condition_variable();
-  for (auto& tb : thread_buffers) new (&tb->mtx) std::mutex();
+  for (auto& tb : thread_buffers) {
+    tb->mtx.reset();
+    new (&tb->render_mtx) std::mutex();
+  }
   writer_started = false;
   writer_stop = false;
   busy = 0;
   writer_compressor.reset();
   discard_thread_buffers();
-  this->aggregator->reset_in_child();
-}
-
-void LocalBufferManager::write_block(char* block, size_t size) {
-  // Always one complete gzip member per write.
-  {
-    DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(COMPRESSION));
-    size = this->compressor->compress(block, size);
-  }
-  if (size > 0) {
-    DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(STORE));
-    this->writer->write(block, size, true);
-  }
 }
 
 // One complete gzip member per block, so blocks of different threads may
 // reach the file in any order.
 void LocalBufferManager::compress_and_store(GzipCompression& compressor,
                                             char* block, size_t size) {
-  {
-    DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(COMPRESSION));
-    size = compressor.compress(block, size);
-  }
-  if (size > 0) {
-    DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(STORE));
-    std::lock_guard<std::mutex> write_lock(write_mtx);
-    this->writer->write(block, size, true);
-  }
+  size = compress_member(compressor, block, size);
+  if (size > 0) store_member(block, size);
+}
+
+size_t LocalBufferManager::compress_member(GzipCompression& compressor,
+                                           char* block, size_t size) {
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(COMPRESSION));
+  return compressor.compress(block, size);
+}
+
+void LocalBufferManager::store_member(const char* member, size_t size) {
+  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(STORE));
+  std::lock_guard<std::mutex> write_lock(write_mtx);
+  this->writer->write(member, size, true);
 }
 
 LocalBufferManager::ThreadBuffer* LocalBufferManager::thread_buffer() {
@@ -155,6 +175,7 @@ LocalBufferManager::ThreadBuffer* LocalBufferManager::thread_buffer() {
     tb = thread_buffers.back().get();
   }
   tb->in_use = true;
+  arm_slot_reaper();
   slot.owner = this;
   slot.epoch = current;
   slot.tb = tb;
@@ -164,45 +185,53 @@ LocalBufferManager::ThreadBuffer* LocalBufferManager::thread_buffer() {
 void LocalBufferManager::release_thread_buffer(ThreadBuffer* tb,
                                                uint64_t tb_epoch) {
   if (tb_epoch != epoch.load(std::memory_order_acquire)) return;
-  char* data;
-  size_t pos;
+  char* empty;
+  bool queued;
   {
-    std::lock_guard<std::mutex> lock(tb->mtx);
-    data = tb->data;
-    pos = tb->pos;
-    tb->data = nullptr;
-    tb->pos = 0;
-    if (pos > 0) reserve_block();
+    std::lock_guard<SpinMutex> lock(tb->mtx);
+    queued = close_block_locked(tb, &empty);
   }
-  if (data != nullptr) {
-    if (pos > 0)
-      submit(data, pos);
-    else
-      give_block(data);
-  }
+  if (queued) submit(tb);
+  if (empty != nullptr) give_block(empty);
   std::lock_guard<std::mutex> lock(registry_mtx);
   tb->in_use = false;
 }
 
+void LocalBufferManager::detach_locked(ThreadBuffer* tb) {
+  tb->pending.push_back({tb->data, tb->pos});
+  tb->data = nullptr;
+  tb->pos = 0;
+  reserve_block();
+}
+
+bool LocalBufferManager::close_block_locked(ThreadBuffer* tb, char** empty) {
+  *empty = nullptr;
+  if (tb->data != nullptr && tb->pos > 0) {
+    detach_locked(tb);
+    return true;
+  }
+  *empty = tb->data;
+  tb->data = nullptr;
+  tb->pos = 0;
+  return false;
+}
+
 void LocalBufferManager::collect_thread_buffers() {
-  std::vector<Block> blocks;
+  std::vector<ThreadBuffer*> queued;
+  std::vector<char*> empty;
   {
     std::lock_guard<std::mutex> lock(registry_mtx);
     for (auto& tb : thread_buffers) {
-      std::lock_guard<std::mutex> tb_lock(tb->mtx);
-      if (tb->data == nullptr) continue;
-      blocks.push_back({tb->data, tb->pos});
-      tb->data = nullptr;
-      if (tb->pos > 0) reserve_block();
-      tb->pos = 0;
+      std::lock_guard<SpinMutex> tb_lock(tb->mtx);
+      char* block;
+      if (close_block_locked(tb.get(), &block))
+        queued.push_back(tb.get());
+      else if (block != nullptr)
+        empty.push_back(block);
     }
   }
-  for (const Block& block : blocks) {
-    if (block.size > 0)
-      submit(block.data, block.size);
-    else
-      give_block(block.data);
-  }
+  for (ThreadBuffer* tb : queued) submit(tb);
+  for (char* block : empty) give_block(block);
 }
 
 void LocalBufferManager::discard_thread_buffers() {
@@ -211,19 +240,19 @@ void LocalBufferManager::discard_thread_buffers() {
     std::lock_guard<std::mutex> lock(registry_mtx);
     epoch.fetch_add(1, std::memory_order_acq_rel);
     for (auto& tb : thread_buffers) {
-      std::lock_guard<std::mutex> tb_lock(tb->mtx);
+      std::lock_guard<SpinMutex> tb_lock(tb->mtx);
       if (tb->data != nullptr) blocks.push_back(tb->data);
+      for (const Block& block : tb->pending) blocks.push_back(block.data);
+      tb->pending.clear();
       tb->data = nullptr;
       tb->pos = 0;
       tb->in_use = false;
+      tb->aggregator.reset();
     }
   }
   {
     std::lock_guard<std::mutex> lock(queue_mtx);
-    for (const Block& block : queue) blocks.push_back(block.data);
     queue.clear();
-    if (writer_block != nullptr) blocks.push_back(writer_block);
-    writer_block = nullptr;
   }
   for (char* block : blocks) give_block(block);
 }
@@ -237,8 +266,7 @@ char* LocalBufferManager::take_block() {
       return block;
     }
   }
-  return static_cast<char*>(
-      malloc(chunk_size + DFTRACER_SERIALIZATION_EVENT_MAX));
+  return static_cast<char*>(malloc(chunk_size + kBlockSlack));
 }
 
 void LocalBufferManager::give_block(char* block) {
@@ -257,30 +285,131 @@ void LocalBufferManager::reserve_block() {
   ++busy;
 }
 
-void LocalBufferManager::submit(char* block, size_t size) {
+void LocalBufferManager::submit(ThreadBuffer* tb) {
   {
     std::lock_guard<std::mutex> lock(queue_mtx);
     if (writer_stop) {
       if (--busy == 0 && queue.empty()) idle_cv.notify_all();
+      char* block;
+      {
+        std::lock_guard<SpinMutex> tb_lock(tb->mtx);
+        block = tb->pending.front().data;
+        tb->pending.pop_front();
+      }
       give_block(block);
       return;
     }
     if (queue.size() < kMaxQueued && getpid() == writer_pid) {
       if (!writer_started && is_ready()) start_writer_locked();
       if (writer_started) {
-        queue.push_back({block, size});
+        queue.push_back(tb);
         --busy;
         queue_cv.notify_one();
         return;
       }
     }
   }
-  write_inline(block, size);
+  write_inline(tb);
   std::lock_guard<std::mutex> lock(queue_mtx);
   if (--busy == 0 && queue.empty()) idle_cv.notify_all();
 }
 
-void LocalBufferManager::write_inline(char* block, size_t size) {
+void LocalBufferManager::render_and_store(GzipCompression& compressor,
+                                          ThreadBuffer& tb) {
+  std::lock_guard<std::mutex> render(tb.render_mtx);
+  Block in;
+  {
+    std::lock_guard<SpinMutex> lock(tb.mtx);
+    if (tb.pending.empty()) return;
+    in = tb.pending.front();
+    tb.pending.pop_front();
+  }
+  auto flush = [this, &compressor](char*& data, size_t size) {
+    compress_and_store(compressor, data, size);
+  };
+  render_block(tb, tb.decoder, in, flush);
+}
+
+template <class Flush>
+void LocalBufferManager::render_block(ThreadBuffer& tb,
+                                      compact::Decoder& decoder, Block in,
+                                      Flush& flush) {
+  // JSON lines into a block of their own, flushed each time it fills.
+  struct Lines : Aggregator::RowSink {
+    Lines(LocalBufferManager& m, Flush& f)
+        : self(m), flush_block(f), data(m.take_block()) {}
+    char* row() override { return data + pos; }
+    void wrote(size_t size) override {
+      pos += size;
+      if (pos > self.chunk_size) flush();
+    }
+    void flush() {
+      if (pos > 0) flush_block(data, pos);
+      pos = 0;
+    }
+    LocalBufferManager& self;
+    Flush& flush_block;
+    char* data;
+    size_t pos = 0;
+  } out(*this, flush);
+  if (out.data == nullptr) {
+    give_block(in.data);
+    return;
+  }
+  const HashType hostname_hash = this->serializer->hostname();
+  const bool aggregate = this->config->aggregation_enable;
+  ipc::DecodedEvent event;
+  decoder.reset();
+  tb.lines.reset();
+  for (size_t at = 0; at + kRecordHead <= in.size;) {
+    uint16_t size;
+    std::memcpy(&size, in.data + at, sizeof(size));
+    const auto kind = static_cast<RecordKind>(in.data[at + sizeof(size)]);
+    const char* payload = in.data + at + kRecordHead;
+    at += kRecordHead + size;
+    if (kind == RecordKind::LINE) {
+      std::memcpy(out.row(), payload, size);
+      out.wrote(size);
+      continue;
+    }
+    const auto* bytes = reinterpret_cast<const uint8_t*>(payload);
+    if (kind == RecordKind::COMPACT ? !decoder.event(bytes, size, event)
+                                    : !ipc::decode_event(bytes, size, event))
+      continue;
+    if (aggregate) {
+      if (tb.aggregator == nullptr)
+        tb.aggregator = std::make_unique<Aggregator>(this->config);
+      if (tb.aggregator->wants(event, get_app_name(), &rank)) {
+        if (tb.aggregator->aggregate(event))
+          tb.aggregator->drain(false, event.head.process_id, hostname_hash,
+                               out);
+        continue;
+      }
+    }
+    const size_t shape =
+        kind == RecordKind::COMPACT ? decoder.shape() : ShapeLines::kNoShape;
+    out.wrote(this->serializer->data(out.row(), event, tb.lines, shape));
+  }
+  out.flush();
+  give_block(out.data);
+  give_block(in.data);
+}
+
+void LocalBufferManager::drain_thread_aggregators(bool all,
+                                                  ProcessID process_id) {
+  std::vector<ThreadBuffer*> tbs;
+  {
+    std::lock_guard<std::mutex> lock(registry_mtx);
+    for (auto& tb : thread_buffers) tbs.push_back(tb.get());
+  }
+  for (ThreadBuffer* tb : tbs) {
+    std::lock_guard<std::mutex> render(tb->render_mtx);
+    if (tb->aggregator != nullptr)
+      drain_events(*tb->aggregator, all, process_id);
+  }
+}
+
+void LocalBufferManager::write_inline(ThreadBuffer* tb) {
   std::unique_ptr<GzipCompression> compressor_;
   {
     std::lock_guard<std::mutex> lock(pool_mtx);
@@ -291,10 +420,9 @@ void LocalBufferManager::write_inline(char* block, size_t size) {
   }
   if (compressor_ == nullptr) {
     compressor_ = std::make_unique<GzipCompression>();
-    compressor_->initialize(chunk_size + DFTRACER_SERIALIZATION_EVENT_MAX);
+    compressor_->initialize(chunk_size + kBlockSlack);
   }
-  compress_and_store(*compressor_, block, size);
-  give_block(block);
+  render_and_store(*compressor_, *tb);
   std::lock_guard<std::mutex> lock(pool_mtx);
   compressor_pool.push_back(std::move(compressor_));
 }
@@ -303,8 +431,7 @@ void LocalBufferManager::start_writer_locked() {
   // The writer takes no signals: they stay with the application's threads.
   if (writer_compressor == nullptr) {
     writer_compressor = std::make_unique<GzipCompression>();
-    writer_compressor->initialize(chunk_size +
-                                  DFTRACER_SERIALIZATION_EVENT_MAX);
+    writer_compressor->initialize(chunk_size + kBlockSlack);
   }
   sigset_t all, old;
   sigfillset(&all);
@@ -326,16 +453,11 @@ void LocalBufferManager::run_writer() {
   for (;;) {
     queue_cv.wait(lock, [this] { return writer_stop || !queue.empty(); });
     if (queue.empty()) return;
-    const Block block = queue.front();
+    ThreadBuffer* tb = queue.front();
     queue.pop_front();
     ++busy;
-    writer_block = block.data;
     lock.unlock();
-    compress_and_store(own, block.data, block.size);
-    lock.lock();
-    writer_block = nullptr;
-    lock.unlock();
-    give_block(block.data);
+    render_and_store(own, *tb);
     lock.lock();
     if (--busy == 0 && queue.empty()) idle_cv.notify_all();
   }
@@ -355,80 +477,53 @@ void LocalBufferManager::drain_writer(bool stop) {
   writer_compressor.reset();
 }
 
-void LocalBufferManager::append(const char* line, size_t size) {
+template <class Fill>
+void LocalBufferManager::append(RecordKind kind, Fill fill) {
   ThreadBuffer* tb = thread_buffer();
-  char* full;
-  size_t full_size;
   {
-    std::lock_guard<std::mutex> lock(tb->mtx);
+    std::lock_guard<SpinMutex> lock(tb->mtx);
     if (tb->data == nullptr) {
       if (!is_ready()) return;
       tb->data = take_block();
       if (tb->data == nullptr) return;
+      tb->encoder.reset();
     }
-    std::memcpy(tb->data + tb->pos, line, size);
-    tb->pos += size;
+    char* at = tb->data + tb->pos;
+    const size_t size = fill(at + kRecordHead, *tb);
+    if (size == 0) return;
+    const uint16_t n = static_cast<uint16_t>(size);
+    std::memcpy(at, &n, sizeof(n));
+    at[sizeof(n)] = static_cast<char>(kind);
+    tb->pos += kRecordHead + size;
     if (tb->pos <= chunk_size) return;
-    full = tb->data;
-    full_size = tb->pos;
-    tb->data = nullptr;
-    tb->pos = 0;
-    reserve_block();
+    detach_locked(tb);
   }
-  submit(full, full_size);
+  submit(tb);
+}
+
+template <class Encode>
+bool LocalBufferManager::append_ring_event(Encode encode) {
+  bool fits = true;
+  append(RecordKind::EVENT, [&](char* out, ThreadBuffer&) -> size_t {
+    thread_local std::vector<uint8_t> overflow;
+    ipc::ByteWriter w(reinterpret_cast<uint8_t*>(out),
+                      DFTRACER_SERIALIZATION_EVENT_MAX, overflow);
+    encode(w);
+    fits = !w.moved();
+    return fits ? w.size() : 0;
+  });
+  return fits;
 }
 
 template <class Serialize>
 void LocalBufferManager::log_line(Serialize serialize) {
-  if (attached_mode) {
-    std::unique_lock<std::shared_mutex> lock(mtx);
-    compress_and_write_if_needed(serialize(buffer + buffer_pos));
-    return;
-  }
-  append(line_scratch, serialize(line_scratch));
-}
-
-void LocalBufferManager::attach(char* chunk, size_t used, size_t capacity_,
-                                ChunkSink* sink_) {
-  buffer = chunk;
-  buffer_pos = used;
-  capacity = capacity_;
-  sink = sink_;
-}
-
-size_t LocalBufferManager::detach() {
-  const size_t used = buffer_pos;
-  buffer = nullptr;
-  buffer_pos = 0;
-  sink = nullptr;
-  return used;
+  append(RecordKind::LINE,
+         [&](char* out, ThreadBuffer&) { return serialize(out); });
 }
 
 void LocalBufferManager::compress_and_write_if_needed(size_t size, bool force) {
-  if (attached_mode) {
-    if (buffer_pos + size > capacity && sink != nullptr) {
-      sink->flush(buffer, buffer_pos + size);
-      buffer_pos = 0;
-    } else {
-      buffer_pos += size;
-    }
-    return;
-  }
   if (force || buffer_pos + size > this->config->write_buffer_size) {
-    // On forced flush, serialize any remaining aggregated data
-    if (force && this->config->aggregation_enable) {
-      buffer_pos += size;
-      size = 0;
-      auto data = dftracer::AggregatedDataType();
-      DFTRACER_PROFILE_SCOPE_UNCOUNTED(DFTRACER_PROFILE_PHASE(AGGREGATION));
-      if (this->aggregator->get_previous_aggregations(data, false))
-        write_aggregations(data, 0, rank);
-    }
-
-    {
-      std::lock_guard<std::mutex> write_lock(write_mtx);
-      write_block(buffer, buffer_pos + size);
-    }
+    compress_and_store(*this->compressor, buffer, buffer_pos + size);
     buffer_pos = 0;
   } else {
     buffer_pos += size;
@@ -442,13 +537,7 @@ int LocalBufferManager::initialize(const char* filename,
   DFTRACER_LOG_DEBUG("BufferManager.initialize %s %s", filename, hostname_hash);
   this->config =
       dftracer::Singleton<dftracer::ConfigurationManager>::get_instance();
-  if (attached_mode) {
-    this->serializer->initialize(nullptr, hostname_hash);
-    if (this->config->aggregation_enable)
-      packed_aggregator = std::make_unique<PackedAggregator>(this->config);
-    ready.store(true, std::memory_order_release);
-    return 0;
-  }
+  include_metadata_flag = this->config->metadata ? SHM_EVENT_INC_METADATA : 0;
   const size_t buffer_bytes =
       this->config->write_buffer_size + DFTRACER_SERIALIZATION_EVENT_MAX;
   if (buffer == nullptr) buffer = (char*)malloc(buffer_bytes);
@@ -465,12 +554,10 @@ int LocalBufferManager::initialize(const char* filename,
   this->writer = dftracer::Singleton<dftracer::STDIOWriter>::get_instance();
   this->writer->initialize(filename);
   this->serializer = dftracer::Singleton<dftracer::JsonLines>::get_instance();
-  this->aggregator = dftracer::Singleton<dftracer::Aggregator>::get_instance();
   this->compressor =
       dftracer::Singleton<dftracer::GzipCompression>::get_instance();
   this->compressor->initialize(this->config->write_buffer_size);
-  size_t size = this->serializer->initialize(buffer, hostname_hash);
-  compress_and_write_if_needed(size);
+  this->serializer->initialize(buffer, hostname_hash);
   fork_owner.store(this, std::memory_order_release);
   // Everything this object needs (config, buffer, compressor, serializer) is
   // now wired. Only from here is it safe for an asynchronous producer to log.
@@ -484,27 +571,13 @@ int LocalBufferManager::finalize(int index, ProcessID process_id) {
   // enter a half-dismantled manager.
   ready.store(false, std::memory_order_release);
   std::unique_lock<std::shared_mutex> lock(mtx);
-  if (attached_mode) {
-    // Only the aggregates still open; the chunk belongs to the caller.
-    if (buffer != nullptr && this->config->aggregation_enable) {
-      auto data = dftracer::AggregatedDataType();
-      DFTRACER_PROFILE_SCOPE_UNCOUNTED(DFTRACER_PROFILE_PHASE(AGGREGATION));
-      this->aggregator->get_previous_aggregations(data, true);
-      write_aggregations(data, index, process_id);
-      this->aggregator->finalize();
-      drain_packed(true, process_id);
-    }
-    return 0;
-  }
   if (buffer) {
     size_t size = 0;
     collect_thread_buffers();
+    drain_writer(false);
     if (this->config->aggregation_enable) {
-      auto data = dftracer::AggregatedDataType();
       DFTRACER_PROFILE_SCOPE_UNCOUNTED(DFTRACER_PROFILE_PHASE(AGGREGATION));
-      this->aggregator->get_previous_aggregations(data, true);
-      write_aggregations(data, index, process_id);
-      this->aggregator->finalize();
+      drain_thread_aggregators(true, process_id);
     }
     compress_and_write_if_needed(size, true);
     drain_writer(true);
@@ -530,18 +603,17 @@ int LocalBufferManager::finalize(int index, ProcessID process_id) {
 }
 
 void LocalBufferManager::flush() {
-  if (!is_ready() || attached_mode) return;
+  if (!is_ready()) return;
   collect_thread_buffers();
   std::unique_lock<std::shared_mutex> lock(mtx);
   if (buffer == nullptr) return;
   size_t size = 0;
+  drain_writer(false);
   if (this->config->aggregation_enable) {
     // All intervals, the current one too: after a successful exec nothing
     // would write them. If exec fails, later events open fresh buckets.
-    auto data = dftracer::AggregatedDataType();
     DFTRACER_PROFILE_SCOPE_UNCOUNTED(DFTRACER_PROFILE_PHASE(AGGREGATION));
-    if (this->aggregator->get_previous_aggregations(data, true) > 0)
-      write_aggregations(data, 0, static_cast<ProcessID>(getpid()));
+    drain_thread_aggregators(true, static_cast<ProcessID>(getpid()));
   }
   compress_and_write_if_needed(size, true);
   drain_writer(false);
@@ -550,54 +622,65 @@ void LocalBufferManager::flush() {
 }
 
 void LocalBufferManager::log_data_event(
-    int index, ConstEventNameType event_name, ConstEventNameType category,
+    int index, std::string_view event_name, std::string_view category,
     TraceEventType type, TimeResolution start_time, TimeResolution duration,
-    dftracer::Metadata* metadata, ProcessID process_id, ThreadID tid) {
-  // Reject events outside [initialize(), finalize()) -- see is_ready().
+    const dftracer::EventDraft* args, ProcessID process_id, ThreadID tid) {
   if (!is_ready()) return;
   DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(BUFFER));
-  DFTRACER_LOG_DEBUG("BufferManager.log_data_event %d", index);
-  auto trace_in_full = [&] {
-    log_line([&](char* out) {
-      return this->serializer->data(out, index, event_name, category, type,
-                                    start_time, duration, metadata, process_id,
-                                    tid);
-    });
-  };
-  // An event type that is not aggregatable is always traced in full.
-  if (!this->config->aggregation_enable || strcmp(category, "dftracer") == 0 ||
-      !dftracer::event_type_aggregatable(type)) {
-    trace_in_full();
+  const uint8_t flags = static_cast<uint8_t>(
+      event_flags(type) | (args != nullptr ? SHM_EVENT_HAS_METADATA : 0));
+  if (compact::Encoder::bound(event_name, category, args) >
+      DFTRACER_SERIALIZATION_EVENT_MAX) {
+    const auto encode = [&](ipc::ByteWriter& w) {
+      ipc::encode_event_entries(w, index, event_name, category, type,
+                                start_time, duration, args, process_id, tid,
+                                flags);
+    };
+    if (append_ring_event(encode)) return;
+    // Too long for one record: the line, cut at the line limit.
+    thread_local std::vector<uint8_t> encoded;
+    thread_local ipc::DecodedEvent event;
+    ipc::ByteWriter w(encoded);
+    encode(w);
+    if (!ipc::decode_event(encoded.data(), encoded.size(), event)) return;
+    log_line([&](char* out) { return this->serializer->data(out, event); });
     return;
   }
-  // Counted once per event that goes through the aggregator; writing a
-  // finished interval out (serialization, compression, store) nests in it.
-  DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(AGGREGATION));
-  auto aggregated_key =
-      AggregatedKey{category, event_name, type,           start_time, duration,
-                    tid,      metadata,   get_app_name(), &rank};
-  if (this->config->aggregation_type ==
-          AggregationType::AGGREGATION_TYPE_SELECTIVE &&
-      !this->aggregator->should_aggregate(&aggregated_key)) {
-    trace_in_full();
-    return;
+  append(RecordKind::COMPACT, [&](char* out, ThreadBuffer& tb) -> size_t {
+    return tb.encoder.event(reinterpret_cast<uint8_t*>(out), index, event_name,
+                            category, type, start_time, duration, args,
+                            process_id, tid, flags);
+  });
+}
+
+bool LocalBufferManager::log_site_event(const dftracer::SiteEvent& e) {
+  const dftracer::SiteInfo& info = *e.info;
+  if (!is_ready() || info.bound > DFTRACER_SERIALIZATION_EVENT_MAX)
+    return false;
+  // Counted only for an event logged here: a miss is counted by the
+  // log_data_event() that follows.
+  DFTRACER_PROFILE_BEGIN(buffer_frame);
+  const uint8_t flags =
+      static_cast<uint8_t>(event_flags(info.type) | SHM_EVENT_HAS_METADATA);
+  bool logged = false;
+  append(RecordKind::COMPACT, [&](char* out, ThreadBuffer& tb) -> size_t {
+    const size_t n =
+        tb.encoder.site_event(reinterpret_cast<uint8_t*>(out), e, flags);
+    logged = n != 0;
+    return n;
+  });
+  if (logged) {
+    DFTRACER_PROFILE_END(buffer_frame, DFTRACER_PROFILE_PHASE(BUFFER), true);
+  } else {
+    DFTRACER_PROFILE_END(buffer_frame, DFTRACER_PROFILE_PHASE(BUFFER), false);
   }
-  const bool interval_changed = this->aggregator->aggregate(aggregated_key);
-  // aggregate() only reads additional_keys; it never stores or frees them.
-  Metadata::release(metadata);
-  if (!interval_changed) return;
-  std::unique_lock<std::shared_mutex> lock(mtx);
-  if (buffer == nullptr) return;
-  auto data = dftracer::AggregatedDataType();
-  this->aggregator->get_previous_aggregations(data, false);
-  if (!data.empty()) write_aggregations(data, index, process_id);
+  return logged;
 }
 
 void LocalBufferManager::log_counter_event(
     int index, ConstEventNameType name, ConstEventNameType category,
     TraceEventType type, TimeResolution start_time, ProcessID process_id,
     ThreadID thread_id, dftracer::Metadata* metadata) {
-  // Reject events outside [initialize(), finalize()) -- see is_ready().
   if (!is_ready()) return;
   DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(BUFFER));
   DFTRACER_LOG_DEBUG("BufferManager.log_counter_event %d", index);
@@ -637,7 +720,6 @@ void LocalBufferManager::log_metadata_event(ConstEventNameType name,
                                             TraceEventType type,
                                             ProcessID process_id, ThreadID tid,
                                             bool is_string) {
-  // Reject events outside [initialize(), finalize()) -- see is_ready().
   if (!is_ready()) return;
   DFTRACER_PROFILE_SCOPE(DFTRACER_PROFILE_PHASE(BUFFER));
   DFTRACER_LOG_DEBUG("BufferManager.log_metadata_event %s", value);
@@ -647,51 +729,11 @@ void LocalBufferManager::log_metadata_event(ConstEventNameType name,
   });
 }
 
-void LocalBufferManager::log_packed_event(const ipc::DecodedEvent& event,
-                                          bool counter) {
-  if (!is_ready()) return;
-  std::unique_lock<std::shared_mutex> lock(mtx);
-  const HashType hostname_hash = this->serializer->hostname();
-  if (counter) {
-    compress_and_write_if_needed(
-        packed_json::counter(buffer + buffer_pos, event, hostname_hash));
-    return;
-  }
-  // As log_data_event: everything but dftracer's own events and kinds that
-  // are never aggregated is, or under SELECTIVE what the rules pick.
-  if (packed_aggregator != nullptr && event.category != "dftracer" &&
-      (event.head.flags & SHM_EVENT_NO_AGGREGATE) == 0 &&
-      (this->config->aggregation_type !=
-           AggregationType::AGGREGATION_TYPE_SELECTIVE ||
-       packed_aggregator->should_aggregate(event, get_app_name(), &rank))) {
-    if (packed_aggregator->aggregate(event))
-      drain_packed(false, event.head.process_id);
-    return;
-  }
-  compress_and_write_if_needed(
-      packed_json::data(buffer + buffer_pos, event, hostname_hash));
-}
-
-void LocalBufferManager::write_aggregations(dftracer::AggregatedDataType& data,
-                                            int index, ProcessID process_id) {
-  // Same shape as drain_packed: each row into the buffer, then the usual
-  // fill check, so a long interval moves on to a fresh buffer.
-  struct BufferRows : JsonLines::RowSink {
-    explicit BufferRows(LocalBufferManager& m) : self(m) {}
-    char* row() override { return self.buffer + self.buffer_pos; }
-    void wrote(size_t size) override {
-      self.compress_and_write_if_needed(size);
-    }
-    LocalBufferManager& self;
-  } rows(*this);
-  this->serializer->aggregated(rows, index, process_id, data);
-}
-
-void LocalBufferManager::drain_packed(bool all, ProcessID process_id) {
-  if (packed_aggregator == nullptr) return;
-  // One row at a time, each into the chunk, so a long drain moves on to a
-  // fresh chunk instead of running past this one's slack.
-  struct ChunkRows : PackedAggregator::RowSink {
+void LocalBufferManager::drain_events(Aggregator& aggregator, bool all,
+                                      ProcessID process_id) {
+  // One row at a time, so a long drain writes the buffer out instead of
+  // running past its slack.
+  struct ChunkRows : Aggregator::RowSink {
     explicit ChunkRows(LocalBufferManager& m) : self(m) {}
     char* row() override { return self.buffer + self.buffer_pos; }
     void wrote(size_t size) override {
@@ -699,6 +741,6 @@ void LocalBufferManager::drain_packed(bool all, ProcessID process_id) {
     }
     LocalBufferManager& self;
   } rows(*this);
-  packed_aggregator->drain(all, process_id, this->serializer->hostname(), rows);
+  aggregator.drain(all, process_id, this->serializer->hostname(), rows);
 }
 }  // namespace dftracer

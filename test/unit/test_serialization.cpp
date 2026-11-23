@@ -1,14 +1,32 @@
+#include <dftracer/core/aggregator/aggregator.h>
+#include <dftracer/core/common/event_draft.h>
 #include <dftracer/core/common/singleton.h>
+#include <dftracer/core/ipc/event_codec.h>
 #include <dftracer/core/serialization/json_line.h>
 #include <dftracer/core/utils/configuration_manager.h>
 
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "check.h"
+#include "event_feed.h"
 
 using namespace dftracer;
+
+namespace {
+
+// The rows of one event, aggregated alone.
+std::string aggregated_row(const ipc::DecodedEvent& event) {
+  Aggregator aggregator(Singleton<ConfigurationManager>::get_instance());
+  aggregator.aggregate(event);
+  Rows rows;
+  aggregator.drain(true, 1234, const_cast<char*>("test_hash_12345"), rows);
+  return rows.text();
+}
+
+}  // namespace
 
 void test_initialize_serialization() {
   std::cout << "=== Test: Initialize Serialization ===\n" << std::endl;
@@ -40,7 +58,6 @@ void test_data_event_serialization() {
   HashType hostname_hash = const_cast<char*>("test_hash_12345");
   serializer->initialize(buffer, hostname_hash);
 
-  // Create metadata for data event
   ConstEventNameType category = "posix";
   ConstEventNameType event_name = "read";
   TimeResolution start_time = 2000000;
@@ -48,17 +65,20 @@ void test_data_event_serialization() {
   ProcessID process_id = 1234;
   ThreadID thread_id = 1;
 
-  Metadata* metadata = new Metadata();
-  metadata->insert_or_assign("file_name", std::string("/tmp/test.dat"));
-  metadata->insert_or_assign("file_size", static_cast<size_t>(1024));
-  metadata->insert_or_assign("file_offset", static_cast<size_t>(0));
+  EventDraft args;
+  args.set("file_name", std::string("/tmp/test.dat"));
+  args.set("file_size", static_cast<size_t>(1024));
+  args.set("file_offset", static_cast<size_t>(0));
 
-  size_t size = serializer->data(buffer, index, event_name, category,
-                                 TraceEventType::TRACE_TYPE_LIBC_IO, start_time,
-                                 duration, metadata, process_id, thread_id);
+  Feed feed;
+  size_t size = serializer->data(
+      buffer,
+      feed.make(category, event_name, TraceEventType::TRACE_TYPE_LIBC_IO,
+                start_time, duration, process_id, thread_id, &args,
+                static_cast<int>(index)));
 
   DFT_CHECK(size > 0);
-  std::string result(buffer);
+  std::string result(buffer, size);
   DFT_CHECK(result.find("read") != std::string::npos);
   DFT_CHECK(result.find("posix") != std::string::npos);
   // The layer that produced the event is carried in "type"; "cat" is unchanged.
@@ -73,46 +93,28 @@ void test_aggregated_serialization() {
   auto serializer = Singleton<JsonLines>::get_instance();
 
   char buffer[8192];
-  size_t index = 0;
 
   HashType hostname_hash = const_cast<char*>("test_hash_12345");
   serializer->initialize(buffer, hostname_hash);
 
-  // Create aggregated data structures
-  Metadata* meta1 = new Metadata();
-  meta1->insert_or_assign("test", std::string("value1"));
+  EventDraft args1, args2;
+  args1.set("test", std::string("value1"));
+  args2.set("test", std::string("value2"));
 
-  Metadata* meta2 = new Metadata();
-  meta2->insert_or_assign("test", std::string("value2"));
+  Feed feed;
+  const std::string row1 = aggregated_row(
+      feed.make("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO, 1000000,
+                5000, 1234, 1, &args1));
+  DFT_CHECK(!row1.empty());
+  DFT_CHECK(row1.find("read") != std::string::npos);
+  DFT_CHECK(row1.find("\"test\":\"value1\"") != std::string::npos);
 
-  AggregatedKey key1("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     1000000, 5000, 1, meta1, nullptr, nullptr);
-  AggregatedKey key2("posix", "write", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     1000000, 2000, 1, meta2, nullptr, nullptr);
-
-  // AggregatedDataType is map<TimeResolution, unordered_map<AggregatedKey,
-  // AggregatedValues*>>
-  AggregatedDataType data1, data2;
-  TimeResolution time_interval = 1000000;
-
-  // Create the inner map first
-  data1[time_interval][key1] = new AggregatedValues();
-  data2[time_interval][key2] = new AggregatedValues();
-
-  // Serialize aggregated data
-  char buffer1[4096];
-  size_t size1 = serializer->aggregated(buffer1, index, 1234, data1);
-  DFT_CHECK(size1 > 0);
-  DFT_CHECK(std::string(buffer1).find("read") != std::string::npos);
-
-  char buffer2[4096];
-  size_t size2 = serializer->aggregated(buffer2, index, 1234, data2);
-  DFT_CHECK(size2 > 0);
-  DFT_CHECK(std::string(buffer2).find("write") != std::string::npos);
-
-  // Clean up allocated memory
-  delete data1[time_interval][key1];
-  delete data2[time_interval][key2];
+  const std::string row2 = aggregated_row(
+      feed.make("posix", "write", TraceEventType::TRACE_TYPE_LIBC_IO, 1000000,
+                2000, 1234, 1, &args2));
+  DFT_CHECK(!row2.empty());
+  DFT_CHECK(row2.find("write") != std::string::npos);
+  DFT_CHECK(row2.find("\"test\":\"value2\"") != std::string::npos);
 
   std::cout << "✓ Aggregated serialization test passed\n" << std::endl;
 }
@@ -126,10 +128,12 @@ void test_type_column_serialization() {
   serializer->initialize(buffer, hostname_hash);
 
   // A data event carries the type it was logged with, not a fixed value.
-  serializer->data(buffer, 0, "read", "POSIX", TraceEventType::TRACE_TYPE_HDF5,
-                   1000, 10, nullptr, 1234, 1);
-  DFT_CHECK(std::string(buffer).find("\"type\":5") != std::string::npos);
-  DFT_CHECK(std::string(buffer).find("\"ph\":1") != std::string::npos);
+  Feed feed;
+  size_t size = serializer->data(
+      buffer, feed.make("POSIX", "read", TraceEventType::TRACE_TYPE_HDF5, 1000,
+                        10, 1234, 1, nullptr));
+  DFT_CHECK(std::string(buffer, size).find("\"type\":5") != std::string::npos);
+  DFT_CHECK(std::string(buffer, size).find("\"ph\":1") != std::string::npos);
 
   // Counter events carry it too.
   serializer->counter(buffer, 0, "memory", "sys",
@@ -163,29 +167,21 @@ void test_aggregated_preserves_type() {
   std::cout << "=== Test: Aggregated Preserves Type ===\n" << std::endl;
 
   auto serializer = Singleton<JsonLines>::get_instance();
-  char buffer[8192];
   HashType hostname_hash = const_cast<char*>("test_hash_12345");
-  serializer->initialize(buffer, hostname_hash);
+  serializer->initialize(nullptr, hostname_hash);
 
-  Metadata* meta = new Metadata();
-  meta->insert_or_assign("test", std::string("value"));
-  AggregatedKey key("MPIIO", "MPI_File_read", TraceEventType::TRACE_TYPE_MPI,
-                    1000000, 5000, 1, meta, nullptr, nullptr);
-
-  AggregatedDataType data;
-  TimeResolution interval = 1000000;
-  data[interval][key] = new AggregatedValues();
-
-  char out[4096];
-  size_t size = serializer->aggregated(out, 0, 1234, data);
-  DFT_CHECK(size > 0);
+  EventDraft args;
+  args.set("test", std::string("value"));
+  Feed feed;
+  const std::string out = aggregated_row(
+      feed.make("MPIIO", "MPI_File_read", TraceEventType::TRACE_TYPE_MPI,
+                1000000, 5000, 1234, 1, &args));
+  DFT_CHECK(!out.empty());
   // The aggregated record keeps the type of the layer it came from, and is
   // marked AGGREGATED rather than COUNTER so the two can be told apart.
-  DFT_CHECK(std::string(out).find("\"type\":10") != std::string::npos);
-  DFT_CHECK(std::string(out).find("\"ph\":3") != std::string::npos);
-  DFT_CHECK(std::string(out).find("\"ph\":2") == std::string::npos);
-
-  delete data[interval][key];
+  DFT_CHECK(out.find("\"type\":10") != std::string::npos);
+  DFT_CHECK(out.find("\"ph\":3") != std::string::npos);
+  DFT_CHECK(out.find("\"ph\":2") == std::string::npos);
 
   std::cout << "\u2713 Aggregated type test passed\n" << std::endl;
 }
@@ -201,13 +197,15 @@ void test_multiple_events() {
 
   // Serialize multiple data events
   for (size_t i = 0; i < 3; ++i) {
-    Metadata* event_meta = new Metadata();
-    event_meta->insert_or_assign("iteration", static_cast<size_t>(i));
+    EventDraft args;
+    args.set("iteration", static_cast<size_t>(i));
 
-    total_size +=
-        serializer->data(buffer + total_size, i, "open", "posix",
-                         TraceEventType::TRACE_TYPE_LIBC_IO,
-                         1000000 + i * 10000, 5000, event_meta, 1234, 1);
+    Feed feed;
+    total_size += serializer->data(
+        buffer + total_size,
+        feed.make("posix", "open", TraceEventType::TRACE_TYPE_LIBC_IO,
+                  1000000 + i * 10000, 5000, 1234, 1, &args,
+                  static_cast<int>(i)));
   }
 
   // Verify buffer contains multiple events

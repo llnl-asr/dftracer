@@ -29,11 +29,12 @@ Exit 0 if equivalent.
 """
 import argparse
 import collections
-import gzip
 import json
 import os
 import re
 import sys
+
+from trace_io import iter_lines
 
 # Values that legitimately differ between two runs or between the two modes.
 # "capacity" is an FS mount record's free/used space at finalize, which any
@@ -79,16 +80,11 @@ MIN_KEPT_EVENTS = 5
 
 def load(path):
     events, bad = [], 0
-    opener = gzip.open if path.endswith(".gz") else open
-    with opener(path, "rt") as f:
-        for line in f:
-            line = line.strip().rstrip(",")
-            if not line or line in ("[", "]"):
-                continue
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                bad += 1
+    for line in iter_lines([path], objects_only=False):
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            bad += 1
     return events, bad
 
 
@@ -165,12 +161,14 @@ def summarize(events):
             aggregated[(e.get("name"), e.get("cat"))] += args.get("dft_cnt", 0)
             continue
         if "id" in e:
-            event_ids.append(e["id"])
+            event_ids.append((e.get("pid"), e["id"]))
         key = (e.get("name"), e.get("cat"), e.get("type"), e.get("ph"),
                json.dumps(args, sort_keys=True))
         plain[key] += 1
     return {"events": plain, "aggregated": aggregated,
-            "ids": sorted(event_ids), "polls": sum(polls.values()),
+            # Unique, not dense: each thread takes ids in blocks.
+            "ids": (len(event_ids), len(set(event_ids)) == len(event_ids)),
+            "polls": sum(polls.values()),
             "processes": len(pids), "threads": len({(e.get("pid"), e.get("tid"))
                                                     for e in events})}
 
@@ -223,8 +221,12 @@ def main():
         # Event ids number the events written out, so they follow the split.
         # They also number the polls, whose count depends on timing.
         if folded or a["polls"] != b["polls"]:
-            s["ids"] = []
+            s["ids"] = (0, True)
     ok = bad_local == 0 and bad_node == 0
+    for name, s in (("in-process", a), ("service", b)):
+        if not s["ids"][1]:
+            ok = False
+            print(f"  {name}: an id repeats within a process")
     for key in ("events", "aggregated", "ids", "processes", "threads"):
         if a[key] != b[key]:
             ok = False

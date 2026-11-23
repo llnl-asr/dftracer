@@ -83,6 +83,7 @@ class DFTracerService {
         options.node_file = conf->log_file;
         options.hostname_hash = hostname_hash;
         options.compression_level = conf->pc_compression_level;
+        options.service_cpus = conf->pc_service_cpus;
         options.rollover_bytes =
             static_cast<uint64_t>(conf->pc_rollover_mb * (1 << 20));
         // The service logs its telemetry through its own ring, so it can

@@ -4,10 +4,11 @@
 #include <dftracer/core/buffer/chunk_sink.h>
 #include <dftracer/core/compression/gzip_compression.h>
 #include <fcntl.h>
-#include <libdeflate.h>
+#include <isa-l/igzip_lib.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstdint>
@@ -100,6 +101,41 @@ class NodeTraceFile {
 
   uint64_t bytes() const { return total_.load(std::memory_order_relaxed); }
 
+  /** Length of the leading run of complete, valid gzip members in data. */
+  static size_t complete_members(const char* data, size_t len) {
+    // Each member is decoded through a small buffer that is thrown away: only
+    // whether it ends, with a matching CRC and length, is wanted.
+    auto state = std::make_unique<inflate_state>();
+    std::vector<uint8_t> out(1u << 20);
+    size_t done = 0;
+    while (done < len) {
+      isal_inflate_init(state.get());
+      state->crc_flag = ISAL_GZIP;
+      state->next_in =
+          reinterpret_cast<uint8_t*>(const_cast<char*>(data + done));
+      state->avail_in =
+          static_cast<uint32_t>(std::min<size_t>(len - done, UINT32_MAX));
+      bool ok = true;
+      while (state->block_state != ISAL_BLOCK_FINISH) {
+        state->next_out = out.data();
+        state->avail_out = static_cast<uint32_t>(out.size());
+        const uint32_t avail_before = state->avail_in;
+        if (isal_inflate(state.get()) != ISAL_DECOMP_OK ||
+            (state->avail_in == avail_before &&
+             state->avail_out == out.size())) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) break;
+      const size_t used = static_cast<size_t>(
+          reinterpret_cast<const char*>(state->next_in) - (data + done));
+      if (used == 0) break;
+      done += used;
+    }
+    return done;
+  }
+
  private:
   bool open_file(const std::string& path) {
     const int fd =
@@ -147,28 +183,6 @@ class NodeTraceFile {
     return true;
   }
 
-  /** Length of the leading run of complete, valid gzip members in data. */
-  static size_t complete_members(const char* data, size_t len) {
-    libdeflate_decompressor* d = libdeflate_alloc_decompressor();
-    if (d == nullptr) return 0;
-    std::vector<char> out(64u << 20);
-    size_t done = 0;
-    while (done < len) {
-      size_t in_used = 0, out_used = 0;
-      libdeflate_result r =
-          libdeflate_gzip_decompress_ex(d, data + done, len - done, out.data(),
-                                        out.size(), &in_used, &out_used);
-      if (r == LIBDEFLATE_INSUFFICIENT_SPACE && out.size() < (1ull << 31)) {
-        out.resize(out.size() * 2);
-        continue;
-      }
-      if (r != LIBDEFLATE_SUCCESS || in_used == 0) break;
-      done += in_used;
-    }
-    libdeflate_free_decompressor(d);
-    return done;
-  }
-
   std::mutex mtx_;  // guards the fields below but total_
   int fd_ = -1;
   std::vector<int> fds_;
@@ -184,7 +198,7 @@ class NodeTraceFile {
  * A drain thread's output chunk: the JSON lines of whatever producers it
  * replays, compressed into one gzip member and written to the node file when
  * it reaches `capacity`, gets old, or the thread goes idle. It is the
- * ChunkSink of the LocalBufferManager attached to it.
+ * ChunkSink of the LaneBuffer attached to it.
  */
 class ChunkWriter : public ChunkSink {
  public:

@@ -1,13 +1,17 @@
 #include <dftracer/core/aggregator/aggregator.h>
 #include <dftracer/core/aggregator/rules.h>
-#include <dftracer/core/common/singleton.h>
+#include <dftracer/core/common/event_draft.h>
+#include <dftracer/core/ipc/event_codec.h>
 #include <dftracer/core/utils/configuration_manager.h>
 
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "check.h"
+#include "event_feed.h"
 
 using namespace dftracer;
 
@@ -96,322 +100,273 @@ void test_like_pattern_matching() {
   std::cout << "✓ LIKE pattern matching test passed\n" << std::endl;
 }
 
+namespace {
+
+constexpr ProcessID kPid = 1234;
+char kHostname[] = "test_hash_12345";
+
+// An Aggregator's configuration is read from the environment when its
+// ConfigurationManager is built, so each test builds its own. Rules come from
+// the aggregation file in a real run; here they are set on the configuration.
+std::shared_ptr<ConfigurationManager> make_config(
+    const char* type, const char* interval_ms, const char* inclusion = nullptr,
+    const char* exclusion = nullptr) {
+  setenv("DFTRACER_ENABLE", "1", 1);
+  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
+  setenv("DFTRACER_AGGREGATION_TYPE", type, 1);
+  setenv("DFTRACER_TRACE_INTERVAL_MS", interval_ms, 1);
+  auto config = std::make_shared<ConfigurationManager>();
+  if (inclusion != nullptr)
+    config->aggregation_inclusion_rules.push_back(inclusion);
+  if (exclusion != nullptr)
+    config->aggregation_exclusion_rules.push_back(exclusion);
+  return config;
+}
+
+struct AggFeed {
+  const ipc::DecodedEvent& make(
+      const char* category, const char* name, TimeResolution ts,
+      TimeResolution dur, ThreadID tid, const EventDraft& args,
+      TraceEventType type = TraceEventType::TRACE_TYPE_LIBC_IO) {
+    return feed.make(category, name, type, ts, dur, kPid, tid, &args);
+  }
+  Feed feed;
+};
+
+std::vector<std::string> drain(Aggregator& aggregator, bool all) {
+  Rows rows;
+  aggregator.drain(all, kPid, kHostname, rows);
+  return rows.lines();
+}
+
+bool has(const std::string& line, const std::string& part) {
+  return line.find(part) != std::string::npos;
+}
+
+// The one line that has every part.
+const std::string& row(const std::vector<std::string>& lines,
+                       const std::vector<std::string>& parts) {
+  const std::string* found = nullptr;
+  for (const auto& line : lines) {
+    bool all = true;
+    for (const auto& part : parts) all = all && has(line, part);
+    if (!all) continue;
+    DFT_CHECK(found == nullptr);
+    found = &line;
+  }
+  DFT_CHECK(found != nullptr);
+  return *found;
+}
+
+}  // namespace
+
 void test_aggregator_basic() {
   std::cout << "=== Test: Aggregator Basic Functionality ===\n" << std::endl;
 
-  // Configure aggregation to FULL mode
-  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
-  setenv("DFTRACER_AGGREGATION_TYPE", "FULL", 1);
-  setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
-
-  auto config = Singleton<ConfigurationManager>::get_instance();
-  auto aggregator = Singleton<Aggregator>::get_instance();
-
-  Metadata metadata;
-  metadata.insert_or_assign("test", std::string("value"));
-
-  ThreadID tid = 1;
-  AggregatedKey key("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO,
-                    1000000, 5000, tid, &metadata, nullptr, nullptr);
+  Aggregator aggregator(make_config("FULL", "1000"));
+  AggFeed feed;
+  EventDraft args;
+  args.set("test", std::string("value"));
+  const auto& event = feed.make("posix", "read", 1000000, 5000, 1, args);
 
   // In FULL mode, all events should be aggregated
-  DFT_CHECK(aggregator->should_aggregate(&key) == true);
+  int rank = 0;
+  DFT_CHECK(aggregator.should_aggregate(event, "app", &rank));
+  // The first event opens the first interval: nothing is complete yet.
+  DFT_CHECK(!aggregator.aggregate(event));
 
-  // Test aggregate method
-  aggregator->aggregate(key);
-
-  // Get aggregated data
-  AggregatedDataType data;
-  aggregator->get_previous_aggregations(data, true);
-  Aggregator::release_aggregated_data(data);
+  const auto lines = drain(aggregator, true);
+  DFT_CHECK(lines.size() == 1);
+  DFT_CHECK(has(lines[0], "\"name\":\"read\",\"cat\":\"posix\""));
+  DFT_CHECK(has(lines[0], "\"ph\":3"));
+  DFT_CHECK(has(lines[0], "\"pid\":1234,\"tid\":1"));
+  DFT_CHECK(has(lines[0], "\"ts\":1000000"));
+  DFT_CHECK(has(lines[0], "\"test\":\"value\""));
+  DFT_CHECK(has(lines[0], "\"dft_cnt\":1"));
+  DFT_CHECK(has(lines[0], "\"dur\":5000"));
+  DFT_CHECK(drain(aggregator, true).empty());
 
   std::cout << "✓ Aggregator basic test passed\n" << std::endl;
-
-  unsetenv("DFTRACER_ENABLE_AGGREGATION");
-  unsetenv("DFTRACER_AGGREGATION_TYPE");
-  unsetenv("DFTRACER_TRACE_INTERVAL_MS");
 }
 
 void test_aggregator_selective() {
   std::cout << "=== Test: Aggregator Selective Mode ===\n" << std::endl;
 
-  // Clear previous environment and configure selective aggregation
-  unsetenv("DFTRACER_ENABLE_AGGREGATION");
-  unsetenv("DFTRACER_AGGREGATION_TYPE");
-  unsetenv("DFTRACER_AGGREGATION_INCLUSION_RULES");
-  unsetenv("DFTRACER_TRACE_INTERVAL_MS");
+  Aggregator aggregator(make_config("SELECTIVE", "1000", "cat == 'posix'"));
+  AggFeed feed;
+  EventDraft args;
+  args.set("test", std::string("value"));
+  int rank = 0;
 
-  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
-  setenv("DFTRACER_AGGREGATION_TYPE", "SELECTIVE", 1);
-  setenv("DFTRACER_AGGREGATION_INCLUSION_RULES", "cat == 'posix'", 1);
-  setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
+  // Matches the inclusion rule
+  DFT_CHECK(aggregator.should_aggregate(
+      feed.make("posix", "read", 1000000, 5000, 1, args), "app", &rank));
+  // Does not match it
+  DFT_CHECK(!aggregator.should_aggregate(
+      feed.make("stdio", "write", 1000000, 3000, 1, args), "app", &rank));
 
-  // Force recreate singletons by passing true (though ConfigurationManager
-  // doesn't support this) The test might fail due to singleton reuse - this is
-  // a limitation
-  auto config = Singleton<ConfigurationManager>::get_instance();
-  auto aggregator = Singleton<Aggregator>::get_instance();
-
-  Metadata metadata1;
-  metadata1.insert_or_assign("test", std::string("value"));
-
-  ThreadID tid = 1;
-
-  // This should be aggregated (matches inclusion rule)
-  AggregatedKey key1("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     1000000, 5000, tid, &metadata1, nullptr, nullptr);
-  bool should_agg1 = aggregator->should_aggregate(&key1);
-
-  // This should not be aggregated (doesn't match inclusion rule)
-  Metadata metadata2;
-  metadata2.insert_or_assign("test", std::string("value"));
-  AggregatedKey key2("stdio", "write", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     1000000, 3000, tid, &metadata2, nullptr, nullptr);
-  bool should_agg2 = aggregator->should_aggregate(&key2);
-
-  // In FULL mode (if singleton wasn't reset), both return true
-  // In SELECTIVE mode, only key1 should return true
-  // Skip assertion if we can't guarantee singleton state
-  std::cout << "  key1 (posix) should_aggregate: " << should_agg1 << std::endl;
-  std::cout << "  key2 (stdio) should_aggregate: " << should_agg2 << std::endl;
-
-  std::cout << "✓ Aggregator selective mode test completed (note: singleton "
-               "reuse may affect results)\n"
-            << std::endl;
-
-  unsetenv("DFTRACER_ENABLE_AGGREGATION");
-  unsetenv("DFTRACER_AGGREGATION_TYPE");
-  unsetenv("DFTRACER_AGGREGATION_INCLUSION_RULES");
-  unsetenv("DFTRACER_TRACE_INTERVAL_MS");
+  std::cout << "✓ Aggregator selective mode test passed\n" << std::endl;
 }
 
 void test_aggregator_with_metadata() {
   std::cout << "=== Test: Aggregator with Additional Metadata ===\n"
             << std::endl;
 
-  setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
-  setenv("DFTRACER_AGGREGATION_TYPE", "FULL", 1);
-  setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
+  Aggregator aggregator(make_config("FULL", "1000"));
+  AggFeed feed;
+  const ThreadID tid = 12345;
 
-  auto config = Singleton<ConfigurationManager>::get_instance();
-  auto aggregator = Singleton<Aggregator>::get_instance();
+  EventDraft first;
+  first.set("bytes_read", static_cast<int64_t>(1024), MetadataType::MT_VALUE);
+  first.set("io_count", static_cast<int>(5), MetadataType::MT_VALUE);
+  first.set("offset", static_cast<size_t>(2048), MetadataType::MT_VALUE);
+  first.set("error_code", static_cast<int>(0), MetadataType::MT_VALUE);
+  aggregator.aggregate(feed.make("posix", "read", 1500000, 5000, tid, first));
 
-  // Create metadata with various numeric types
-  Metadata additional_keys;
-  additional_keys.insert_or_assign("bytes_read", static_cast<int64_t>(1024));
-  additional_keys.insert_or_assign("io_count", static_cast<int>(5));
-  additional_keys.insert_or_assign("offset", static_cast<size_t>(2048));
-  additional_keys.insert_or_assign("error_code", static_cast<int>(0));
+  // Another event in the same interval
+  EventDraft second;
+  second.set("bytes_read", static_cast<int64_t>(2048), MetadataType::MT_VALUE);
+  second.set("io_count", static_cast<int>(3), MetadataType::MT_VALUE);
+  DFT_CHECK(!aggregator.aggregate(
+      feed.make("posix", "read", 1500500, 3000, tid, second)));
 
-  ThreadID tid = 12345;
-  AggregatedKey key("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO,
-                    1500000, 5000, tid, &additional_keys, nullptr, nullptr);
-
-  // Aggregate the key
-  aggregator->aggregate(key);
-
-  // Aggregate another event in same interval
-  Metadata additional_keys2;
-  additional_keys2.insert_or_assign("bytes_read", static_cast<int64_t>(2048));
-  additional_keys2.insert_or_assign("io_count", static_cast<int>(3));
-
-  AggregatedKey key2("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     1500500, 3000, tid, &additional_keys2, nullptr, nullptr);
-  aggregator->aggregate(key2);
-
-  // Get aggregated data
-  AggregatedDataType data;
-  aggregator->get_previous_aggregations(data, true);
-
-  DFT_CHECK(data.size() > 0);
-  std::cout << "  Aggregated " << data.size() << " time intervals" << std::endl;
-  Aggregator::release_aggregated_data(data);
+  const auto lines = drain(aggregator, true);
+  DFT_CHECK(lines.size() == 1);
+  const std::string& line = lines[0];
+  DFT_CHECK(has(line, "\"ts\":1000000"));
+  DFT_CHECK(has(line, "\"dft_cnt\":2"));
+  DFT_CHECK(has(line, "\"dur_sum\":8000"));
+  DFT_CHECK(has(line, "\"dur_min\":3000") && has(line, "\"dur_max\":5000"));
+  DFT_CHECK(has(line, "\"bytes_read_sum\":3072"));
+  DFT_CHECK(has(line, "\"bytes_read_min\":1024"));
+  DFT_CHECK(has(line, "\"bytes_read_max\":2048"));
+  DFT_CHECK(has(line, "\"io_count_sum\":8"));
+  DFT_CHECK(has(line, "\"io_count_min\":3") && has(line, "\"io_count_max\":5"));
+  // Seen once: written as itself
+  DFT_CHECK(has(line, "\"offset\":2048"));
+  DFT_CHECK(has(line, "\"error_code\":0"));
 
   std::cout << "✓ Aggregator with metadata test passed\n" << std::endl;
-
-  unsetenv("DFTRACER_ENABLE");
-  unsetenv("DFTRACER_ENABLE_AGGREGATION");
-  unsetenv("DFTRACER_AGGREGATION_TYPE");
-  unsetenv("DFTRACER_TRACE_INTERVAL_MS");
 }
 
 void test_aggregator_exclusion_rules() {
   std::cout << "=== Test: Aggregator with Exclusion Rules ===\n" << std::endl;
 
-  setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
-  setenv("DFTRACER_AGGREGATION_TYPE", "SELECTIVE", 1);
-  setenv("DFTRACER_AGGREGATION_INCLUSION_RULES", "cat == 'posix'", 1);
-  setenv("DFTRACER_AGGREGATION_EXCLUSION_RULES", "name == 'stat'", 1);
-  setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
+  Aggregator aggregator(
+      make_config("SELECTIVE", "1000", "cat == 'posix'", "name == 'stat'"));
+  AggFeed feed;
+  EventDraft args;
+  args.set("test", std::string("value"));
+  int rank = 0;
 
-  auto config = Singleton<ConfigurationManager>::get_instance();
-  auto aggregator = Singleton<Aggregator>::get_instance();
-
-  Metadata metadata;
-  metadata.insert_or_assign("test", std::string("value"));
-
-  ThreadID tid = 1;
-
-  // Should be aggregated (matches inclusion, not excluded)
-  AggregatedKey key1("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     1000000, 5000, tid, &metadata, nullptr, nullptr);
-  bool should_agg1 = aggregator->should_aggregate(&key1);
-
-  // Should NOT be aggregated (matches inclusion but also matches exclusion)
-  AggregatedKey key2("posix", "stat", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     1000000, 3000, tid, &metadata, nullptr, nullptr);
-  bool should_agg2 = aggregator->should_aggregate(&key2);
-
-  std::cout << "  key1 (posix/read) should_aggregate: " << should_agg1
-            << std::endl;
-  std::cout << "  key2 (posix/stat) should_aggregate: " << should_agg2
-            << " (should be excluded)" << std::endl;
+  // Matches inclusion, not excluded
+  DFT_CHECK(aggregator.should_aggregate(
+      feed.make("posix", "read", 1000000, 5000, 1, args), "app", &rank));
+  // Matches inclusion but also matches exclusion
+  DFT_CHECK(!aggregator.should_aggregate(
+      feed.make("posix", "stat", 1000000, 3000, 1, args), "app", &rank));
+  // Matches neither
+  DFT_CHECK(!aggregator.should_aggregate(
+      feed.make("stdio", "read", 1000000, 3000, 1, args), "app", &rank));
 
   std::cout << "✓ Aggregator exclusion rules test passed\n" << std::endl;
-
-  unsetenv("DFTRACER_ENABLE");
-  unsetenv("DFTRACER_ENABLE_AGGREGATION");
-  unsetenv("DFTRACER_AGGREGATION_TYPE");
-  unsetenv("DFTRACER_AGGREGATION_INCLUSION_RULES");
-  unsetenv("DFTRACER_AGGREGATION_EXCLUSION_RULES");
-  unsetenv("DFTRACER_TRACE_INTERVAL_MS");
 }
 
 void test_aggregator_time_intervals() {
   std::cout << "=== Test: Aggregator Time Interval Processing ===\n"
             << std::endl;
 
-  setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
-  setenv("DFTRACER_AGGREGATION_TYPE", "FULL", 1);
-  setenv("DFTRACER_TRACE_INTERVAL_MS", "500", 1);  // 500ms intervals
+  Aggregator aggregator(make_config("FULL", "500"));  // 500ms intervals
+  AggFeed feed;
+  EventDraft args;
+  args.set("file", std::string("/tmp/test.txt"));
 
-  auto config = Singleton<ConfigurationManager>::get_instance();
-  auto aggregator = Singleton<Aggregator>::get_instance();
+  // Events in different time intervals
+  DFT_CHECK(!aggregator.aggregate(
+      feed.make("posix", "read", 500000, 1000, 1, args)));  // 500ms
+  DFT_CHECK(aggregator.aggregate(
+      feed.make("posix", "read", 1200000, 2000, 1, args)));  // 1200ms
+  DFT_CHECK(aggregator.aggregate(
+      feed.make("posix", "write", 1700000, 3000, 1, args)));  // 1700ms
+  DFT_CHECK(aggregator.aggregate(
+      feed.make("posix", "read", 2500000, 1500, 1, args)));  // 2500ms
+  // An event in an interval already open does not open a later one.
+  DFT_CHECK(!aggregator.aggregate(
+      feed.make("posix", "read", 2600000, 1500, 1, args)));
 
-  Metadata metadata;
-  metadata.insert_or_assign("file", std::string("/tmp/test.txt"));
+  // Only the previous intervals, not the current one
+  const auto partial = drain(aggregator, false);
+  DFT_CHECK(partial.size() == 3);
+  DFT_CHECK(has(row(partial, {"\"name\":\"read\"", "\"ts\":500000,"}),
+                "\"dur\":1000"));
+  DFT_CHECK(has(row(partial, {"\"name\":\"read\"", "\"ts\":1000000,"}),
+                "\"dur\":2000"));
+  DFT_CHECK(has(row(partial, {"\"name\":\"write\"", "\"ts\":1500000,"}),
+                "\"dur\":3000"));
 
-  ThreadID tid = 1;
-
-  // Create events in different time intervals
-  AggregatedKey key1("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     500000, 1000, tid, &metadata, nullptr,
-                     nullptr);  // 500ms
-  AggregatedKey key2("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     1200000, 2000, tid, &metadata, nullptr,
-                     nullptr);  // 1200ms
-  AggregatedKey key3("posix", "write", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     1700000, 3000, tid, &metadata, nullptr,
-                     nullptr);  // 1700ms
-  AggregatedKey key4("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     2500000, 1500, tid, &metadata, nullptr,
-                     nullptr);  // 2500ms
-
-  aggregator->aggregate(key1);
-  aggregator->aggregate(key2);
-  aggregator->aggregate(key3);
-  aggregator->aggregate(key4);
-
-  // Get only previous intervals (not the current one)
-  AggregatedDataType partial_data;
-  aggregator->get_previous_aggregations(partial_data, false);
-  std::cout << "  Retrieved " << partial_data.size()
-            << " previous intervals (excluding current)" << std::endl;
-  Aggregator::release_aggregated_data(partial_data);
-
-  // Get all remaining intervals
-  AggregatedDataType all_data;
-  aggregator->get_previous_aggregations(all_data, true);
-  std::cout << "  Retrieved " << all_data.size() << " remaining intervals (all)"
-            << std::endl;
-  Aggregator::release_aggregated_data(all_data);
+  // Then all that remains
+  const auto rest = drain(aggregator, true);
+  DFT_CHECK(rest.size() == 1);
+  DFT_CHECK(has(rest[0], "\"ts\":2500000,"));
+  DFT_CHECK(has(rest[0], "\"dft_cnt\":2"));
+  DFT_CHECK(has(rest[0], "\"dur_sum\":3000"));
+  DFT_CHECK(drain(aggregator, true).empty());
 
   std::cout << "✓ Aggregator time interval test passed\n" << std::endl;
-
-  unsetenv("DFTRACER_ENABLE");
-  unsetenv("DFTRACER_ENABLE_AGGREGATION");
-  unsetenv("DFTRACER_AGGREGATION_TYPE");
-  unsetenv("DFTRACER_TRACE_INTERVAL_MS");
 }
 
 void test_aggregator_finalize() {
   std::cout << "=== Test: Aggregator Finalize ===\n" << std::endl;
 
-  setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
-  setenv("DFTRACER_AGGREGATION_TYPE", "FULL", 1);
-  setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
+  AggFeed feed;
+  EventDraft args;
+  args.set("count", static_cast<int>(42));
+  {
+    // Destroyed with events in it: nothing leaks.
+    Aggregator aggregator(make_config("FULL", "1000"));
+    aggregator.aggregate(feed.make("posix", "read", 1000000, 5000, 1, args));
+  }
 
-  auto config = Singleton<ConfigurationManager>::get_instance();
-  auto aggregator = Singleton<Aggregator>::get_instance();
-
-  Metadata additional_keys;
-  additional_keys.insert_or_assign("count", static_cast<int>(42));
-
-  ThreadID tid = 1;
-  AggregatedKey key("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO,
-                    1000000, 5000, tid, &additional_keys, nullptr, nullptr);
-
-  aggregator->aggregate(key);
-
-  // Call finalize to clean up memory
-  aggregator->finalize();
+  // Everything is written at the end, with the rows of the open interval.
+  Aggregator aggregator(make_config("FULL", "1000"));
+  aggregator.aggregate(feed.make("posix", "read", 1000000, 5000, 1, args));
+  DFT_CHECK(drain(aggregator, false).empty());
+  const auto lines = drain(aggregator, true);
+  DFT_CHECK(lines.size() == 1);
+  DFT_CHECK(has(lines[0], "\"count\":42"));
+  DFT_CHECK(drain(aggregator, true).empty());
 
   std::cout << "✓ Aggregator finalize test passed\n" << std::endl;
-
-  unsetenv("DFTRACER_ENABLE");
-  unsetenv("DFTRACER_ENABLE_AGGREGATION");
-  unsetenv("DFTRACER_AGGREGATION_TYPE");
-  unsetenv("DFTRACER_TRACE_INTERVAL_MS");
 }
 
 void test_aggregator_multiple_threads() {
   std::cout << "=== Test: Aggregator with Multiple Thread IDs ===\n"
             << std::endl;
 
-  setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
-  setenv("DFTRACER_AGGREGATION_TYPE", "FULL", 1);
-  setenv("DFTRACER_TRACE_INTERVAL_MS", "1000", 1);
+  Aggregator aggregator(make_config("FULL", "1000"));
+  AggFeed feed;
+  EventDraft args;
+  args.set("file", std::string("/data/file.bin"));
 
-  auto config = Singleton<ConfigurationManager>::get_instance();
-  auto aggregator = Singleton<Aggregator>::get_instance();
+  aggregator.aggregate(feed.make("posix", "read", 1000000, 5000, 100, args));
+  aggregator.aggregate(feed.make("posix", "read", 1000500, 3000, 200, args));
+  aggregator.aggregate(feed.make("posix", "write", 1001000, 7000, 100, args));
+  aggregator.aggregate(feed.make("posix", "write", 1001500, 4000, 300, args));
+  // The same thread and name as the first: one bucket
+  aggregator.aggregate(feed.make("posix", "read", 1002000, 1000, 100, args));
 
-  Metadata metadata;
-  metadata.insert_or_assign("file", std::string("/data/file.bin"));
-
-  // Create keys with different thread IDs
-  AggregatedKey key1("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     1000000, 5000, 100, &metadata, nullptr, nullptr);
-  AggregatedKey key2("posix", "read", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     1000500, 3000, 200, &metadata, nullptr, nullptr);
-  AggregatedKey key3("posix", "write", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     1001000, 7000, 100, &metadata, nullptr, nullptr);
-  AggregatedKey key4("posix", "write", TraceEventType::TRACE_TYPE_LIBC_IO,
-                     1001500, 4000, 300, &metadata, nullptr, nullptr);
-
-  aggregator->aggregate(key1);
-  aggregator->aggregate(key2);
-  aggregator->aggregate(key3);
-  aggregator->aggregate(key4);
-
-  AggregatedDataType data;
-  aggregator->get_previous_aggregations(data, true);
-
-  DFT_CHECK(data.size() > 0);
-  std::cout << "  Aggregated events from multiple threads across "
-            << data.size() << " intervals" << std::endl;
-  Aggregator::release_aggregated_data(data);
+  const auto lines = drain(aggregator, true);
+  DFT_CHECK(lines.size() == 4);
+  const auto& r100 = row(lines, {"\"name\":\"read\"", "\"tid\":100"});
+  DFT_CHECK(has(r100, "\"dft_cnt\":2") && has(r100, "\"dur_sum\":6000"));
+  const auto& r200 = row(lines, {"\"name\":\"read\"", "\"tid\":200"});
+  DFT_CHECK(has(r200, "\"dft_cnt\":1") && has(r200, "\"dur\":3000"));
+  const auto& w100 = row(lines, {"\"name\":\"write\"", "\"tid\":100"});
+  DFT_CHECK(has(w100, "\"dft_cnt\":1") && has(w100, "\"dur\":7000"));
+  const auto& w300 = row(lines, {"\"name\":\"write\"", "\"tid\":300"});
+  DFT_CHECK(has(w300, "\"dft_cnt\":1") && has(w300, "\"dur\":4000"));
 
   std::cout << "✓ Aggregator multiple threads test passed\n" << std::endl;
-
-  unsetenv("DFTRACER_ENABLE");
-  unsetenv("DFTRACER_ENABLE_AGGREGATION");
-  unsetenv("DFTRACER_AGGREGATION_TYPE");
-  unsetenv("DFTRACER_TRACE_INTERVAL_MS");
 }
 
 // MT_KEY fields are part of the aggregation key: events that differ in one are
@@ -421,22 +376,15 @@ void test_aggregator_mt_keys() {
   std::cout << "=== Test: Aggregator MT_KEY Fields Split Buckets ===\n"
             << std::endl;
 
-  auto aggregator = Singleton<Aggregator>::get_instance();
-  AggregatedDataType stale;
-  aggregator->get_previous_aggregations(stale, true);
-  Aggregator::release_aggregated_data(stale);
-
+  Aggregator aggregator(make_config("FULL", "1000"));
+  AggFeed feed;
   auto log = [&](const char* name, const char* fhash, int64_t size,
                  TimeResolution ts) {
-    Metadata metadata;
-    if (fhash != nullptr) {
-      metadata.insert_or_assign("fhash", std::string(fhash),
-                                MetadataType::MT_KEY);
-    }
-    metadata.insert_or_assign("size", size, MetadataType::MT_VALUE);
-    AggregatedKey key("posix", name, TraceEventType::TRACE_TYPE_LIBC_IO, ts, 10,
-                      7, &metadata, nullptr, nullptr);
-    aggregator->aggregate(key);
+    EventDraft args;
+    if (fhash != nullptr)
+      args.set("fhash", std::string(fhash), MetadataType::MT_KEY);
+    args.set("size", size, MetadataType::MT_VALUE);
+    aggregator.aggregate(feed.make("posix", name, ts, 10, 7, args));
   };
   const TimeResolution t = 7000000;
   log("read", "111", 100, t);
@@ -445,48 +393,26 @@ void test_aggregator_mt_keys() {
   log("write", nullptr, 5, t + 3);
   log("write", nullptr, 6, t + 4);
 
-  AggregatedDataType data;
-  aggregator->get_previous_aggregations(data, true);
-  int read_buckets = 0, write_buckets = 0;
-  for (auto& interval : data) {
-    for (auto& [key, values] : interval.second) {
-      auto* size = dynamic_cast<NumberAggregationValue<int64_t>*>(
-          values->values.at(MetadataKey{StaticKey{"size"}}));
-      DFT_CHECK(size != nullptr);
-      if (key.event_name == "write") {
-        ++write_buckets;
-        DFT_CHECK(key.additional_keys == nullptr);
-        DFT_CHECK(size->count == 2 && size->sum == 11);
-        continue;
-      }
-      ++read_buckets;
-      DFT_CHECK(key.additional_keys != nullptr);
-      DFT_CHECK(key.additional_keys->size() == 1);  // fhash only, no size
-      const auto fhash =
-          std::get<std::string>(std::get<1>(key.additional_keys->at("fhash")));
-      if (fhash == "111") {
-        DFT_CHECK(size->count == 2 && size->sum == 400 && size->min == 100 &&
-                  size->max == 300);
-      } else {
-        DFT_CHECK(fhash == "222");
-        DFT_CHECK(size->count == 1 && size->sum == 200);
-      }
-    }
-  }
-  DFT_CHECK(read_buckets == 2);
-  DFT_CHECK(write_buckets == 1);
-  Aggregator::release_aggregated_data(data);
+  const auto lines = drain(aggregator, true);
+  DFT_CHECK(lines.size() == 3);
+  const auto& r111 = row(lines, {"\"name\":\"read\"", "\"fhash\":\"111\""});
+  DFT_CHECK(has(r111, "\"dft_cnt\":2") && has(r111, "\"size_sum\":400") &&
+            has(r111, "\"size_min\":100") && has(r111, "\"size_max\":300"));
+  DFT_CHECK(has(r111, "\"dur_sum\":20"));
+  const auto& r222 = row(lines, {"\"name\":\"read\"", "\"fhash\":\"222\""});
+  DFT_CHECK(has(r222, "\"dft_cnt\":1") && has(r222, "\"size\":200"));
+  const auto& write = row(lines, {"\"name\":\"write\""});
+  DFT_CHECK(!has(write, "fhash"));
+  DFT_CHECK(has(write, "\"dft_cnt\":2") && has(write, "\"size_sum\":11") &&
+            has(write, "\"size_min\":5") && has(write, "\"size_max\":6"));
+  // The values are folded, never keys
+  DFT_CHECK(!has(r111, "\"size\":"));
 
   std::cout << "✓ Aggregator MT_KEY test passed\n" << std::endl;
 }
 
 int main() {
   std::cout << "\n=== Running Aggregator Unit Tests ===\n" << std::endl;
-
-  // The singletons read the environment once. FULL no longer is the default.
-  setenv("DFTRACER_ENABLE", "1", 1);
-  setenv("DFTRACER_ENABLE_AGGREGATION", "1", 1);
-  setenv("DFTRACER_AGGREGATION_TYPE", "FULL", 1);
 
   try {
     test_rules_parsing();

@@ -13,29 +13,32 @@ SERVICE=${1:?dftracer_service binary}
 BENCH=${2:?c_overhead_dft binary}
 WORK=${3:?work dir}
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/service_lib.sh"
 PROCS=4
 WARMUP=1000
 
 rm -rf "$WORK" && mkdir -p "$WORK"
 export DFTRACER_SERVICE_SHM=/dftracer-spill-$$
 LOG=$WORK/run
-# The smallest ring, drained by one thread, against unpaced producers.
-env DFTRACER_ENABLE=1 DFTRACER_ENABLE_PC_MODE=1 DFTRACER_ENABLE_AGGREGATION=0 \
-  DFTRACER_PC_BLOCKS=16 DFTRACER_PC_CONSUMER_THREADS=1 \
+# A small ring (16 blocks of 64 KiB), drained by one thread, against unpaced
+# producers. The service is paused while they run, so the ring fills and the
+# rest spills on any machine. With 1 MiB blocks the ring held every event.
+pc_service_start "$SERVICE" DFTRACER_ENABLE=1 DFTRACER_ENABLE_PC_MODE=1 \
+  DFTRACER_ENABLE_AGGREGATION=0 DFTRACER_PC_BLOCKS=16 \
+  DFTRACER_PC_BLOCK_SIZE=65536 DFTRACER_PC_CONSUMER_THREADS=1 \
   DFTRACER_PC_CONSUMER_MIN_THREADS=1 DFTRACER_PC_ROLLOVER_MB=0.25 \
-  DFTRACER_LOG_FILE="$LOG" "$SERVICE" start || exit 1
+  DFTRACER_LOG_FILE="$LOG" || exit 1
+SERVICE_PID=$(cat "$LOG"_*.pid) || exit 1
+kill -STOP "$SERVICE_PID" || exit 1
 for p in $(seq 1 $PROCS); do
   env DFTRACER_ENABLE=1 DFTRACER_INIT=FUNCTION DFTRACER_DATA_DIR=all \
     DFTRACER_ENABLE_AGGREGATION=0 DFTRACER_ENABLE_PC_MODE=1 \
-    DFTRACER_LOG_FILE="$LOG" "$BENCH" --threads=1 --seconds=1 \
+    DFTRACER_LOG_FILE="$LOG" "$BENCH" --threads=1 --ops=50000 \
     --warmup=$WARMUP --meta=1 --payload=160 >"$WORK/p$p.csv" 2>"$WORK/p$p.err" &
 done
 wait
-DFTRACER_ENABLE=1 DFTRACER_LOG_FILE="$LOG" "$SERVICE" stop >/dev/null
-for _ in $(seq 600); do
-  [ -e "/dev/shm$DFTRACER_SERVICE_SHM" ] || break
-  sleep 0.1
-done
+kill -CONT "$SERVICE_PID"
+pc_service_stop "$SERVICE" "$LOG" 600 >/dev/null
 grep -h "drained\|spill\|WARNING" "$LOG"_*.log
 files=("$LOG"_*.pfw.gz)
 for f in "${files[@]}"; do python3 "$HERE/check_gzip_members.py" "$f" || exit 1; done
@@ -44,20 +47,18 @@ if [ ${#files[@]} -lt 2 ]; then
   exit 1
 fi
 
-python3 - "$WORK" "$WARMUP" <<'PY'
-import collections, glob, gzip, json, re, sys
+python3 - "$WORK" "$WARMUP" "$HERE" <<'PY'
+import collections, glob, re, sys
+sys.path.insert(0, sys.argv[3])
+from trace_io import iter_events
 work, warmup = sys.argv[1], int(sys.argv[2])
 # Events a producer logged: its measured ones, the warmup, start and end.
 logged = sorted(int(open(f).read().split(",")[2]) + warmup + 2
                 for f in glob.glob(f"{work}/p*.csv"))
 found = collections.Counter()
-for path in glob.glob(f"{work}/run_*.pfw.gz"):
-    for line in gzip.open(path, "rt"):
-        line = line.strip().rstrip(",")
-        if line.startswith("{"):
-            e = json.loads(line)
-            if e.get("ph") == 1 and e.get("pid") not in (0, None):
-                found[e["pid"]] += 1
+for e in iter_events(glob.glob(f"{work}/run_*.pfw.gz")):
+    if e.get("ph") == 1 and e.get("pid") not in (0, None):
+        found[e["pid"]] += 1
 log = "".join(open(p).read() for p in glob.glob(f"{work}/run_*.log"))
 m = re.search(r"(\d+) events did not fit in the ring; (\d+) spill files", log)
 spilled, appended = (int(m.group(1)), int(m.group(2))) if m else (0, 0)

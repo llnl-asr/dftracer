@@ -35,9 +35,9 @@ class CUDAFunction : public dftracer::GenericFunction {
   // Offset added to CUPTI timestamps to land them on the same clock and unit as
   // DFTLogger::get_time(). Resolved once, lazily, on first use.
   //
-  // SIGNED: CUPTI's clock shares gettimeofday()'s epoch on this platform, so
-  // the offset is ~0 and may legitimately be negative. As an unsigned type it
-  // wrapped to ~2^64 and zeroed every subsequent timestamp.
+  // SIGNED: CUPTI's clock shares the realtime clock's epoch on this platform,
+  // so the offset is ~0 and may legitimately be negative. As an unsigned type
+  // it wrapped to ~2^64 and zeroed every subsequent timestamp.
   int64_t time_diff;
   // Explicit resolution flag: 0 is a VALID offset here, so it cannot double as
   // the "not yet resolved" sentinel the way it used to.

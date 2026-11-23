@@ -1,4 +1,5 @@
 #include <dftracer/core/common/logging.h>
+#include <dftracer/core/serialization/line_format.h>
 #include <dftracer/core/utils/fs_info.h>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -289,25 +290,6 @@ int lustre_mdt(const char* dir) {
   return mdt;
 }
 
-// A JSON string literal for s. The trace serializer writes strings as given,
-// and mount sources/options/paths are arbitrary text.
-std::string json_str(const std::string& s) {
-  std::string out = "\"";
-  for (unsigned char c : s) {
-    if (c == '"' || c == '\\') {
-      out += '\\';
-      out += static_cast<char>(c);
-    } else if (c < 0x20) {
-      char esc[8];
-      snprintf(esc, sizeof(esc), "\\u%04x", c);
-      out += esc;
-    } else {
-      out += static_cast<char>(c);
-    }
-  }
-  return out + "\"";
-}
-
 // One line of /proc/self/mountinfo (proc(5)): the fields used here.
 struct MountEntry {
   unsigned major = 0, minor = 0;
@@ -481,8 +463,9 @@ struct FsRecordWriter::Impl {
           fields->insert_or_assign(
               "lustre",
               RawJson("{\"liblustreapi\":1" +
-                      (fsname.empty() ? std::string()
-                                      : ",\"fsname\":" + json_str(fsname)) +
+                      (fsname.empty()
+                           ? std::string()
+                           : ",\"fsname\":" + line_format::quoted(fsname)) +
                       "}"));
         }
       }
@@ -491,9 +474,10 @@ struct FsRecordWriter::Impl {
     if (rot >= 0) fields->insert_or_assign("rotational", rot);
     if (m != nullptr) {
       fields->insert_or_assign(
-          "mount", RawJson("{\"type\":" + json_str(m->type) +
-                           ",\"source\":" + json_str(m->source) +
-                           ",\"options\":" + json_str(m->options) + "}"));
+          "mount",
+          RawJson("{\"type\":" + line_format::quoted(m->type) +
+                  ",\"source\":" + line_format::quoted(m->source) +
+                  ",\"options\":" + line_format::quoted(m->options) + "}"));
     }
     write(fields);
     return mhash;

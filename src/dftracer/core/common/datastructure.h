@@ -6,7 +6,6 @@
 #include <dftracer/core/common/cpp_typedefs.h>
 #include <dftracer/core/common/enumeration.h>
 #include <dftracer/core/common/logging.h>
-#include <dftracer/core/common/macros.h>
 #include <dftracer/core/common/typedef.h>
 #include <dftracer/core/utils/utils.h>
 
@@ -24,8 +23,6 @@
 #include <string_view>
 #include <tuple>
 #include <type_traits>
-#include <typeindex>
-#include <typeinfo>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -456,7 +453,7 @@ inline bool metadata_value_equal(const MetadataValue& a,
 }
 
 /** Where rules read tags.<key> of an event that has no Metadata: the
- * service's packed events (PackedAggregator). Same strings as getTagValue. */
+ * service's packed events (Aggregator). Same strings as getTagValue. */
 struct TagSource {
   virtual ~TagSource() = default;
   virtual Value tag(std::string_view key) const = 0;
@@ -605,106 +602,6 @@ struct hash<dftracer::AggregatedKey> {
 }  // namespace std
 
 namespace dftracer {
-
-struct BaseAggregatedValue {
- public:
-  BaseAggregatedValue* _child;
-  ValueType _type;
-  std::type_index _id;
-
- protected:
-  BaseAggregatedValue(BaseAggregatedValue* child, ValueType type,
-                      std::type_index id)
-      : _child(child), _type(type), _id(id) {}
-
- public:
-  virtual ~BaseAggregatedValue() = default;
-  void update(BaseAggregatedValue* value);
-  BaseAggregatedValue* get_value();
-};
-
-template <typename T>
-struct AggregatedValue : public BaseAggregatedValue {
- protected:
-  AggregatedValue(const AggregatedValue<T>& value, BaseAggregatedValue* child)
-      : BaseAggregatedValue(child, ValueType::VALUE_TYPE_STRING, typeid(T)),
-        count(value.count) {}
-  AggregatedValue(const AggregatedValue<T>& value, BaseAggregatedValue* child,
-                  ValueType id, std::type_index tid)
-      : BaseAggregatedValue(child, id, tid), count(value.count) {}
-  AggregatedValue(BaseAggregatedValue* child, ValueType id, std::type_index tid)
-      : BaseAggregatedValue(child, id, tid), count(1) {}
-
- public:
-  size_t count;
-  void update(AggregatedValue<T>* value) { count += value->count; }
-  AggregatedValue(T value)
-      : BaseAggregatedValue(nullptr, ValueType::VALUE_TYPE_STRING, typeid(T)),
-        count(1) {}
-};
-
-template <typename T>
-struct NumberAggregationValue : public AggregatedValue<T> {
- public:
-  T min, max, sum;
-  NumberAggregationValue(NumberAggregationValue<T>& value)
-      : AggregatedValue<T>(value, nullptr, ValueType::VALUE_TYPE_NUMBER,
-                           typeid(T)),
-        min(value.min),
-        max(value.max),
-        sum(value.sum) {}
-  NumberAggregationValue(T value)
-      : AggregatedValue<T>(nullptr, ValueType::VALUE_TYPE_NUMBER, typeid(T)),
-        min(value),
-        max(value),
-        sum(value) {}
-  void update(NumberAggregationValue<T>* value) {
-    if (value->min < min) min = value->min;
-    if (value->max > max) max = value->max;
-    sum += value->sum;
-    AggregatedValue<T>::update(value);
-  }
-};
-
-class AggregatedValues {
- public:
-  AggregatedValues() {}
-  ~AggregatedValues() {}
-  std::unordered_map<MetadataKey, BaseAggregatedValue*> values;
-  /** Folds `value` into the number aggregate of `key`, in place. A key that
-   * already holds another type keeps it and ignores `value`. */
-  template <typename T>
-  void add_number(const MetadataKey& key, T value) {
-    auto it = values.find(key);
-    if (it == values.end()) {
-      values.emplace(key, new NumberAggregationValue<T>(value));
-      return;
-    }
-    BaseAggregatedValue* current = it->second;
-    if (current->_type != ValueType::VALUE_TYPE_NUMBER ||
-        current->_id != std::type_index(typeid(T)))
-      return;
-    auto* number = static_cast<NumberAggregationValue<T>*>(current);
-    if (value < number->min) number->min = value;
-    if (value > number->max) number->max = value;
-    number->sum += value;
-    ++number->count;
-  }
-  /** Counts `value` into the aggregate of `key`, as add_number() does. */
-  template <typename T>
-  void add_general(const MetadataKey& key, T value) {
-    auto it = values.find(key);
-    if (it == values.end()) {
-      values.emplace(key, new AggregatedValue<T>(value));
-      return;
-    }
-    BaseAggregatedValue* current = it->second;
-    if (current->_type != ValueType::VALUE_TYPE_STRING ||
-        current->_id != std::type_index(typeid(T)))
-      return;
-    ++static_cast<AggregatedValue<T>*>(current)->count;
-  }
-};
 
 struct Field {
   std::vector<std::string>
@@ -943,6 +840,21 @@ struct alignas(DFT_SHM_CACHE_LINE) SegmentHeader {
 };
 
 /**
+ * Spill files of this segment's producers. A producer announces its file here
+ * and not only in its HELLO record, because a producer that starts while the
+ * ring is full never gets a record into the ring. `length` is stored last.
+ */
+struct SpillSlot {
+  std::atomic<uint32_t> length;
+  char path[DFT_SHM_SPILL_PATH];
+};
+struct alignas(DFT_SHM_CACHE_LINE) SpillRegistry {
+  // Slots handed out so far; may pass DFT_SHM_SPILL_SLOTS.
+  std::atomic<uint32_t> next;
+  SpillSlot slots[DFT_SHM_SPILL_SLOTS];
+};
+
+/**
  * Per-block control, cache-line aligned so the consumer releasing block k does
  * not slow down producers claiming block k+1.
  *
@@ -1153,16 +1065,36 @@ class Interner {
 };
 }  // namespace ipc
 
+namespace compact {
+class Encoder;
+}
+
 struct alignas(DFT_SHM_CACHE_LINE) ServiceSlot {
   std::atomic<uint32_t> state{SHM_SLOT_IDLE};  // ShmSlotState
+  // With membarrier: the slot's thread sets `busy` while it logs and another
+  // thread sets `claim` to use the slot (see ServiceBufferManager::enter).
+  std::atomic<uint32_t> busy{0};
+  std::atomic<uint32_t> claim{0};
+  uint64_t spill_until_ns = 0;  // skip the ring until then: it was full
+  uint32_t alive_skip = 0;      // events left before the next liveness check
+  uint64_t alive_at = 0;        // event time of the last liveness check
   uint64_t generation = 0;
+  bool orphan = false;  // for threads past exit, held with orphan_mtx_
+  ThreadID tid = 0;     // of the thread that made it
   std::unique_ptr<ipc::RingProducer> producer;
   std::vector<uint8_t> scratch;
   ipc::Interner intern;  // strings already in the producer's block
+  // SHM_KIND_COMPACT records; starts over with each block the producer fills.
+  std::unique_ptr<compact::Encoder> encoder;
+  uint64_t encoder_block = ~0ULL;
   // Written only by the slot's thread (load + store, no read-modify-write),
   // so counting costs nothing shared; read by pushed(). Drops are rare and
   // counted per process (ServiceBufferManager::count_drop).
   std::atomic<uint64_t> pushed{0};
+  void count_push() {
+    pushed.store(pushed.load(std::memory_order_relaxed) + 1,
+                 std::memory_order_relaxed);
+  }
 };
 }  // namespace dftracer
 
