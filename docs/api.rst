@@ -246,6 +246,14 @@ Additionally, if users pass NULL to process_id, then getpid() function would be 
 
     DFTRACER_C_INIT(log_file, data_dirs, process_id);
 
+``DFTRACER_C_INIT_NO_BIND`` takes the same arguments but intercepts no I/O library, so only the regions and functions the program marks are traced.
+A trace with fewer than 5 events is deleted at finalization, so that short helper processes leave no files.
+A program that only marks one or two regions therefore writes no trace.
+
+.. code-block:: c
+
+    DFTRACER_C_INIT_NO_BIND(log_file, data_dirs, process_id);
+
 Finalization of DFTracer
 ****************************************
 
