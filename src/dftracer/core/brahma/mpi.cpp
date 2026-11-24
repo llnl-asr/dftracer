@@ -1870,6 +1870,7 @@ int brahma::MPIDFTracer::MPI_Info_set(MPI_Info info, const char* key,
 int brahma::MPIDFTracer::MPI_Init(int* argc, char*** argv) {
   ConstEventNameType CATEGORY = "env";
   BRAHMA_MAP_OR_FAIL(MPI_Init);
+  dftracer_mpi_wrappees_ready().store(true, std::memory_order_release);
   DFT_LOGGER_START_ALWAYS();
   int ret = __real_MPI_Init(argc, argv);
   // This process has now legitimately initialized MPI itself, so it is
@@ -1884,6 +1885,7 @@ int brahma::MPIDFTracer::MPI_Init_thread(int* argc, char*** argv, int required,
                                          int* provided) {
   ConstEventNameType CATEGORY = "env";
   BRAHMA_MAP_OR_FAIL(MPI_Init_thread);
+  dftracer_mpi_wrappees_ready().store(true, std::memory_order_release);
   DFT_LOGGER_START_ALWAYS();
   DFT_LOGGER_UPDATE_TYPE(required, MetadataType::MT_VALUE);
   int ret = __real_MPI_Init_thread(argc, argv, required, provided);
