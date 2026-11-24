@@ -29,7 +29,18 @@
 #include <dftracer/core/df_logger.h>
 #include <mpi.h>
 
+#include <atomic>
+
 namespace brahma {
+
+// Set once MPI_Init or MPI_Init_thread has gone through the interceptor, so
+// gotcha has found libmpi. Before that, the wrappees of MPI functions that
+// gotcha has not found are uninitialised, so the MPI module must not read
+// them.
+inline std::atomic<bool>& dftracer_mpi_wrappees_ready() {
+  static std::atomic<bool> ready{false};
+  return ready;
+}
 
 class MPIDFTracer : public MPI {
  private:

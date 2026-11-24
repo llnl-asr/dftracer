@@ -42,9 +42,10 @@
 // LD_PRELOAD adds no second MPI beside the program's. Bound, they are what
 // gotcha found for brahma's interceptors; the handles are copied at bind, so a
 // lookup never touches the brahma instance that unbind finalizes, and unbind
-// leaves their wrappees on the real functions. Unbound (initialize_no_bind, or
-// I/O tracing off), they are PMPI_ functions of a loaded libmpi. Either finds
-// nothing until a libmpi is loaded, as before Python imports mpi4py.
+// leaves their wrappees on the real functions. They are read only after
+// MPI_Init went through brahma, since gotcha leaves the wrappee of a symbol it
+// has not found uninitialised. Otherwise (initialize_no_bind, I/O tracing off,
+// or MPI_Init not yet called), they are PMPI_ functions of a loaded libmpi.
 #if defined(BRAHMA_ENABLE_MPI)
 #include <dlfcn.h>
 #include <gotcha/gotcha.h>
@@ -165,7 +166,8 @@ int dftracer_module_mpi_rank(int* rank) {
   auto& handles = bound_handles();
   gotcha_wrappee_handle_t comm_rank_handle =
       handles.comm_rank.load(std::memory_order_acquire);
-  if (comm_rank_handle != nullptr) {
+  if (comm_rank_handle != nullptr &&
+      brahma::dftracer_mpi_wrappees_ready().load(std::memory_order_acquire)) {
     comm_rank_fn = reinterpret_cast<MPI_Comm_rank_fptr>(
         gotcha_get_wrappee(comm_rank_handle));
     initialized_fn = reinterpret_cast<MPI_Initialized_fptr>(gotcha_get_wrappee(
