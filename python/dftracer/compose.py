@@ -93,8 +93,26 @@ def step(message: str) -> None:
     print(f"dftracer-compose: {message}", flush=True)
 
 
+def build_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """env (default os.environ) without Flux's PMI libraries on LD_LIBRARY_PATH.
+
+    A Flux job puts its own lib dir first there, and GNU ld resolves a shared
+    library's dependencies through LD_LIBRARY_PATH: Cray MPICH's libpmi2.so.0
+    then resolves to Flux's, which lacks PMI2_Set_threaded, so FindMPI's test
+    link fails and MPI is reported absent.
+    """
+    env = dict(os.environ if env is None else env)
+    dirs = env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
+    kept = [d for d in dirs
+            if not (Path(d).name == "flux" and (Path(d) / "libpmi2.so.0").exists())]
+    if kept != dirs:
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(kept)
+    return env
+
+
 def run(cmd: list[str], log: Path, **kwargs) -> None:
     """Run cmd with its output in log; with --verbose, also on the terminal."""
+    kwargs["env"] = build_env(kwargs.get("env"))
     if VERBOSE:
         print("+ " + " ".join(cmd), flush=True)
         print(f"  (log {log})", flush=True)
@@ -236,7 +254,9 @@ def build_from_source(part: str, source: Path, tree: Path, work: Path,
     for arg in cmake_args:
         cmd += ["--cmake-arg", arg]
     step(f"building {part} from source ...")
-    run(cmd, work / f"source-{part}.log")
+    # An env var, not a flag, so a --source tree with an older build-module.sh
+    # still runs; that one ignores it and takes python3 from PATH.
+    run(cmd, work / f"source-{part}.log", env={**os.environ, "DFTRACER_PYTHON": sys.executable})
     built = next((out / "tree").glob("**/dftracer/compose"))
     origin = {"origin": "source", "built_on": platform.node(),
               "built_at": datetime.datetime.now().isoformat(timespec="seconds")}

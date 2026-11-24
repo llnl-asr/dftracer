@@ -19,6 +19,7 @@
 # component.json.
 #
 # Options: --src DIR (default /src), --jobs N, --cmake-arg -DX=Y (repeatable).
+# DFTRACER_PYTHON names the Python for source_hash.py (default: python3 on PATH).
 set -euo pipefail
 
 SRC=/src
@@ -123,7 +124,17 @@ case "$MODULE" in
                   -DHDF5_C_COMPILER_EXECUTABLE:FILEPATH=/bin/false)
         fi
         # A parallel HDF5's MPI is on the path too (spack load brought it).
-        if command -v mpicc >/dev/null 2>&1; then
+        # Only a parallel one: a serial HDF5 next to an MPI (Cray compute
+        # nodes have mpicc) needs no MPI module. H5pubconf.h says which, as
+        # a CMake-built parallel HDF5 may ship only h5cc.
+        _h5_parallel=0
+        if [ -n "$_h5" ]; then
+          for _conf in "$(dirname "$(dirname "$_h5")")"/include/H5pubconf*.h; do
+            grep -qE '^#define H5_HAVE_PARALLEL 1' "$_conf" 2>/dev/null && _h5_parallel=1
+          done
+        fi
+        if [ "${_h5##*/}" = h5pcc ]; then _h5_parallel=1; fi
+        if [ "$_h5_parallel" = 1 ] && command -v mpicc >/dev/null 2>&1; then
           FLAGS+=(-DDFTRACER_ENABLE_MPI=ON)
           # MPI on adds the MPI module to the install, so it is built too;
           # assemble.py takes only the HDF5 variant from this tree.
@@ -147,13 +158,26 @@ PART=${MODULE:-core}
 WORK="$OUT/work-$PART"
 mkdir -p "$WORK"
 
+# ~/.cmake/packages can point at another build's yaml-cpp or brahma, even one
+# that is gone. An empty HOME hides it from every CMake run here, including
+# the ExternalProject sub-builds that flags on this command line do not reach.
+CMAKE_HOME="$WORK/home"
+mkdir -p "$CMAKE_HOME"
+
+# Each step writes its own log in $WORK. A caller sees only this script's
+# output, so a failed step prints the end of its log here.
+LOG=""
+trap '[ -n "$LOG" ] && { echo "build-module.sh: failed, see $LOG:" >&2; tail -n 40 "$LOG" >&2; }' ERR
+
 # Dependencies (brahma for the core and, for mpi/hdf5, the module's own) are
 # built per job: the module's brahma has to match the library it wraps.
-cmake -S "$SRC" -B "$WORK/deps-build" -DCMAKE_INSTALL_PREFIX="$WORK/deps" \
+LOG="$WORK/deps.log"
+HOME="$CMAKE_HOME" cmake -S "$SRC" -B "$WORK/deps-build" -DCMAKE_INSTALL_PREFIX="$WORK/deps" \
   -DDFTRACER_INSTALL_DEPENDENCIES=ON "${FLAGS[@]}" "${EXTRA[@]}" >"$WORK/deps.log" 2>&1
-cmake --build "$WORK/deps-build" -j "$JOBS" >>"$WORK/deps.log" 2>&1
+HOME="$CMAKE_HOME" cmake --build "$WORK/deps-build" -j "$JOBS" >>"$WORK/deps.log" 2>&1
 
-cmake -S "$SRC" -B "$WORK/build" -DCMAKE_INSTALL_PREFIX="$WORK/prefix" \
+LOG="$WORK/configure.log"
+HOME="$CMAKE_HOME" cmake -S "$SRC" -B "$WORK/build" -DCMAKE_INSTALL_PREFIX="$WORK/prefix" \
   -DCMAKE_PREFIX_PATH="$WORK/deps${ROCM:+;$ROCM}" "${FLAGS[@]}" "${EXTRA[@]}" \
   >"$WORK/configure.log" 2>&1
 # The install lists the core archives too, so they are built either way;
@@ -165,13 +189,16 @@ if [ -n "$MODULE" ]; then
     targets+=(dftracer_module_mpi dftracer_module_mpi_dbg)
   fi
 fi
-cmake --build "$WORK/build" -j "$JOBS" --target "${targets[@]}" >"$WORK/build.log" 2>&1
-cmake --install "$WORK/build" --component dftracer_compose --prefix "$OUT/tree" \
+LOG="$WORK/build.log"
+HOME="$CMAKE_HOME" cmake --build "$WORK/build" -j "$JOBS" --target "${targets[@]}" >"$WORK/build.log" 2>&1
+LOG="$WORK/install.log"
+HOME="$CMAKE_HOME" cmake --install "$WORK/build" --component dftracer_compose --prefix "$OUT/tree" \
   >"$WORK/install.log" 2>&1
 
+LOG=""
 compose=$(find "$OUT/tree" -type d -path '*/dftracer/compose' | head -n 1)
 brahma_tag=$(grep -m1 -oE 'DFTRACER_BRAHMA_GIT_TAG:STRING=.*' "$WORK/deps-build/CMakeCache.txt" | cut -d= -f2 || true)
-PY=$(command -v python3 || command -v python)
+PY=${DFTRACER_PYTHON:-$(command -v python3 || command -v python)}
 hash=$("$PY" "$SRC/tools/ci/source_hash.py" "$SRC" "$PART" --compiler "$CXX" --brahma "$brahma_tag")
 interface=$("$PY" "$SRC/tools/ci/source_hash.py" "$SRC" interface)
 if [ -n "$MODULE" ]; then

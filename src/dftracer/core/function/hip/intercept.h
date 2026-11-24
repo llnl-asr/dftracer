@@ -3,10 +3,13 @@
 #ifndef DFTRACER_HIP_INTERCEPT_H
 #define DFTRACER_HIP_INTERCEPT_H
 
-#ifdef DFTRACER_DEBUG
 #include <unistd.h>
 
 #include <atomic>
+#include <mutex>
+#include <string>
+
+#ifdef DFTRACER_DEBUG
 #include <dftracer/core/dftracer_config_dbg.hpp>
 #else
 #include <dftracer/core/dftracer_config.hpp>
@@ -47,14 +50,21 @@ class HIPFunction : public dftracer::GenericFunction {
   // handle to rocprofiler_start_context().
   rocprofiler_buffer_id_t client_buffer = {0};
   rocprofiler_context_id_t client_ctx = {0};
-  // Guards against the double teardown described in finalize().
+  // Makes finalize() run its teardown once; see finalize().
+  std::atomic<bool> finalize_started{false};
+  // Closes tool_tracing_callback once finalize() has flushed the last records.
   // ATOMIC: read from rocprofiler's own PTL thread-pool threads (which run the
   // buffer-flush tracing callback), written by the thread running finalize().
   // A plain bool here is a data race and, worse, lets a late callback sail past
-  // the guard below into a destroyed logger.
+  // the guard into a destroyed logger.
   std::atomic<bool> finalized{false};
-  std::unordered_map<rocprofiler_kernel_id_t, kernel_symbol_data_t>
-      client_kernels;
+  // Kernel names by id, kept until exit: rocprofiler flushes dispatch records
+  // after it unregisters their kernels, and an id is never reused in a process.
+  // A copy, as the registered name points into the code object, which may be
+  // unloaded by then. Written from the code-object callback, read from the
+  // buffer callback.
+  std::mutex client_kernels_mutex;
+  std::unordered_map<rocprofiler_kernel_id_t, std::string> client_kernels;
 
   TimeResolution time_diff;
   TimeResolution transform_timestamp(rocprofiler_timestamp_t timestamp);
@@ -188,11 +198,10 @@ class HIPFunction : public dftracer::GenericFunction {
     // twice double-frees rocprofiler-side state and segfaults at exit, which
     // truncates the gzip trace stream mid-write (measured: 11 of 16 ranks left
     // unreadable "Compressed file ended before the end-of-stream marker").
-    if (finalized) {
+    if (finalize_started.exchange(true)) {
       DFTRACER_LOG_DEBUG("HIP Intercept already finalized; skipping");
       return;
     }
-    finalized = true;
 
     // If rocprofiler has already finalized, its context/buffer objects are gone
     // and touching them is a use-after-free.
@@ -202,15 +211,17 @@ class HIPFunction : public dftracer::GenericFunction {
         roc_finalized != 0) {
       DFTRACER_LOG_DEBUG(
           "HIP Intercept: rocprofiler already finalized; nothing to flush");
+      finalized.store(true, std::memory_order_release);
       return;
     }
 
     // As in initialize(): a zero id means tool_init never ran (no GPU touched).
-    // Flush BEFORE stopping, so records still buffered when the context stops
-    // are handed to the tracing callback while the logger is alive.
+    // Flush before closing the callback, or it drops the run's last kernels and
+    // API calls that are still in the buffer. The logger is still alive here.
     if (client_buffer.handle != 0) {
       rocprofiler_flush_buffer(client_buffer);
     }
+    finalized.store(true, std::memory_order_release);
     if (client_ctx.handle != 0) {
       rocprofiler_stop_context(client_ctx);
     }

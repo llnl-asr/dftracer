@@ -173,6 +173,26 @@ class Writable(unittest.TestCase):
             shutil.rmtree(tmp)
 
 
+class BuildEnv(unittest.TestCase):
+    def test_flux_pmi_dir_leaves_ld_library_path(self):
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            flux = tmp / "lib64" / "flux"
+            cray = tmp / "cray" / "lib64"
+            for d in (flux, cray):
+                d.mkdir(parents=True)
+                (d / "libpmi2.so.0").touch()
+            other = tmp / "flux"
+            other.mkdir()
+            path = os.pathsep.join([str(flux), str(cray), str(other)])
+            env = compose.build_env({"LD_LIBRARY_PATH": path, "X": "1"})
+            self.assertEqual(env["LD_LIBRARY_PATH"], os.pathsep.join([str(cray), str(other)]))
+            self.assertEqual(env["X"], "1")
+            self.assertNotIn("LD_LIBRARY_PATH", compose.build_env({}))
+        finally:
+            shutil.rmtree(tmp)
+
+
 class Lock(unittest.TestCase):
     def test_second_compose_waits(self):
         tmp = Path(tempfile.mkdtemp())
