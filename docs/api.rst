@@ -110,6 +110,12 @@ Any other value turns it off, where a default of 1 applies.
                                             reported as ``cfg.min_duration_ns`` in the ``end`` event. 0 traces every event
                                             (default 0).
    DFTRACER_LIBUV_THREADS           INT     Number of libuv worker threads for ``dftracer_service`` (default 1).
+   DFTRACER_VARIORUM_LIBRARY        STRING  The ``libvariorum.so`` that ``dftracer_service`` loads for power records. Unset, it loads
+                                            the one ``dftracer-compose`` built in ``<libdir>/dftracer/variorum``, else the first
+                                            ``libvariorum.so`` the loader finds. See :doc:`composable_install` (default unset).
+   DFTRACER_BUILD_VARIORUM          STRING  When ``dftracer-compose`` builds Variorum for ``dftracer_service``: ``auto``, ``always``
+                                            or ``never``. Read by ``dftracer-compose``, not by a traced program. See
+                                            :doc:`composable_install` (default ``auto``).
    DFTRACER_ENABLE_AGGREGATION      INT     Enable aggregation of events (default 1).
    DFTRACER_AGGREGATION_TYPE        STRING  set aggregation type FULL or SELECTIVE (default: SELECTIVE).
                                             Setting ``DFTRACER_ENABLE_AGGREGATION=1`` without a type selects FULL.

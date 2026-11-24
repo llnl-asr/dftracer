@@ -307,6 +307,208 @@ class ProvidePapi(unittest.TestCase):
                 compose.provide_papi("always", self.tree, self.work, self.settings, records)
 
 
+MI300A_POWER = json.dumps({"tuo1": {
+    "timestamp": 1, "num_gpus_per_socket": 1, "power_node_watts": 520.0,
+    "socket_0": {"power_cpu_watts": 135.8, "power_mem_watts": -1.0,
+                 "power_gpu_watts": {"GPU_0": 133.0}},
+    "socket_1": {"power_cpu_watts": 121.0, "power_mem_watts": -1.0,
+                 "power_gpu_watts": {"GPU_1": 121.0}}}})
+
+
+class ProvideVariorum(unittest.TestCase):
+    """When dftracer-compose builds Variorum; the build and the probe are mocked."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.tree = self.tmp / "lib64" / "dftracer" / "compose"
+        self.tree.mkdir(parents=True)
+        self.work = self.tmp / "work"
+        self.work.mkdir()
+        self.dest = self.tree.parent / "variorum"
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def provide(self, mode, site=None, backends=(("AMD GPU (ROCm SMI)", "gpu"),),
+                check=False):
+        """`site` is the probe of the machine's libvariorum.so: None for none,
+        else the domains it reads."""
+        built = self.dest / "lib" / "libvariorum.so"
+
+        def probe(library):
+            if library == str(built):
+                return {"library": library, "domains": ["cpu", "gpu"], "note": ""}
+            if site is None:
+                return {"library": "", "domains": [], "note": "no libvariorum.so"}
+            return {"library": "/lib/libvariorum.so", "domains": list(site),
+                    "note": "" if site else "/lib/libvariorum.so reads no power domain here"}
+
+        with mock.patch.object(compose, "run") as run, \
+                mock.patch.object(compose, "probe_variorum", side_effect=probe), \
+                mock.patch.object(compose, "power_backends", return_value=list(backends)), \
+                mock.patch.object(compose, "rocm_root", return_value="/opt/rocm"), \
+                mock.patch.object(compose, "nvml_include", return_value=""), \
+                quiet() as out:
+            record = compose.provide_variorum(mode, self.tree, self.work, check=check)
+        return record, run, out.getvalue()
+
+    def test_power_domains_skip_unread_and_the_node_sum(self):
+        self.assertEqual(compose.power_domains(MI300A_POWER), ["cpu", "gpu"])
+        self.assertEqual(compose.power_domains('{"h": {"timestamp": 1}}'), [])
+        self.assertEqual(compose.power_domains("not json"), [])
+
+    def test_machine_without_variorum_builds_it(self):
+        record, run, _ = self.provide("auto")
+        cmd = run.call_args.args[0]
+        self.assertIn(f"-DDFTRACER_VARIORUM_PREFIX={self.dest}", cmd)
+        self.assertIn("-DDFTRACER_VARIORUM_ROCM_ROOT=/opt/rocm", cmd)
+        self.assertEqual(cmd[-1], str(self.tree / "DFTracerVariorum.cmake"))
+        self.assertEqual((record["status"], record["domains"]), ("built", ["cpu", "gpu"]))
+        self.assertTrue(record["built_on"])
+
+    def test_a_build_missing_a_domain_the_machine_has_warns(self):
+        record, _, out = self.provide("auto", backends=(("AMD CPU (/dev/hsmp)", "cpu"),
+                                                        ("NVIDIA GPU (NVML)", "gpu"),
+                                                        ("Intel CPU (msr-safe)", "mem")))
+        self.assertEqual(record["status"], "built")
+        self.assertIn("reads no mem power, though this machine has Intel CPU", out)
+        self.assertIn("no nvml.h for NVIDIA GPU power", out)
+        self.assertNotIn("reads no cpu power", out)
+
+    def test_variorum_that_reads_nothing_is_replaced(self):
+        record, run, _ = self.provide("auto", site=[])
+        run.assert_called_once()
+        self.assertEqual(record["status"], "built")
+
+    def test_variorum_that_reads_power_is_kept(self):
+        record, run, _ = self.provide("auto", site=["gpu"])
+        run.assert_not_called()
+        self.assertEqual((record["status"], record["library"], record["domains"]),
+                         ("found", "/lib/libvariorum.so", ["gpu"]))
+
+    def test_machine_without_power_interface_builds_nothing(self):
+        record, run, out = self.provide("auto", backends=())
+        run.assert_not_called()
+        self.assertEqual(record["status"], "absent")
+        self.assertIn("no power interface", out)
+
+    def rebuild(self, new_domains, fail=False):
+        """--build-variorum always over a Variorum that reads cpu and gpu;
+        the new build reads `new_domains`, or fails."""
+        lib = self.dest / "lib" / "libvariorum.so"
+        lib.parent.mkdir(parents=True)
+        lib.write_text("old")
+
+        def build(cmd, log, **kwargs):
+            if fail:
+                raise compose.StepFailed("variorum failed")
+            lib.parent.mkdir(parents=True, exist_ok=True)
+            lib.write_text("new")
+
+        def probe(library):
+            if library == str(lib):
+                domains = ["cpu", "gpu"] if lib.read_text() == "old" else list(new_domains)
+                return {"library": library, "domains": domains, "note": ""}
+            return {"library": "", "domains": [], "note": "no libvariorum.so"}
+
+        with mock.patch.object(compose, "run", side_effect=build), \
+                mock.patch.object(compose, "probe_variorum", side_effect=probe), \
+                mock.patch.object(compose, "power_backends", return_value=[]), \
+                mock.patch.object(compose, "rocm_root", return_value=""), \
+                mock.patch.object(compose, "nvml_include", return_value=""), \
+                quiet() as out:
+            record = compose.provide_variorum("always", self.tree, self.work)
+        return record, lib.read_text(), out.getvalue()
+
+    def test_rebuild_that_reads_fewer_domains_keeps_the_old_one(self):
+        record, content, out = self.rebuild(["gpu"])
+        self.assertEqual((content, record["domains"]), ("old", ["cpu", "gpu"]))
+        self.assertIn("keeping the Variorum", out)
+        self.assertEqual(sorted(p.name for p in self.dest.parent.iterdir()),
+                         ["compose", "variorum"])
+
+    def test_rebuild_that_reads_as_many_domains_replaces_the_old_one(self):
+        record, content, _ = self.rebuild(["cpu", "gpu"])
+        self.assertEqual((content, record["domains"]), ("new", ["cpu", "gpu"]))
+        self.assertEqual(sorted(p.name for p in self.dest.parent.iterdir()),
+                         ["compose", "variorum"])
+
+    def test_failed_rebuild_keeps_the_old_one(self):
+        with self.assertRaises(compose.StepFailed):
+            self.rebuild([], fail=True)
+        self.assertEqual((self.dest / "lib" / "libvariorum.so").read_text(), "old")
+
+    def test_build_warnings_are_shown(self):
+        log = self.work / "variorum.log"
+        log.write_text("-- [DFTRACER] composing hwloc: hwloc-2\n"
+                       "CMake Warning at x.cmake:1 (message):\n  [DFTRACER] hwloc download "
+                       "failed (6;timeout);\n  linking the system hwloc\nCall Stack (most "
+                       "recent call first):\n  t.cmake:8\n-- done\n")
+        with quiet() as out:
+            compose.log_warnings(log, ("hwloc",))
+            compose.log_warnings(self.work / "missing.log", ("hwloc",))
+        self.assertIn("warning: hwloc download failed (6;timeout); linking the system hwloc\n",
+                      out.getvalue())
+        self.assertNotIn("composing", out.getvalue())
+
+    def test_never_builds_nothing_and_always_builds(self):
+        record, run, _ = self.provide("never")
+        run.assert_not_called()
+        self.assertEqual(record["status"], "absent")
+        record, run, _ = self.provide("always", site=["gpu"], backends=())
+        run.assert_called_once()
+        self.assertEqual(record["status"], "built")
+
+    def test_check_only_reports(self):
+        record, run, out = self.provide("auto", check=True)
+        run.assert_not_called()
+        self.assertEqual(record["status"], "absent")
+        self.assertIn("would build Variorum", out)
+
+    def test_a_variorum_built_before_is_used_again_without_a_rebuild(self):
+        stamp = self.dest / "share" / "dftracer"
+        stamp.mkdir(parents=True)
+        (stamp / "variorum-v0.8.0-AMD_GPU.stamp").write_text("x")
+        (self.dest / "lib").mkdir()
+        (self.dest / "lib" / "libvariorum.so").write_bytes(b"")
+        compose.save_variorum_record(self.tree, {"status": "built", "built_on": "tuo1",
+                                                 "built_at": "2026-11-24T10:00:00"})
+        for mode in ("auto", "never"):
+            record, run, _ = self.provide(mode, backends=())
+            run.assert_not_called()
+            self.assertEqual((record["status"], record["built_on"]), ("built", "tuo1"))
+        _, run, _ = self.provide("always")
+        run.assert_called_once()
+        self.assertEqual(list(stamp.glob("variorum-*.stamp")), [])
+
+    def test_failed_build_keeps_the_machine_variorum_in_auto_and_fails_in_always(self):
+        failed = compose.StepFailed("no network")
+        with mock.patch.object(compose, "run", side_effect=failed), \
+                mock.patch.object(compose, "power_backends", return_value=[("x", "gpu")]), \
+                mock.patch.object(compose, "probe_variorum",
+                                  return_value={"library": "", "domains": [], "note": ""}), \
+                quiet():
+            record = compose.provide_variorum("auto", self.tree, self.work)
+            self.assertEqual(record["status"], "absent")
+            with self.assertRaises(compose.StepFailed):
+                compose.provide_variorum("always", self.tree, self.work)
+
+    def test_describe(self):
+        self.assertIn("absent", compose.describe_variorum(
+            {"status": "absent", "library": "", "domains": [], "note": "no libvariorum.so"}))
+        self.assertEqual(compose.describe_variorum(
+            {"status": "found", "library": "/lib/libvariorum.so", "domains": ["cpu", "gpu"]}),
+            "found /lib/libvariorum.so, domains: cpu, gpu")
+        self.assertIn("not recorded", compose.describe_variorum({}))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "reads /proc/self/maps")
+    def test_probe_of_a_library_that_is_not_variorum(self):
+        missing = compose.probe_variorum(str(self.tmp / "libvariorum.so"))
+        self.assertEqual(missing["library"], "")
+        self.assertIn("does not load", missing["note"])
+        got = compose.probe_variorum("libm.so.6")
+        self.assertEqual(got["library"], "")
+        self.assertIn("older than Variorum 0.8", got["note"])
+
+
 @unittest.skipIf(BUILD is None and "--build" not in sys.argv, "needs --build")
 class EndToEnd(unittest.TestCase):
     """dftracer-compose on the build's compose tree, installed in a prefix."""
@@ -388,6 +590,26 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("ignoring unreadable", result.stdout)
         self.assertFalse(settings.exists())
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "reads /proc/self/maps")
+    def test_status_shows_the_variorum_compose_built(self):
+        stub = next(BUILD.rglob("libdftracer_test_variorum_08.so"), None)
+        if stub is None:
+            self.skipTest("the build has no Variorum stub")
+        dest = self.tree.parent / "variorum"
+        (dest / "lib").mkdir(parents=True)
+        (dest / "share" / "dftracer").mkdir(parents=True)
+        shutil.copy(stub, dest / "lib" / "libvariorum.so")
+        (dest / "share" / "dftracer" / "variorum-v0.8.0-AMD_GPU.stamp").write_text("x")
+        try:
+            result = self.run_compose("--no-build")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            status = self.run_compose("--status").stdout
+        finally:
+            shutil.rmtree(dest)
+        # The probe reports the file it loaded, with symlinks resolved.
+        library = (dest / "lib" / "libvariorum.so").resolve()
+        self.assertIn(f"built here {library}, domains: cpu, gpu, mem", status)
 
     @unittest.skipIf(os.geteuid() == 0, "root can write a read-only directory")
     def test_read_only_install_stops_before_building(self):

@@ -1600,7 +1600,7 @@ if(TARGET ${PROJECT_NAME}_service)
         $<TARGET_FILE:${PROJECT_NAME}_service> $<TARGET_FILE:dftracer_test_variorum_08>
         $<TARGET_FILE:dftracer_test_variorum_07> ${CMAKE_CURRENT_BINARY_DIR}/variorum_runtime
         $<TARGET_FILE:dftracer_test_variorum_exit> $<TARGET_FILE:dftracer_test_variorum_crash>
-        $<TARGET_FILE:dftracer_test_variorum_hang>)
+        $<TARGET_FILE:dftracer_test_variorum_hang> $<TARGET_FILE:${PROJECT_NAME}_core>)
 endif()
 # dftracer-compose changing an install: settings, staged install, locking,
 # a failed or read-only relink (see py/test_compose_cli.py).

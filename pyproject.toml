@@ -112,6 +112,7 @@ target-version = "py38"
 script-files = [
   "script/dftracer-preload-library-path",
   "script/dftracer_install_info",
+  "script/dftracer_service",
   "script/git_sparse_clone_interactive",
   "script/git_sparse_push_interactive",
 ]

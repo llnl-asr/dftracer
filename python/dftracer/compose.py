@@ -18,6 +18,11 @@ wheel and, if installed, dftracer-modules. This command
     dftracer-compose --verbose           show each step and stream its log
     DFTRACER_BUILD_FROM_SOURCE=all dftracer-compose
 
+It also provides dftracer_service's power library: when this machine has no
+Variorum 0.8 or later, or one that reads no power domain here, it builds one
+(with E-SMI for AMD CPUs) into <libdir>/dftracer/variorum, which the service
+loads first. --build-variorum always|never changes that.
+
 Editing a composition: the choices below are kept in
 <libdir>/dftracer/compose-settings.json, and every later run starts from
 them, so each command changes the composition one step at a time.
@@ -46,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes.util
 import datetime
 import fcntl
 import json
@@ -133,24 +139,51 @@ def run(cmd: list[str], log: Path, **kwargs) -> None:
         raise StepFailed(f"{' '.join(cmd[:3])}... failed (log {log}):\n" + "\n".join(tail))
 
 
+def log_warnings(log: Path, needles: tuple[str, ...]) -> None:
+    """Show the [DFTRACER] warnings in `log` that name one of `needles`: the
+    log is in the work dir, which a successful run deletes."""
+    try:
+        text = " ".join(log.read_text().split())
+    except OSError:
+        return
+    for block in text.split("CMake Warning")[1:]:
+        if "[DFTRACER] " not in block:
+            continue
+        warning = block.split("[DFTRACER] ", 1)[1]
+        if any(needle in warning for needle in needles):
+            for end in (" CMake ", " -- ", " Call Stack "):
+                warning = warning.split(end)[0]
+            step("warning: " + warning.strip())
+
+
+def static_hwloc_root(tree: Path) -> Path:
+    """Where the static hwloc for the hwloc module and Variorum is kept, so a
+    later compose links it again without a download."""
+    return tree.parent / "hwloc"
+
+
 def compose(tree: Path, prefix: Path, work: Path, install: bool,
-            cmake_args: list[str]) -> list[tuple[str, str, str]]:
+            cmake_args: list[str], build_hwloc: bool = True) -> list[tuple[str, str, str]]:
     """Run the compose project; return its (module, variant, status) lines."""
     build = work / "compose-build"
     if build.exists():
         shutil.rmtree(build)
     step("detecting this machine's libraries" if not install
          else "linking libdftracer_core from the tree")
+    if install:
+        cmake_args = [*cmake_args,
+                      f"-DDFTRACER_COMPOSE_HWLOC_ROOT={static_hwloc_root(tree)}",
+                      f"-DDFTRACER_COMPOSE_HWLOC_BUILD={'ON' if build_hwloc else 'OFF'}"]
     run(["cmake", "-S", str(tree), "-B", str(build),
          f"-DCMAKE_INSTALL_PREFIX={prefix}", *cmake_args],
         work / "compose-configure.log")
     if not install:
         # A variant linked by name (--variant) that is not the one this
         # machine's library needs: say so where it is seen.
-        text = " ".join((work / "compose-configure.log").read_text().split())
-        for warning in text.split("[DFTRACER] ")[1:]:
-            if "as asked, but" in warning:
-                step("warning: " + warning.split(" CMake ")[0].split(" -- ")[0].strip())
+        log_warnings(work / "compose-configure.log", ("as asked, but",))
+    else:
+        # The core then links the system hwloc.
+        log_warnings(work / "compose-configure.log", ("hwloc",))
     if install:
         run(["cmake", "--build", str(build)], work / "compose-build.log")
         # Into a staging dir first, so a failed or partial install changes
@@ -353,6 +386,275 @@ def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
     return True
 
 
+# --- Variorum for dftracer_service ---------------------------------------
+
+VARIORUM_RECORD = "variorum.json"
+VARIORUM_PROBE_TIMEOUT_S = 60
+_VARIORUM_MARK = "DFTRACER-VARIORUM "
+
+# Run in a child: Variorum ends the process on a topology it does not
+# handle, and may hang on a driver that does not answer.
+_VARIORUM_PROBE = r"""
+import ctypes, json, sys
+try:
+    lib = ctypes.CDLL(sys.argv[1])
+except OSError as error:
+    sys.stdout.write("\n" + %r + json.dumps({"error": str(error)}) + "\n")
+    sys.exit(0)
+path = next((line.split()[-1] for line in open("/proc/self/maps")
+             if "libvariorum" in line), sys.argv[1])
+result = {"path": path, "api": hasattr(lib, "variorum_get_power_json")}
+if result["api"]:
+    call = lib.variorum_get_power_json
+    call.argtypes = [ctypes.POINTER(ctypes.c_char_p)]
+    out = ctypes.c_char_p()
+    result["rc"] = call(ctypes.byref(out))
+    result["payload"] = (out.value or b"").decode(errors="replace")
+sys.stdout.write("\n" + %r + json.dumps(result) + "\n")
+""" % (_VARIORUM_MARK, _VARIORUM_MARK)
+
+
+def power_domains(payload: str) -> list[str]:
+    """The power_<domain>_watts keys of a variorum_get_power_json() payload
+    that hold a reading; Variorum writes -1 for a domain it cannot read."""
+    try:
+        data = json.loads(payload)
+    except ValueError:
+        return []
+
+    def has_reading(value) -> bool:
+        if isinstance(value, dict):
+            return any(has_reading(v) for v in value.values())
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+
+    found: set[str] = set()
+
+    def walk(node) -> None:
+        if not isinstance(node, dict):
+            return
+        for key, value in node.items():
+            # power_node_watts is Variorum's sum of the others.
+            if (key.startswith("power_") and key.endswith("_watts")
+                    and key != "power_node_watts" and has_reading(value)):
+                found.add(key[len("power_"):-len("_watts")])
+            walk(value)
+
+    walk(data)
+    return sorted(found)
+
+
+def probe_variorum(library: str) -> dict:
+    """Load `library` the way dftracer_service does and call it once.
+
+    Returns {"library": the file loaded, or "" when there is no Variorum 0.8
+    or later, "domains": the power domains it read, "note": why it read none}.
+    """
+    try:
+        proc = subprocess.run([sys.executable, "-c", _VARIORUM_PROBE, library],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              text=True, timeout=VARIORUM_PROBE_TIMEOUT_S)
+        output = proc.stdout
+    except subprocess.TimeoutExpired:
+        return {"library": library, "domains": [],
+                "note": f"variorum_get_power_json did not return in {VARIORUM_PROBE_TIMEOUT_S} s"}
+    result = None
+    for line in output.splitlines():
+        if line.startswith(_VARIORUM_MARK):
+            result = json.loads(line[len(_VARIORUM_MARK):])
+    if result is None:
+        return {"library": library, "domains": [],
+                "note": "Variorum ended the process in variorum_get_power_json"}
+    if "error" in result:
+        return {"library": "", "domains": [], "note": f"{library} does not load: {result['error']}"}
+    if not result["api"]:
+        return {"library": "", "domains": [],
+                "note": f"{result['path']} is older than Variorum 0.8"}
+    domains = power_domains(result.get("payload", "")) if result.get("rc") == 0 else []
+    note = "" if domains else f"{result['path']} reads no power domain here"
+    return {"library": result["path"], "domains": domains, "note": note}
+
+
+def _version_key(path: Path) -> tuple:
+    return tuple(int(p) if p.isdigit() else -1
+                 for p in path.name.split("-", 1)[-1].replace("-", ".").split("."))
+
+
+def rocm_root() -> str:
+    """A ROCm with ROCm SMI: the loaded one ($ROCM_PATH, $ROCM_DIR, hipcc on
+    PATH), else /opt/rocm, else the newest /opt/rocm-<version>."""
+    candidates = [os.environ.get("ROCM_PATH"), os.environ.get("ROCM_DIR")]
+    hipcc = shutil.which("hipcc")
+    if hipcc:
+        candidates.append(str(Path(hipcc).resolve().parent.parent))
+    candidates.append("/opt/rocm")
+    candidates += [str(p) for p in sorted(Path("/opt").glob("rocm-*"), key=_version_key,
+                                          reverse=True)]
+    for candidate in filter(None, candidates):
+        if any((Path(candidate) / d / "librocm_smi64.so").exists() for d in ("lib", "lib64")):
+            return candidate
+    return ""
+
+
+def nvml_library() -> str:
+    """The NVIDIA driver's NVML library, which Variorum reads GPU power with."""
+    return ctypes.util.find_library("nvidia-ml") or ""
+
+
+def nvml_include() -> str:
+    """A directory with nvml.h, which only a CUDA toolkit ships."""
+    roots = [os.environ.get(v) for v in ("CUDA_HOME", "CUDA_PATH", "DFTRACER_CUDA_PATH")]
+    nvcc = shutil.which("nvcc")
+    if nvcc:
+        roots.append(str(Path(nvcc).resolve().parent.parent))
+    roots.append("/usr/local/cuda")
+    for root in filter(None, roots):
+        for include in [Path(root) / "include", *sorted(Path(root).glob("targets/*/include"))]:
+            if (include / "nvml.h").exists():
+                return str(include)
+    return ""
+
+
+def power_backends(rocm: str) -> list[tuple[str, str]]:
+    """The vendor interfaces this machine has that Variorum can read power
+    from, each with the power domain it gives."""
+    found = []
+    if Path("/dev/hsmp").exists():
+        found.append(("AMD CPU (/dev/hsmp)", "cpu"))
+    if rocm and Path("/dev/kfd").exists():
+        found.append(("AMD GPU (ROCm SMI)", "gpu"))
+    if Path("/dev/nvidiactl").exists() and nvml_library():
+        found.append(("NVIDIA GPU (NVML)", "gpu"))
+    if Path("/dev/cpu/msr_batch").exists():
+        found.append(("Intel CPU (msr-safe)", "cpu"))
+    return found
+
+
+def variorum_record(status: str, probe: dict, **extra) -> dict:
+    record = {"status": status, "library": probe["library"],
+              "domains": probe["domains"], "note": probe.get("note", "")}
+    record.update(extra)
+    return record
+
+
+def describe_variorum(record: dict | None) -> str:
+    if not record:
+        return "not recorded: run dftracer-compose"
+    domains = ", ".join(record.get("domains") or []) or "none"
+    if record.get("status") == "absent":
+        return ("absent: " + (record.get("note") or "no Variorum 0.8 or later")
+                + "; dftracer_service writes no power records")
+    where = "built here" if record.get("status") == "built" else "found"
+    if record.get("status") == "built" and record.get("built_on"):
+        where += f" ({record['built_on']}, {record.get('built_at', '?')})"
+    return f"{where} {record.get('library', '')}, domains: {domains}"
+
+
+def provide_variorum(mode: str, tree: Path, work: Path, check: bool = False) -> dict:
+    """Build Variorum into <libdir>/dftracer/variorum when `mode` asks for it.
+
+    dftracer_service loads that library ahead of the loader's search. Returns
+    the record of the Variorum the service will load (variorum_record); with
+    `check`, only reports what would be built.
+    """
+    dest = tree.parent / "variorum"
+    built = dest / "lib" / "libvariorum.so"
+    built_before = built.exists() and any((dest / "share" / "dftracer").glob("variorum-*.stamp"))
+    if built_before and mode != "always":
+        # Not built again: on a node without the GPUs it would rebuild without
+        # them over the Variorum that reads them.
+        step(f"using the Variorum in {dest} (built by an earlier compose)")
+        before = _read_record(tree)
+        return variorum_record("built", probe_variorum(str(built)),
+                               **{k: before[k] for k in ("built_on", "built_at") if k in before})
+    found = probe_variorum("libvariorum.so")
+    rocm = rocm_root()
+    reason = ""
+    if mode == "always":
+        reason = "--build-variorum always"
+    elif mode == "auto" and not found["domains"]:
+        reason = found["note"] or "no Variorum reads power here"
+        if not power_backends(rocm):
+            step(f"Variorum: {reason}, and this machine has no power interface "
+                 "(/dev/hsmp, ROCm SMI, NVML, msr-safe); not building it")
+            reason = ""
+    status = "found" if found["library"] else "absent"
+    if not reason:
+        return variorum_record(status, found)
+    if check:
+        print(f"would build Variorum into {dest} ({reason})")
+        return variorum_record(status, found)
+    step(f"building Variorum into {dest} ({reason}) ...")
+    nvml = nvml_include()
+    if not nvml and any(label.startswith("NVIDIA") for label, _ in power_backends(rocm)):
+        step("warning: no nvml.h for NVIDIA GPU power; set CUDA_HOME to a CUDA "
+             "toolkit that has include/nvml.h, or load a cuda module")
+    # The build goes into `dest`, as its RPATH names it; a Variorum already
+    # there waits aside, and comes back if the new one reads fewer domains.
+    old = None
+    if built.exists():
+        old = (dest.with_name(f".{dest.name}-old-{os.getpid()}"),
+               probe_variorum(str(built)), _read_record(tree))
+        shutil.rmtree(old[0], ignore_errors=True)
+        dest.rename(old[0])
+
+    def restore() -> dict | None:
+        if old is None:
+            return None
+        shutil.rmtree(dest, ignore_errors=True)
+        old[0].rename(dest)
+        step(f"keeping the Variorum that was in {dest}")
+        return variorum_record("built", old[1], **{k: old[2][k] for k in ("built_on", "built_at")
+                                                   if k in old[2]})
+
+    try:
+        run(["cmake", f"-DDFTRACER_VARIORUM_PREFIX={dest}",
+             f"-DDFTRACER_VARIORUM_ROCM_ROOT={rocm}",
+             f"-DDFTRACER_VARIORUM_NVML_INCLUDE={nvml}",
+             f"-DDFTRACER_VARIORUM_WORK={work / 'variorum'}",
+             f"-DDFTRACER_VARIORUM_HWLOC_ROOT={static_hwloc_root(tree)}",
+             "-P", str(tree / "DFTracerVariorum.cmake")], work / "variorum.log", cwd=work)
+    except StepFailed as error:
+        log_warnings(work / "variorum.log", ("hwloc", "Variorum"))
+        kept = restore()
+        if mode == "always":
+            raise
+        # Not asked for by name: compose goes on with what the machine has.
+        step(f"warning: Variorum did not build, keeping this machine's: {error}")
+        return kept or variorum_record(status, found)
+    log_warnings(work / "variorum.log", ("hwloc", "Variorum patch"))
+    build = {"built_on": platform.node(),
+             "built_at": datetime.datetime.now().isoformat(timespec="seconds")}
+    record = variorum_record("built", probe_variorum(str(built)), **build)
+    if old is not None:
+        if len(record["domains"]) < len(old[1]["domains"]):
+            step(f"warning: the new Variorum reads {record['domains'] or 'no'} domains, "
+                 f"the one before {old[1]['domains']}")
+            return restore()
+        shutil.rmtree(old[0], ignore_errors=True)
+    # Loud, since a Variorum release the patches no longer fit still builds.
+    for label, domain in power_backends(rocm):
+        if domain not in record["domains"]:
+            step(f"warning: the Variorum built in {dest} reads no {domain} power, "
+                 f"though this machine has {label}; run again with "
+                 "--build-variorum always --keep --verbose for the build log")
+    return record
+
+
+def _read_record(tree: Path) -> dict:
+    try:
+        data = json.loads((tree.parent / VARIORUM_RECORD).read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_variorum_record(tree: Path, record: dict) -> None:
+    path = tree.parent / VARIORUM_RECORD
+    tmp = path.with_name(f".{path.name}.{os.getpid()}")
+    tmp.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
 # --- Saved composition settings --------------------------------------------
 
 def settings_path(tree: Path) -> Path:
@@ -505,6 +807,7 @@ def print_status(tree: Path, settings: dict) -> int:
                 origin += f" ({data['built_on']}, {data.get('built_at', '?')})"
         pin = " (pinned)" if settings["variants"].get(module) == variant else ""
         print(f"  {module:6} {variant:28} {status:8} {origin}{pin}")
+    print(f"  {'variorum':6} {describe_variorum(_read_record(tree))}")
     print("settings: " + describe_settings(settings))
     return 0
 
@@ -543,6 +846,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="build PAPI from source: auto builds it on a ROCm machine "
                              "whose PAPI is missing or has no rocp_sdk component "
                              "(default: $DFTRACER_BUILD_PAPI or auto)")
+    parser.add_argument("--build-variorum", choices=("auto", "always", "never"),
+                        default=os.environ.get("DFTRACER_BUILD_VARIORUM", "auto").lower(),
+                        help="build Variorum (and E-SMI) for dftracer_service's power "
+                             "records: auto builds it when no Variorum 0.8 or later "
+                             "reads a power domain here and the machine has one "
+                             "(default: $DFTRACER_BUILD_VARIORUM or auto)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="print each step's command and stream its output")
     edit = parser.add_argument_group("editing the composition (kept for later runs)")
@@ -610,6 +919,8 @@ def _main(args: argparse.Namespace, prefix: Path, tree: Path, forced: set[str],
     records = compose(tree, prefix, work, install=False, cmake_args=cmake_args)
     if not args.check and provide_papi(args.build_papi, tree, work, settings, records):
         records = compose(tree, prefix, work, install=False, cmake_args=cmake_args)
+    variorum = provide_variorum("never" if args.no_build else args.build_variorum,
+                                tree, work, check=args.check)
     needed = {m for m, _, status in records if status in ("missing", "stale")}
     detected = {m for m, _, status in records if status in ("linked", "missing", "stale")}
     to_build = sorted(needed | (forced & detected))
@@ -618,6 +929,7 @@ def _main(args: argparse.Namespace, prefix: Path, tree: Path, forced: set[str],
     for module, variant, status in records:
         note = " (rebuild from source)" if module in forced and status == "linked" else ""
         print(f"  {module:6} {variant:28} {status}{note}")
+    print(f"  {'variorum':6} {describe_variorum(variorum)}")
     if args.check:
         if to_build:
             print("would build from source: " + ", ".join(to_build))
@@ -645,7 +957,9 @@ def _main(args: argparse.Namespace, prefix: Path, tree: Path, forced: set[str],
             raise SystemExit("dftracer-compose: the core did not build; nothing composed")
     else:
         failed = []
-    records = compose(tree, prefix, work, install=True, cmake_args=cmake_args)
+    records = compose(tree, prefix, work, install=True, cmake_args=cmake_args,
+                      build_hwloc=not args.no_build)
+    save_variorum_record(tree, variorum)
     linked = [f"{m}:{v}" for m, v, s in records if s == "linked"]
     step("libdftracer_core linked with "
          + (", ".join(linked) if linked else "no optional modules"))

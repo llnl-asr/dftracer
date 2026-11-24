@@ -29,6 +29,10 @@
 #     compiler  whatever the compiler links by default
 #   nonshared and static link with the C driver, so a compiler with an older
 #   runtime can compose the archives.
+# DFTRACER_COMPOSE_HWLOC_ROOT  where a static hwloc 2 is kept, in a directory
+#   per version, for the hwloc-2 module to link in and hide (dftracer-compose
+#   sets it); empty links the system's libhwloc.
+# DFTRACER_COMPOSE_HWLOC_BUILD  OFF uses only a static hwloc already there.
 #
 # composition.txt (build dir, installed next to the library) lists one line
 # per module: "<module> <variant> linked|missing|stale|absent". A missing
@@ -45,6 +49,7 @@ set(DFTRACER_COMPOSE_ROOT "${_root}")
 list(APPEND CMAKE_MODULE_PATH "${_root}")
 include(DFTracerCompose)
 include(DFTracerDetect)
+include(DFTracerHwloc)
 include("${_root}/core/core.cmake")
 
 # A library recorded at build time by an absolute path that is not on this
@@ -86,6 +91,9 @@ _dftracer_relocate(DFTRACER_CORE_LINK_DBG ${DFTRACER_CORE_LINK_DBG})
 
 set(DFTRACER_COMPOSE_MODULES "detect" CACHE STRING
     "Modules to link: detect, all, none, or a comma-separated list")
+set(DFTRACER_COMPOSE_HWLOC_ROOT "" CACHE PATH
+    "Where the static hwloc the hwloc-2 module links is kept; empty links the system's")
+option(DFTRACER_COMPOSE_HWLOC_BUILD "Build the static hwloc when it is not there" ON)
 if(EXISTS "${_root}/runtime/libstdc++_nonshared.a")
   set(_default_runtime nonshared)
 elseif(EXISTS "${_root}/runtime/libstdc++.a")
@@ -128,6 +136,7 @@ set(_archives "")
 set(_archives_dbg "")
 set(_links "")
 set(_record "")
+set(_static_hwloc "")
 foreach(_module IN LISTS _selected)
   if(NOT _module IN_LIST _available AND NOT (_detect AND _module IN_LIST _known))
     message(FATAL_ERROR "[DFTRACER] module '${_module}' is not available here "
@@ -237,12 +246,29 @@ foreach(_module IN LISTS _selected)
       list(FILTER _module_links EXCLUDE REGEX "(^|/)libmpi[^/]*$|^-lmpi")
     endif()
     list(APPEND _links "-Wl,--as-needed" ${_module_links} "-Wl,--no-as-needed")
+  elseif(_module STREQUAL "hwloc" AND _variant MATCHES "^hwloc-2" AND DFTRACER_COMPOSE_HWLOC_ROOT)
+    # In an MVAPICH2 program the core's hwloc_* calls bind to the hwloc 1.x
+    # that its libmpi exports, not to libhwloc.so.15. A static hwloc, hidden,
+    # binds them inside the core.
+    dftracer_provision_static_hwloc(
+      "${DFTRACER_COMPOSE_HWLOC_ROOT}/${DFTRACER_STATIC_HWLOC_VERSION}"
+      "${CMAKE_BINARY_DIR}/hwloc-work" ${DFTRACER_COMPOSE_HWLOC_BUILD} _static_hwloc)
+    if(_static_hwloc)
+      list(APPEND _module_links "${_static_hwloc}" "-Wl,--exclude-libs,libhwloc.a")
+    endif()
+    list(APPEND _links ${_module_links})
   else()
     list(APPEND _links ${_module_links})
   endif()
   string(APPEND _record "${_module} ${_variant} linked\n")
   message(STATUS "[DFTRACER] composing ${_module}: ${_variant}")
 endforeach()
+
+# A shared libhwloc from any module's libraries (an MPI's) would satisfy the
+# hwloc module's calls before the static one.
+if(_static_hwloc)
+  list(FILTER _links EXCLUDE REGEX "(^|/)libhwloc[^/]*\\.so[^/]*$|^(-l)?hwloc$")
+endif()
 
 # The C++ runtime: the one the archives were built with, linked in and hidden,
 # or the compiler's own.

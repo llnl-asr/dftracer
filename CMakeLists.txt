@@ -1648,6 +1648,8 @@ set(DFTRACER_COMPONENT_LINK "@_dftracer_link@")
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/DFTracerDetect.cmake
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/FindPAPI.cmake
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/DFTracerPapi.cmake
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/DFTracerVariorum.cmake
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/DFTracerHwloc.cmake
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/FindHWLOC.cmake
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/FindCUPTI.cmake
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/mpi_detect.c

@@ -223,6 +223,24 @@ it, so GPU counters can be collected:
 
 Later runs keep using that PAPI. ``DFTRACER_BUILD_PAPI`` sets the default.
 
+``dftracer-compose`` also provides the Variorum that ``dftracer_service``
+reads node power with (see `Variorum`_). Each library it can build has a
+``--build-*`` flag and an environment variable for its default:
+
+======================  ===========================  ==========================================
+Flag                    Default from                 ``auto`` builds it when
+======================  ===========================  ==========================================
+``--build-papi``        ``DFTRACER_BUILD_PAPI``      this ROCm machine has no PAPI, or a PAPI
+                                                     with no ``rocp_sdk`` component
+``--build-variorum``    ``DFTRACER_BUILD_VARIORUM``  no Variorum 0.8 or later reads a power
+                                                     domain here, and the machine has a power
+                                                     interface Variorum can read
+======================  ===========================  ==========================================
+
+Each flag takes ``auto`` (the default), ``always`` or ``never``. A library
+built by an earlier run is used again and not rebuilt, except with
+``always``. ``--no-build`` builds no Variorum.
+
 Changing a composition
 ======================
 
@@ -298,17 +316,74 @@ Variorum
 --------
 
 Node power from `Variorum <https://github.com/LLNL/variorum>`_ needs no
-variant and no compose step: ``dftracer_service`` loads ``libvariorum.so``
-when it starts, so the wheel's service reads power on any machine that has
-Variorum 0.8 or later (the release that added ``variorum_get_power_json``;
-0.6 and 0.7 name it differently). Name the library with
-``DFTRACER_VARIORUM_LIBRARY=/path/to/libvariorum.so``; otherwise the service
-loads the first ``libvariorum.so`` the loader finds, which on a system that
-ships a Variorum package (TOSS 4 does, in ``/lib``) is that one, ahead of
-``LD_LIBRARY_PATH``. Without Variorum the service runs as before, with no
-power records. Variorum decides which power domains it can read (CPU, GPU,
-memory) when it is built, and a distribution's build often reads none, so
-name the Variorum built for the machine.
+module variant: ``dftracer_service`` loads ``libvariorum.so`` when it starts,
+so the wheel's service reads power on any machine that has Variorum 0.8 or
+later (the release that added ``variorum_get_power_json``; 0.6 and 0.7 name
+it differently). Variorum decides which power domains it can read (CPU, GPU,
+memory) when it is built, and a distribution's build often reads none.
+
+So ``dftracer-compose`` checks the Variorum this machine has. It loads
+``libvariorum.so`` in a child process, calls ``variorum_get_power_json``
+once and lists the domains that hold a reading. When there is no Variorum
+0.8 or later, or the one found reads no domain, it builds Variorum 0.8.0
+into ``<libdir>/dftracer/variorum`` with the back ends this machine has:
+
+==========  ==================================================================
+AMD CPU     E-SMI through ``/dev/hsmp``. ``dftracer-compose`` builds E-SMI
+            too when it is not installed.
+AMD GPU     ROCm SMI from ``$ROCM_PATH`` (or ``ROCM_DIR``, ``hipcc`` on
+            ``PATH``, ``/opt/rocm`` or the newest ``/opt/rocm-<version>``).
+NVIDIA GPU  NVML: the driver's ``libnvidia-ml.so.1`` and ``nvml.h`` from a
+            CUDA toolkit (``CUDA_HOME``, ``CUDA_PATH``, ``nvcc`` on ``PATH``
+            or ``/usr/local/cuda``). Set ``CUDA_HOME`` where the system CUDA
+            has no ``nvml.h``.
+Intel CPU   msr-safe (``/dev/cpu/msr_batch``). Without it the Intel part is
+            left out, since it would fail every power reading, GPU included.
+==========  ==================================================================
+
+The build needs git, CMake, a C compiler and the hwloc and jansson
+development files. Variorum 0.8.0 is patched so that it builds with its AMD
+CPU back end, accepts the MI300A CPU (family 0x19, model 0x90) and, on the
+MI300A, does not add the GPU power to ``power_node_watts`` a second time
+(the CPU socket power of an APU already holds it). When a later release no
+longer fits a patch, the build warns, and ``dftracer-compose`` warns when
+the Variorum it built reads no power for an interface the machine has:
+
+.. code-block:: text
+
+    dftracer-compose: warning: the Variorum built in .../variorum reads no cpu power, though this machine has AMD CPU (/dev/hsmp); ...
+
+On a machine with none of ``/dev/hsmp``, ROCm SMI, NVML or msr-safe nothing
+is built, and the service runs as before, with no power records.
+
+``dftracer_service`` picks its library in this order:
+
+1. ``DFTRACER_VARIORUM_LIBRARY=/path/to/libvariorum.so``, when it is set.
+   The service uses that library as is, and reads no power when it does not
+   load.
+2. ``<libdir>/dftracer/variorum/lib/libvariorum.so`` (or ``lib64``), the one
+   ``dftracer-compose`` built next to the ``libdftracer_core`` the service
+   loaded, when it exists.
+3. The first ``libvariorum.so`` the loader finds. On a system that ships a
+   Variorum package (TOSS 4 does, in ``/lib``) that is the package's, ahead
+   of ``LD_LIBRARY_PATH``.
+
+``dftracer-compose --status`` and ``dftracer_install_info --composition``
+show which Variorum the service loads and its domains:
+
+.. code-block:: text
+
+    $ dftracer-compose --status
+    ...
+      variorum built here (tuolumne1001, 2026-11-24T10:12:03) .../lib64/dftracer/variorum/lib/libvariorum.so, domains: cpu, gpu
+
+The status is ``found`` for a Variorum the machine already had and
+``absent`` when the service has none. On an MI300A node the CPU and GPU
+readings are both the power of the whole APU socket, as E-SMI and ROCm SMI
+report it. E-SMI needs only read access to ``/dev/hsmp`` for power.
+
+A pip install puts ``dftracer_service`` on ``PATH``; it runs the service in
+``site-packages/dftracer/bin``.
 
 Troubleshooting
 ===============

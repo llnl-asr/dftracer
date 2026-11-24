@@ -64,7 +64,7 @@ void test_flattens_nested_power() {
     DFT_CHECK(sample.metric_name.find("tuolumne1002") == std::string::npos);
   }
 
-  std::cout << "✓ variorum power JSON flattening passed" << std::endl;
+  std::cout << "variorum power JSON flattening passed" << std::endl;
 }
 
 // Captured verbatim from variorum_get_power_json() on an MI300A node
@@ -121,7 +121,7 @@ void test_real_mi300a_payload() {
   DFT_CHECK(count != nullptr);
   DFT_CHECK(count->metric_value == 1.0);
 
-  std::cout << "✓ variorum MI300A payload passed" << std::endl;
+  std::cout << "variorum MI300A payload passed" << std::endl;
 }
 
 void test_keeps_names_without_a_host_wrapper() {
@@ -143,7 +143,7 @@ void test_keeps_names_without_a_host_wrapper() {
   DFT_CHECK(flat[0].metric_name == "power_node_watts");
   DFT_CHECK(flat[0].metric_value == 5.0);
 
-  std::cout << "✓ variorum payload with no host wrapper passed" << std::endl;
+  std::cout << "variorum payload with no host wrapper passed" << std::endl;
 }
 
 void test_skips_non_numeric_leaves() {
@@ -162,7 +162,7 @@ void test_skips_non_numeric_leaves() {
   DFT_CHECK(samples[0].metric_name == "power_node_watts");
   DFT_CHECK(samples[0].metric_value == 42.5);
 
-  std::cout << "✓ variorum non-numeric leaves passed" << std::endl;
+  std::cout << "variorum non-numeric leaves passed" << std::endl;
 }
 
 void test_number_forms() {
@@ -176,7 +176,24 @@ void test_number_forms() {
   DFT_CHECK(find_sample(samples, "c")->metric_value == 0.0);
   DFT_CHECK(find_sample(samples, "d")->metric_value == 0.01);
 
-  std::cout << "✓ variorum number forms passed" << std::endl;
+  std::cout << "variorum number forms passed" << std::endl;
+}
+
+void test_drops_unread_power() {
+  std::cout << "Testing variorum unread power domains..." << std::endl;
+  auto samples = VariorumTelemetryCollector::parse_power_json(
+      "{\"h\":{\"power_node_watts\":250.0,\"num_gpus_per_socket\":1,"
+      "\"socket_0\":{\"power_cpu_watts\":125.0,\"power_mem_watts\":-1.0,"
+      "\"power_gpu_watts\":{\"GPU_0\":-1.0,\"GPU_1\":0.0}}}}");
+
+  DFT_CHECK(samples.size() == 4);
+  DFT_CHECK(find_sample(samples, "socket_0.power_mem_watts") == nullptr);
+  DFT_CHECK(find_sample(samples, "socket_0.power_gpu_watts.GPU_0") == nullptr);
+  DFT_CHECK(find_sample(samples, "socket_0.power_gpu_watts.GPU_1") != nullptr);
+  DFT_CHECK(find_sample(samples, "socket_0.power_cpu_watts")->metric_value ==
+            125.0);
+
+  std::cout << "variorum unread power domains passed" << std::endl;
 }
 
 void test_arrays_are_indexed() {
@@ -188,7 +205,7 @@ void test_arrays_are_indexed() {
   DFT_CHECK(find_sample(samples, "gpus.0")->metric_value == 10.0);
   DFT_CHECK(find_sample(samples, "gpus.2")->metric_value == 30.0);
 
-  std::cout << "✓ variorum array handling passed" << std::endl;
+  std::cout << "variorum array handling passed" << std::endl;
 }
 
 void test_rejects_malformed_payloads() {
@@ -208,7 +225,7 @@ void test_rejects_malformed_payloads() {
   DFT_CHECK(
       VariorumTelemetryCollector::parse_power_json("{\"a\":Infinity}").empty());
 
-  std::cout << "✓ variorum malformed payloads passed" << std::endl;
+  std::cout << "variorum malformed payloads passed" << std::endl;
 }
 
 void test_empty_payload() {
@@ -216,7 +233,7 @@ void test_empty_payload() {
   DFT_CHECK(VariorumTelemetryCollector::parse_power_json("").empty());
   DFT_CHECK(VariorumTelemetryCollector::parse_power_json("{}").empty());
   DFT_CHECK(VariorumTelemetryCollector::parse_power_json("{\"h\":{}}").empty());
-  std::cout << "✓ variorum empty payload passed" << std::endl;
+  std::cout << "variorum empty payload passed" << std::endl;
 }
 
 const dftracer::VariorumPowerFamily* find_family(
@@ -274,7 +291,7 @@ void test_groups_by_family() {
     }
   }
 
-  std::cout << "✓ variorum family grouping passed" << std::endl;
+  std::cout << "variorum family grouping passed" << std::endl;
 }
 
 void test_groups_mi300a_payload() {
@@ -296,7 +313,7 @@ void test_groups_mi300a_payload() {
   // the family, so trimming one would lose what the number means.
   DFT_CHECK(reading_of(*gpu, "num_gpus_per_socket") == 1.0);
 
-  std::cout << "✓ variorum MI300A family grouping passed" << std::endl;
+  std::cout << "variorum MI300A family grouping passed" << std::endl;
 }
 
 void test_family_edge_cases() {
@@ -331,7 +348,7 @@ void test_family_edge_cases() {
   DFT_CHECK(find_family(plurals, "memory")->readings.size() == 2);
   DFT_CHECK(find_family(plurals, "gpu")->readings.size() == 2);
 
-  std::cout << "✓ variorum family edge cases passed" << std::endl;
+  std::cout << "variorum family edge cases passed" << std::endl;
 }
 
 void test_placement_is_stable_across_samples() {
@@ -365,7 +382,7 @@ void test_placement_is_stable_across_samples() {
   for (const auto& family : first) placed += family.readings.size();
   DFT_CHECK(placed == samples.size());
 
-  std::cout << "✓ variorum placement stability passed" << std::endl;
+  std::cout << "variorum placement stability passed" << std::endl;
 }
 
 void test_collector_is_registered() {
@@ -376,7 +393,7 @@ void test_collector_is_registered() {
   // a no-op rather than an error: initialize/capture/finalize still run.
   collector.initialize();
   collector.finalize();
-  std::cout << "✓ variorum collector identity passed" << std::endl;
+  std::cout << "variorum collector identity passed" << std::endl;
 }
 
 }  // namespace
@@ -389,6 +406,7 @@ int main() {
     test_keeps_names_without_a_host_wrapper();
     test_skips_non_numeric_leaves();
     test_number_forms();
+    test_drops_unread_power();
     test_arrays_are_indexed();
     test_rejects_malformed_payloads();
     test_empty_payload();
@@ -397,7 +415,7 @@ int main() {
     test_family_edge_cases();
     test_placement_is_stable_across_samples();
     test_collector_is_registered();
-    std::cout << "\n✓ All Variorum tests passed!" << std::endl;
+    std::cout << "\nAll Variorum tests passed!" << std::endl;
     return 0;
   } catch (const std::exception& ex) {
     std::cerr << "Variorum test failed: " << ex.what() << std::endl;

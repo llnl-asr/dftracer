@@ -1,6 +1,7 @@
 #include <dftracer/core/common/logging.h>
 #include <dftracer/core/common/singleton.h>
 #include <dftracer/core/utils/configuration_manager.h>
+#include <dftracer/dftracer.h>
 #include <dftracer/service/telemetry/variorum_collector.h>
 #include <dlfcn.h>
 #include <signal.h>
@@ -26,9 +27,10 @@ namespace {
 // variorum_get_power_json(), which Variorum 0.8 introduced (0.6 and 0.7 call
 // it variorum_get_node_power_json, with another layout); a library without it
 // counts as no Variorum. DFTRACER_VARIORUM_LIBRARY names the library;
-// otherwise libvariorum.so is looked up as any library is (LD_LIBRARY_PATH,
-// the service's RUNPATH, which a build that provisioned Variorum points at
-// it, and the system's).
+// otherwise the one dftracer-compose built in <libdir>/dftracer/variorum
+// (composed_variorum) is loaded, and without it libvariorum.so is looked up
+// as any library is (LD_LIBRARY_PATH, the service's RUNPATH, which a build
+// that provisioned Variorum points at it, and the system's).
 using variorum_get_power_json_fn = int (*)(char **);
 
 enum class ProbeExit : int {
@@ -117,11 +119,33 @@ bool variorum_survives(const char *library) {
   return false;
 }
 
+// Ahead of the loader's search: TOSS 4 ships a /lib Variorum that is built
+// for no power domain, which dftracer-compose builds this one to replace.
+std::string composed_variorum() {
+  Dl_info info;
+  if (dladdr(reinterpret_cast<void *>(&::finalize), &info) == 0 ||
+      info.dli_fname == nullptr)
+    return "";
+  std::string libdir(info.dli_fname);
+  const size_t slash = libdir.rfind('/');
+  if (slash == std::string::npos) return "";
+  libdir.resize(slash);
+  for (const char *relative : {"/dftracer/variorum/lib/libvariorum.so",
+                               "/dftracer/variorum/lib64/libvariorum.so"}) {
+    std::string path = libdir + relative;
+    if (access(path.c_str(), R_OK) == 0) return path;
+  }
+  return "";
+}
+
 variorum_get_power_json_fn variorum_get_power_json_symbol() {
   static const variorum_get_power_json_fn fn = []() {
     const char *named = std::getenv("DFTRACER_VARIORUM_LIBRARY");
-    const char *library =
-        (named != nullptr && named[0] != '\0') ? named : "libvariorum.so";
+    const std::string composed =
+        (named != nullptr && named[0] != '\0') ? "" : composed_variorum();
+    const char *library = (named != nullptr && named[0] != '\0') ? named
+                          : composed.empty() ? "libvariorum.so"
+                                             : composed.c_str();
     if (!variorum_survives(library))
       return static_cast<variorum_get_power_json_fn>(nullptr);
     void *handle = dlopen(library, RTLD_NOW | RTLD_LOCAL);
