@@ -159,9 +159,10 @@ void HIPFunction::tool_code_object_callback(
                  ROCPROFILER_CODE_OBJECT_DEVICE_KERNEL_SYMBOL_REGISTER) {
     auto* data = static_cast<kernel_symbol_data_t*>(record.payload);
     if (record.phase == ROCPROFILER_CALLBACK_PHASE_LOAD) {
-      function->client_kernels.emplace(data->kernel_id, *data);
-    } else if (record.phase == ROCPROFILER_CALLBACK_PHASE_UNLOAD) {
-      function->client_kernels.erase(data->kernel_id);
+      std::lock_guard<std::mutex> lock(function->client_kernels_mutex);
+      function->client_kernels.emplace(
+          data->kernel_id,
+          data->kernel_name != nullptr ? data->kernel_name : "");
     }
   }
 
@@ -297,9 +298,15 @@ void HIPFunction::tool_tracing_callback(rocprofiler_context_id_t context,
       EventDraft* metadata = draft.get();
       const ThreadID event_tid = static_cast<ThreadID>(record->thread_id);
       metadata->set("correlation_id", record->correlation_id.external.value);
-      std::string event_name = std::string(
-          function->client_kernels.at(record->dispatch_info.kernel_id)
-              .kernel_name);
+      // An exception here makes rocprofiler drop the whole batch of records.
+      std::string event_name;
+      {
+        std::lock_guard<std::mutex> lock(function->client_kernels_mutex);
+        auto kernel =
+            function->client_kernels.find(record->dispatch_info.kernel_id);
+        if (kernel != function->client_kernels.end())
+          event_name = kernel->second;
+      }
       event_name = std::to_string(record->dispatch_info.kernel_id) + event_name;
       emit(event_tid, event_name, kind_name, record->start_timestamp,
            record->end_timestamp, metadata);

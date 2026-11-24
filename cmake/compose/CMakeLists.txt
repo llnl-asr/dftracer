@@ -215,7 +215,31 @@ foreach(_module IN LISTS _selected)
   list(APPEND _names ${_module})
   list(APPEND _archives "${_dir}/libdftracer_module_${_module}.a")
   list(APPEND _archives_dbg "${_dir}/libdftracer_module_${_module}_dbg.a")
-  list(APPEND _links ${_module_links})
+  if(_module STREQUAL "hdf5" OR _module STREQUAL "mpi")
+    # The interceptors reach H5* and MPI_* through gotcha, so the core needs
+    # no libhdf5 and, for the MPICH family, no libmpi. Linked anyway,
+    # LD_PRELOAD puts that library into every traced program, next to the one
+    # the program uses (HDF5 1.10 beside 1.14, Cray's libmpi_gnu_112.so.12
+    # beside the cray-mpich-abi libmpi.so.12 of an mpi4py wheel).
+    # --as-needed alone keeps MVAPICH2's libmpi: it exports malloc and
+    # hwloc_*, which then satisfy the core's own calls. Any other MPI keeps
+    # its libmpi, as its MPI_COMM_WORLD may be a symbol in it (Open MPI).
+    set(_abi "")
+    if(_module STREQUAL "mpi" AND _variant MATCHES "^mpi-([a-z]+)-")
+      dftracer_mpi_abi(_abi "${CMAKE_MATCH_1}")
+    elseif(_module STREQUAL "hdf5")
+      set(_abi "mpich-abi")
+      if(_variant MATCHES "\\+([a-z]+-abi)$")
+        set(_abi "${CMAKE_MATCH_1}")
+      endif()
+    endif()
+    if(_abi STREQUAL "mpich-abi")
+      list(FILTER _module_links EXCLUDE REGEX "(^|/)libmpi[^/]*$|^-lmpi")
+    endif()
+    list(APPEND _links "-Wl,--as-needed" ${_module_links} "-Wl,--no-as-needed")
+  else()
+    list(APPEND _links ${_module_links})
+  endif()
   string(APPEND _record "${_module} ${_variant} linked\n")
   message(STATUS "[DFTRACER] composing ${_module}: ${_variant}")
 endforeach()

@@ -46,7 +46,8 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3 :: Only",
 ]
-dynamic = ["version"]
+# Extras are in setup.py, which pins dftracer-modules to this version.
+dynamic = ["version", "optional-dependencies"]
 dependencies = [
   "dftracer-utils>=0.0.14",
   "pydftracer>=2.0.6",
@@ -65,30 +66,6 @@ Homepage = "https://github.com/llnl-asr/dftracer"
 Repository = "https://github.com/llnl-asr/dftracer"
 "Bug Tracker" = "https://github.com/llnl-asr/dftracer/issues"
 Documentation = "https://dftracer.readthedocs.io/en/latest/"
-
-[project.optional-dependencies]
-test = ['pytest>=6.0']
-# Prebuilt module archives for dftracer-compose (one wheel for every Python).
-modules = ['dftracer-modules']
-dfanalyzer = [
-    'dftracer-analyzer>=0.0.5'
-]
-dfanalyzer_old = [
-    'seaborn>=0.13.2', 
-    'bokeh>=2.4.2', 
-    'pybind11', 
-    'pandas>=2.0.3', 
-    'dask>=2023.5.0', 
-    'distributed', 
-    'numpy>=1.24.3', 
-    'pyarrow>=12.0.1', 
-    'rich>=13.6.0', 
-    'python-intervals>=1.10.0.post1', 
-    'matplotlib>=3.7.3'
-]
-dynamo = [
-    'torch>=2.5.1'
-]
 
 [tool]
 files = "setup.py"

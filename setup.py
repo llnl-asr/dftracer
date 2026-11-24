@@ -38,6 +38,61 @@ def myversion_func(version: ScmVersion) -> str:
     return version.format_next_version(only_version, fmt="{tag}")
 
 
+def published_version() -> "str | None":
+    """The version of this build if it is one that is on PyPI, else None.
+
+    CI sets SETUPTOOLS_SCM_PRETEND_VERSION for the prerelease builds. An sdist
+    (no .git) is a published one, and so is a release tag. A develop checkout
+    gives <tag>.postN.dev0, which may not be on PyPI.
+    """
+    pretend = os.environ.get("SETUPTOOLS_SCM_PRETEND_VERSION")
+    if pretend:
+        return pretend
+    here = Path(__file__).resolve().parent
+    if not (here / ".git").exists():
+        pkg_info = here / "PKG-INFO"
+        if pkg_info.exists():
+            for line in pkg_info.read_text().splitlines():
+                if line.startswith("Version: "):
+                    version = line.split(": ", 1)[1].strip()
+                    return None if ".dev" in version else version
+        return None
+    from setuptools_scm import get_version
+
+    version = get_version(root=str(here), version_scheme=myversion_func,
+                          local_scheme="no-local-version")
+    return None if ".dev" in version else version
+
+
+def extras_require() -> dict:
+    """The extras. A published build pins dftracer-modules to its own version.
+
+    Unpinned, pip pairs a prerelease dftracer with the latest stable
+    dftracer-modules, whose variants compose then rebuilds as stale.
+    """
+    published = published_version()
+    modules = f"dftracer-modules=={published}" if published else "dftracer-modules"
+    return {
+        "test": ["pytest>=6.0"],
+        "modules": [modules],
+        "dfanalyzer": ["dftracer-analyzer>=0.0.5"],
+        "dfanalyzer_old": [
+            "seaborn>=0.13.2",
+            "bokeh>=2.4.2",
+            "pybind11",
+            "pandas>=2.0.3",
+            "dask>=2023.5.0",
+            "distributed",
+            "numpy>=1.24.3",
+            "pyarrow>=12.0.1",
+            "rich>=13.6.0",
+            "python-intervals>=1.10.0.post1",
+            "matplotlib>=3.7.3",
+        ],
+        "dynamo": ["torch>=2.5.1"],
+    }
+
+
 # A CMakeExtension needs a sourcedir instead of a file list.
 # The name must be the _single_ output extension from the CMake build.
 # If you need multiple extensions, see scikit-build.
@@ -348,5 +403,6 @@ setup(
         CMakeExtension("dftracer.dftracer_dbg"),
     ],
     cmdclass={"build_ext": CMakeBuild},
+    extras_require=extras_require(),
     zip_safe=False,
 )
