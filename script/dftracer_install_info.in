@@ -296,6 +296,9 @@ def read_composition(libdir):
             "origin": _read_json(os.path.join(core, "origin.json")).get("origin", "prebuilt"),
         },
         "modules": {},
+        # The Variorum dftracer_service loads, as dftracer-compose found or
+        # built it (python/dftracer/compose.py, provide_variorum).
+        "variorum": _read_json(os.path.join(libdir, "dftracer", "variorum.json")),
     }
     modules_dir = os.path.join(tree, "modules")
     available = {}
@@ -360,6 +363,21 @@ def _versions(v):
     return " ".join("%s=%s" % kv for kv in sorted(v.items())) if v else ""
 
 
+def pretty_variorum(v):
+    if not v:
+        return [row("variorum", "not recorded: run dftracer-compose")]
+    status = v.get("status", "")
+    if status == "absent":
+        return [row("variorum", "absent: %s; dftracer_service writes no power records"
+                    % (v.get("note") or "no Variorum 0.8 or later"))]
+    where = "built here" if status == "built" else "found"
+    if status == "built" and v.get("built_on"):
+        where += " on %s at %s" % (v["built_on"], v.get("built_at", "?"))
+    return [row("variorum", "%s, %s" % (where, v.get("library", ""))),
+            row("domains", ", ".join(v.get("domains") or []) or
+                "none: %s" % (v.get("note") or "it reads no power domain here"))]
+
+
 def pretty_composition(c):
     out = ["Composition   (libdftracer_core as dftracer-compose linked it)",
            row("compose tree", c["tree"]),
@@ -385,6 +403,7 @@ def pretty_composition(c):
         if e.get("interface_matches") is False:
             out.append("  %-6s %s interface differs from the core's: rebuild with "
                        "dftracer-compose --from-source %s" % ("", NO, module))
+    out += ["", "Power (dftracer_service)"] + pretty_variorum(c.get("variorum") or {})
     out += ["", "Variants available in the tree (prebuilt unless marked)"]
     for module, e in c["modules"].items():
         out.append(textwrap.fill(", ".join(e["available"]) or "-", 78,

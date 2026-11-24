@@ -301,5 +301,51 @@ class PreloadPathTest(unittest.TestCase):
         self.check_command(command, prefix / "lib64")
 
 
+class ServicePathTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="dftracer service ")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.package = self.root / "site/dftracer"
+        self.package.mkdir(parents=True)
+        (self.package / "__init__.py").touch()
+        shutil.copy(ROOT / "python/dftracer/service.py", self.package)
+
+    def write_service(self, bindir):
+        bindir.mkdir(parents=True, exist_ok=True)
+        service = bindir / "dftracer_service"
+        service.write_text('#!/bin/sh\necho "service $*"\n')
+        service.chmod(0o755)
+
+    def run_service(self, *args):
+        return subprocess.run(
+            [sys.executable, str(ROOT / "script/dftracer_service"), *args],
+            env=dict(os.environ, PYTHONPATH=str(self.package.parent)),
+            cwd=self.root, check=False, capture_output=True, text=True, timeout=10,
+        )
+
+    def test_wheel_package_bin(self):
+        (self.package / "_preload_config.py").write_text("LIBRARY_DIR = 'lib64'\n")
+        self.write_service(self.package / "bin")
+        result = self.run_service("start")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "service start\n")
+
+    def test_external_install_prefix(self):
+        prefix = self.root / "install prefix"
+        (self.package / "_preload_config.py").write_text(
+            f"LIBRARY_DIR = {str(prefix / 'lib')!r}\n"
+        )
+        self.write_service(prefix / "bin")
+        result = self.run_service("stop")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "service stop\n")
+
+    def test_missing_binary_names_each_path(self):
+        result = self.run_service()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(str(self.package / "bin/dftracer_service"), result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

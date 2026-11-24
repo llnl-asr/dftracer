@@ -363,10 +363,31 @@ inline void strip_common_root(std::vector<VariorumPowerSample>& samples) {
 }
 
 /**
+ * @brief Drop the power_<domain>_watts readings variorum marks as unread.
+ *
+ * Variorum writes -1 for a domain the platform does not expose (memory on
+ * AMD EPYC and MI300A), which is no reading of power.
+ */
+inline void drop_unread_power(std::vector<VariorumPowerSample>& samples) {
+  std::vector<VariorumPowerSample> kept;
+  kept.reserve(samples.size());
+  for (auto& sample : samples) {
+    const std::string& name = sample.metric_name;
+    const size_t power = name.find("power_");
+    const bool is_power = power != std::string::npos &&
+                          name.find("_watts", power) != std::string::npos;
+    if (is_power && sample.metric_value < 0) continue;
+    kept.push_back(std::move(sample));
+  }
+  samples.swap(kept);
+}
+
+/**
  * @brief Flatten a variorum power JSON payload into samples.
  *
  * Returns an empty vector for anything that is not parseable JSON: half a
- * reading looks like a whole one once it is in a trace.
+ * reading looks like a whole one once it is in a trace. Unread power domains
+ * (drop_unread_power) are left out.
  */
 inline std::vector<VariorumPowerSample> flatten_power_json(
     const std::string& payload) {
@@ -379,6 +400,7 @@ inline std::vector<VariorumPowerSample> flatten_power_json(
     return samples;
   }
   strip_common_root(samples);
+  drop_unread_power(samples);
   return samples;
 }
 

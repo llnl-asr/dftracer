@@ -34,6 +34,11 @@ What it does not do
 Building
 --------
 
+A pip install of the wheel needs no rebuild for power: ``dftracer-compose``
+finds the Variorum the machine has, or builds one for its power domains, and
+``dftracer_service`` loads it when it starts. See the Variorum section of
+:doc:`composable_install`. The rest of this section is about a source build.
+
 Variorum is optional and off by default:
 
 .. code-block:: bash
@@ -79,10 +84,10 @@ and aborts its configure when that library is missing:
 ============ ==================================== ====================================
 Domain       Needs                                Detected from
 ============ ==================================== ====================================
-Intel CPU    msr-safe or CAP_SYS_RAWIO            ``GenuineIntel`` in ``/proc/cpuinfo``
+Intel CPU    msr-safe                             ``GenuineIntel`` and ``/dev/cpu/msr_batch``
 AMD CPU      AMD E-SMI (``libe_smi64``)           ``AuthenticAMD`` plus E-SMI installed
 AMD GPU      ROCm SMI (``librocm_smi64``)         ``ROCM_PATH`` / ``CMAKE_PREFIX_PATH``
-NVIDIA GPU   NVML                                 ``-DNVML_DIR=``
+NVIDIA GPU   NVML                                 ``nvml.h`` and ``libnvidia-ml``, or ``-DNVML_DIR=``
 ARM CPU      --                                   ``aarch64``
 IBM CPU      OPAL                                 ``ppc64le``
 ============ ==================================== ====================================
@@ -149,6 +154,10 @@ Reading power registers needs privilege on most machines:
 - **AMD GPU**: ROCm SMI, which reads through the kernel driver and needs no
   extra privilege.
 - **IBM**: OPAL, through ``/sys/firmware/opal``.
+
+Variorum writes ``-1`` for a domain the platform does not expose, such as
+memory power on AMD EPYC and MI300A. The collector drops those readings, so
+such a node has no ``memory`` records rather than records of ``-1``.
 
 When variorum cannot read anything, the collector says so once and goes quiet
 for the rest of the run, the same way the omnistat collector does when no

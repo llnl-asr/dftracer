@@ -164,7 +164,7 @@ passed to CMake. See `Build Variables`_ for the full list and `MPI and HDF5 Scen
    DFTRACER_CUDA_PATH                 CUDA toolkit root to build CUPTI tracing against (default: auto-detect).
    DFTRACER_ENABLE_PAPI_TRACING       PAPI hardware counter sampling; uses the installed PAPI or builds one (default OFF).
    DFTRACER_BUILD_PAPI                When to build PAPI from source: AUTO, ALWAYS, NEVER (default AUTO). See `AMD GPU counters`_.
-   DFTRACER_ENABLE_VARIORUM           Node-level power counters via variorum; fetched and built if not installed (default OFF).
+   DFTRACER_ENABLE_VARIORUM           Node-level power counters via variorum; fetched and built if not installed (default OFF). A wheel install uses ``dftracer-compose`` (:doc:`composable_install`).
    DFTRACER_ENABLE_FTRACING           Function tracing via ``-finstrument-functions`` (default OFF).
    DFTRACER_ENABLE_PROFILING          Time each phase of dftracer's own pipeline, reported at finalize; compiled out when OFF (default OFF).
    DFTRACER_ENABLE_DYNAMIC_DETECTION  Detect HWLOC, MPI, HIP, CUDA, PAPI and Variorum at run time rather than link time (default OFF).
@@ -378,7 +378,7 @@ variables marked CMake only.
      - Variorum node power tracing (default OFF).
    * - ``DFTRACER_BUILD_VARIORUM``
      - STRING
-     - When to build variorum from source: AUTO (only if none installed), ALWAYS, NEVER (default AUTO).
+     - When to build variorum from source: AUTO (only if none installed), ALWAYS, NEVER (default AUTO). An installed wheel gets its Variorum from ``dftracer-compose --build-variorum`` instead (:doc:`composable_install`).
    * - ``DFTRACER_BUILD_PAPI``
      - STRING
      - When to build PAPI from source: AUTO (if none is installed, or if HIP tracing is on and the installed PAPI has no ``rocp_sdk``), ALWAYS, NEVER (default AUTO).
