@@ -301,6 +301,10 @@ int main(int argc, char* argv[]) {
 
     auto libuv_threads = std::to_string(conf->libuv_thread_count);
     setenv("UV_THREADPOOL_SIZE", libuv_threads.c_str(), 1);
+    // In a job step bound to fewer cores than the node (srun -n1), hwloc
+    // reports only those cores, and Variorum exits on that topology. A user's
+    // own HWLOC_ALLOW wins.
+    setenv("HWLOC_ALLOW", "all", 0);
 
     const int ready_fd = daemon ? daemonize(log_path) : -1;
 
