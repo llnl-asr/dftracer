@@ -782,7 +782,7 @@ AMD GPU counters
 DFTracer also samples counters from other PAPI components, such as ``rocp_sdk`` for AMD GPUs.
 The Cray PAPI modules ship only the older ``rocm`` component, not ``rocp_sdk``.
 With PAPI tracing on and no PAPI installed, the build fetches PAPI and builds it into the install prefix.
-With HIP tracing on too, it also does this when the installed PAPI has no ``rocp_sdk``, and builds PAPI with ``rocp_sdk``:
+With HIP tracing on too, it also does this when the installed PAPI has no ``rocp_sdk`` or lacks DFTracer's ``rocp_sdk`` fixes (``cmake/modules/papi-patches``), and builds PAPI with ``rocp_sdk``:
 
 .. code-block:: Bash
 
@@ -797,6 +797,7 @@ The configure step says which it did:
 
 ``DFTRACER_BUILD_PAPI=ALWAYS`` builds PAPI even when one is installed.
 The build uses a pinned PAPI commit (``DFTRACER_PAPI_COMMIT``), because the PAPI 7.2.0 release does not compile against ROCm 7.
+It applies the patches in ``cmake/modules/papi-patches`` on top of that commit.
 A composable install does the same with ``dftracer-compose --build-papi`` (:doc:`composable_install`).
 
 To build PAPI yourself instead:
@@ -804,6 +805,7 @@ To build PAPI yourself instead:
 .. code-block:: Bash
 
     export PAPI_ROCP_SDK_ROOT=$ROCM_PATH
+    git -C papi apply /path/to/dftracer/cmake/modules/papi-patches/*.patch   # made against DFTRACER_PAPI_COMMIT
     cd papi/src && ./configure --prefix=$HOME/papi --with-components="rocp_sdk" && make install
     $HOME/papi/bin/papi_component_avail      # rocp_sdk must not be "Disabled"
     PAPI_DIR=$HOME/papi ./autobuild.sh --enable-papi --enable-hip --build-papi NEVER
@@ -833,8 +835,7 @@ Before the application first uses the GPU, a read fails with ``PAPI_ECMP`` and t
 
 ``device=N`` is the GPU's number on the node, not its HIP device number in the process.
 A rank that ``flux run -g1`` or ``srun --gpus-per-task=1`` binds to the fourth GPU (``ROCR_VISIBLE_DEVICES=3``) counts with ``device=3``, and a counter for a GPU that the process cannot see reads 0.
-The PAPI that DFTracer builds carries a fix (``cmake/modules/papi-patches``) for this case: without it, one hidden GPU makes every ``rocp_sdk`` counter read 0.
-A PAPI that you build yourself needs the same patch.
+Without the patches in ``cmake/modules/papi-patches``, one hidden GPU makes every ``rocp_sdk`` counter read 0, and a process that never starts the GPU can abort at exit with a corrupted heap.
 
 .. warning::
 

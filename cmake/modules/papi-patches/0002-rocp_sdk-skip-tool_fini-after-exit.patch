@@ -1,0 +1,39 @@
+diff --git a/src/components/rocp_sdk/sdk_class.cpp b/src/components/rocp_sdk/sdk_class.cpp
+index ae75471..4bee72c 100644
+--- a/src/components/rocp_sdk/sdk_class.cpp
++++ b/src/components/rocp_sdk/sdk_class.cpp
+@@ -35,6 +35,13 @@ typedef struct {
+     dim_vector_t recorded_dims;
+ } rec_info_t;
+ 
++// rocprofiler-sdk can call tool_fini from its own exit destructors, after the
++// containers below are destroyed. Defined before them, so destroyed after them.
++static bool statics_destroyed = false;
++static struct statics_lifetime_t {
++    ~statics_lifetime_t() { statics_destroyed = true; }
++} statics_lifetime;
++
+ std::atomic<unsigned int> _global_papi_event_count{0};
+ std::atomic<unsigned int> _base_event_count{0};
+ #if (__cplusplus >= 201703L) // c++17
+@@ -1155,6 +1162,9 @@ set_profile_cache(vendorp_ctx_t ctx){
+ 
+ /* ** */
+ void tool_fini(void* tool_data) {
++    if( statics_destroyed ){
++        return;
++    }
+     stop_counting();
+     empty_active_event_set();
+     return;
+@@ -1195,6 +1205,10 @@ int setup() {
+ //--------------------------------------------------------------------------------
+ //--------------------------------------------------------------------------------
+ 
++// DFTracer's build looks for this string to tell a patched PAPI from another.
++extern "C" __attribute__((used, visibility("default")))
++const char dftracer_papi_patches[] = "dftracer-papi-patches-0002";
++
+ extern "C" int
+ rocprofiler_sdk_init_pre(void)
+ {

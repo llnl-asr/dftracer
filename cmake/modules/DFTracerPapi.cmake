@@ -20,8 +20,10 @@ set(DFTRACER_PAPI_COMMIT "a14a90f339d516aed1335ee8929b37a0c1da62e2"
   CACHE STRING "PAPI commit to build when it has to be built")
 
 # Fixes applied on top of the commit, in name order. Each one is made against
-# DFTRACER_PAPI_COMMIT: check that they still apply when you move it.
+# DFTRACER_PAPI_COMMIT: check that they still apply when you move it. The last
+# patch puts DFTRACER_PAPI_PATCH_MARKER in the library; change both together.
 set(DFTRACER_PAPI_PATCH_DIR "${CMAKE_CURRENT_LIST_DIR}/papi-patches")
+set(DFTRACER_PAPI_PATCH_MARKER "dftracer-papi-patches-0002")
 
 # TRUE when the PAPI library at `library` was built with the rocp_sdk
 # component. PAPI keeps each component's name as a plain string in the library,
@@ -32,6 +34,19 @@ function(dftracer_papi_has_rocp_sdk library out)
     return()
   endif()
   file(STRINGS "${library}" _match REGEX "^rocp_sdk$" LIMIT_COUNT 1)
+  if(_match)
+    set(${out} TRUE PARENT_SCOPE)
+  endif()
+endfunction()
+
+# TRUE when the PAPI library at `library` carries DFTracer's rocp_sdk patches.
+# Without them a GPU binding makes every rocp_sdk counter read 0.
+function(dftracer_papi_has_patches library out)
+  set(${out} FALSE PARENT_SCOPE)
+  if(NOT library OR NOT EXISTS "${library}")
+    return()
+  endif()
+  file(STRINGS "${library}" _match REGEX "^${DFTRACER_PAPI_PATCH_MARKER}$" LIMIT_COUNT 1)
   if(_match)
     set(${out} TRUE PARENT_SCOPE)
   endif()
@@ -160,6 +175,11 @@ function(dftracer_provision_papi install_prefix rocm_root)
     endif()
   endforeach()
 
+  # The prefix now holds this build only, so no older stamp may vouch for it.
+  file(GLOB _old_stamps "${install_prefix}/share/dftracer/papi-*.stamp")
+  if(_old_stamps)
+    file(REMOVE ${_old_stamps})
+  endif()
   file(WRITE "${_stamp}" "${DFTRACER_PAPI_REPOSITORY} ${DFTRACER_PAPI_COMMIT} ${_components}\n")
   set(DFTRACER_PAPI_PROVISIONED TRUE PARENT_SCOPE)
 endfunction()
