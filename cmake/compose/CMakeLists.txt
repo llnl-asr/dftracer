@@ -137,6 +137,10 @@ set(_archives_dbg "")
 set(_links "")
 set(_record "")
 set(_static_hwloc "")
+# Written below for each library found on this machine; none may be left
+# from an earlier configure.
+file(REMOVE "${CMAKE_BINARY_DIR}/papi-library.txt" "${CMAKE_BINARY_DIR}/hip-library.txt"
+     "${CMAKE_BINARY_DIR}/rocm-root.txt")
 foreach(_module IN LISTS _selected)
   if(NOT _module IN_LIST _available AND NOT (_detect AND _module IN_LIST _known))
     message(FATAL_ERROR "[DFTRACER] module '${_module}' is not available here "

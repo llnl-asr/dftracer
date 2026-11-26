@@ -303,6 +303,11 @@ class ProvidePapi(unittest.TestCase):
         self.assertIn("PAPI_ROCP_SDK_LIB=/opt/rocm-6.4.3/lib64/librocprofiler-sdk.so.1",
                       out.getvalue())
 
+    def test_an_older_tree_without_rocm_root_falls_back_to_the_library(self):
+        (self.work / "compose-build" / "hip-library.txt").write_text(
+            "/opt/rocm-6.4.3/lib/librocprofiler-sdk.so.0.6.0")
+        self.assertEqual(compose.detected_rocm_root(self.work), "/opt/rocm-6.4.3")
+
     def test_marker_next_to_other_bytes_is_found(self):
         library = self.tmp / "libpapi.so"
         library.write_bytes(b"\x7fELF\0rocp_sdk\0abcd" + compose.PAPI_PATCH_MARKER + b"\0")
