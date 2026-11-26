@@ -1,8 +1,9 @@
 // A stand-in for librocprofiler-sdk.so, so that PAPI's rocp_sdk component can
 // be tested without a GPU. PAPI finds it through PAPI_ROCP_SDK_LIB.
 //
-// It reports two GPUs: GPU 0 is hidden from HSA (as ROCR_VISIBLE_DEVICES=1
-// does) and GPU 1 is visible. Two behaviours of the real library are copied:
+// It reports three GPUs: GPU 0 is hidden from HSA (as ROCR_VISIBLE_DEVICES=1,2
+// does) and GPUs 1 and 2 are visible. Two behaviours of the real library are
+// copied:
 //   * starting a context fails when its device counting service holds an
 //     agent that HSA does not know, so no agent counts at all;
 //   * the tools' finalize functions run from the library's exit destructors.
@@ -24,11 +25,16 @@ namespace {
 
 constexpr uint64_t kHiddenAgent = 100;
 constexpr uint64_t kVisibleAgent = 101;
+constexpr int kAgents = 3;
 constexpr uint64_t kCounter = 7;
+// A second counter, so the test fills an event set with each counter on each
+// visible GPU.
+constexpr uint64_t kOtherCounter = 8;
 // A profile's handle is this plus its agent's handle.
 constexpr uint64_t kProfileBase = 1000;
-// Value of kCounter on the visible GPU, as the test expects it.
+// Value of kCounter on GPU 1, as the test expects it; GPU 2 reads 101 more.
 constexpr double kVisibleValue = 4242.0;
+constexpr double kValueStep = 101.0;
 
 struct DeviceService {
   uint64_t context;
@@ -43,7 +49,7 @@ struct Tool {
   void* tool_data;
 };
 
-rocprofiler_agent_v0_t agents[2];
+rocprofiler_agent_v0_t agents[kAgents];
 bool initialized = false;
 uint64_t next_context = 1;
 std::vector<DeviceService>* services = new std::vector<DeviceService>();
@@ -51,11 +57,11 @@ std::vector<uint64_t>* active = new std::vector<uint64_t>();
 Tool tool{nullptr, nullptr};
 
 void make_agents() {
-  for (int i = 0; i < 2; ++i) {
+  for (int i = 0; i < kAgents; ++i) {
     rocprofiler_agent_v0_t& a = agents[i];
     std::memset(&a, 0, sizeof(a));
     a.size = sizeof(a);
-    a.id.handle = i == 0 ? kHiddenAgent : kVisibleAgent;
+    a.id.handle = kHiddenAgent + static_cast<uint64_t>(i);
     a.type = ROCPROFILER_AGENT_TYPE_GPU;
     a.name = "gfx942";
     a.vendor_name = "AMD";
@@ -181,8 +187,8 @@ rocprofiler_status_t rocprofiler_get_thread_id(rocprofiler_thread_id_t* tid) {
 rocprofiler_status_t rocprofiler_query_available_agents(
     rocprofiler_agent_version_t,
     rocprofiler_query_available_agents_cb_t callback, size_t, void* user_data) {
-  const void* list[2] = {&agents[0], &agents[1]};
-  return callback(ROCPROFILER_AGENT_INFO_VERSION_0, list, 2, user_data);
+  const void* list[kAgents] = {&agents[0], &agents[1], &agents[2]};
+  return callback(ROCPROFILER_AGENT_INFO_VERSION_0, list, kAgents, user_data);
 }
 
 rocprofiler_status_t rocprofiler_create_context(
@@ -266,8 +272,8 @@ rocprofiler_status_t rocprofiler_configure_callback_tracing_service(
 rocprofiler_status_t rocprofiler_iterate_agent_supported_counters(
     rocprofiler_agent_id_t agent_id, rocprofiler_available_counters_cb_t cb,
     void* user_data) {
-  rocprofiler_counter_id_t counter{kCounter};
-  return cb(agent_id, &counter, 1, user_data);
+  rocprofiler_counter_id_t counters[2] = {{kCounter}, {kOtherCounter}};
+  return cb(agent_id, counters, 2, user_data);
 }
 
 rocprofiler_status_t rocprofiler_query_counter_info(
@@ -276,7 +282,7 @@ rocprofiler_status_t rocprofiler_query_counter_info(
   auto* out = static_cast<rocprofiler_counter_info_v0_t*>(info);
   std::memset(out, 0, sizeof(*out));
   out->id = counter_id;
-  out->name = "SQ_WAVES";
+  out->name = counter_id.handle == kCounter ? "SQ_WAVES" : "GRBM_COUNT";
   out->description = "mock counter";
   out->block = "SQ";
   out->expression = "";
@@ -320,7 +326,9 @@ rocprofiler_status_t rocprofiler_sample_device_counting_service(
       rocprofiler_record_counter_t& r = output_records[n++];
       std::memset(&r, 0, sizeof(r));
       r.id = kCounter;
-      r.counter_value = kVisibleValue;
+      r.counter_value =
+          kVisibleValue +
+          kValueStep * static_cast<double>(s.agent.handle - kVisibleAgent);
       r.agent_id = s.agent;
     }
   }

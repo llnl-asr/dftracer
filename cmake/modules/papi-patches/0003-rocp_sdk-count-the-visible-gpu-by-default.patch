@@ -1,0 +1,155 @@
+diff --git a/src/components/rocp_sdk/rocp_sdk.c b/src/components/rocp_sdk/rocp_sdk.c
+index 1d6acc2..597a289 100644
+--- a/src/components/rocp_sdk/rocp_sdk.c
++++ b/src/components/rocp_sdk/rocp_sdk.c
+@@ -225,6 +225,11 @@ rocp_sdk_init_private(void)
+         goto fn_fail;
+     }
+     _rocp_sdk_vector.cmp_info.num_native_events = count;
++    // Each base counter can be counted on each visible GPU in one event set.
++    int devices = dftracer_papi_rocp_sdk_devices(NULL, 0);
++    if (devices > 1) {
++        count *= devices;
++    }
+     _rocp_sdk_vector.cmp_info.num_cntrs = count;
+     _rocp_sdk_vector.cmp_info.num_mpx_cntrs = count;
+ 
+diff --git a/src/components/rocp_sdk/sdk_class.cpp b/src/components/rocp_sdk/sdk_class.cpp
+index 4bee72c..fe60d5b 100644
+--- a/src/components/rocp_sdk/sdk_class.cpp
++++ b/src/components/rocp_sdk/sdk_class.cpp
+@@ -892,6 +892,24 @@ evt_id_to_name(int papi_event_id, const char **name){
+ 
+ 
+ /* ** */
++// GPU numbers are the node's, so a hidden GPU leaves a gap: GPUs 1 and 3 can be
++// the only ones counted, and device=0 then has nothing to count.
++static std::vector<int>
++visible_devices(){
++    std::set<int> devices;
++    for(const auto &a_it : gpu_agents){
++        devices.insert(a_it.second->logical_node_type_id);
++    }
++    return std::vector<int>(devices.begin(), devices.end());
++}
++
++// The device an event without a "device" qualifier counts: the lowest visible one.
++static int
++default_device(){
++    std::vector<int> devices = visible_devices();
++    return devices.empty() ? 0 : devices.front();
++}
++
+ static int
+ build_event_info_from_name(std::string event_name, event_instance_info_t *ev_inst_info){
+     int pos=0, ppos=0;
+@@ -938,6 +956,11 @@ build_event_info_from_name(std::string event_name, event_instance_info_t *ev_ins
+         if( qual_name.compare("device") == 0 ){
+             // We use the most significant bit to designate the presence of the "device" qualifier.
+             qualifiers_present |= (1 << base_event_info.dim_info.size());
++            // A GPU that is not counted would read 0 without an error.
++            std::vector<int> devices = visible_devices();
++            if( std::find(devices.begin(), devices.end(), qual_val) == devices.end() ){
++                return PAPI_ENOEVNT;
++            }
+             device_qualifier_value = qual_val;
+         }else{
+             int qual_i = 0;
+@@ -1059,18 +1082,14 @@ evt_enum(unsigned int *event_code, int modifier){
+                     break;
+                 // Here we insert the "device" qualifier, which does not appear as a dimension in rocprofiler-sdk.
+                 }else if( qual_i == ev_inst.dim_info.size() ){
+-                    full_name = ev_inst.counter_info.name + std::string(":device=0");
+-                    {
+-                        // GPU numbers are the node's, so a hidden GPU leaves a gap.
+-                        int32_t max_device = 0;
+-                        for(const auto &a_it : gpu_agents){
+-                            if( a_it.second->logical_node_type_id > max_device ){
+-                                max_device = a_it.second->logical_node_type_id;
+-                            }
+-                        }
+-                        qual_ub = std::to_string(max_device);
++                    std::vector<int> devices = visible_devices();
++                    std::string first = std::to_string(devices.empty() ? 0 : devices.front());
++                    full_name = ev_inst.counter_info.name + std::string(":device=") + first;
++                    std::string listed;
++                    for(int d : devices){
++                        listed += (listed.empty() ? "" : ",") + std::to_string(d);
+                     }
+-                    tmp_desc = "masks: Range: [0-" + qual_ub + "], default=0.";
++                    tmp_desc = "masks: GPUs this process can see: [" + listed + "], default=" + first + ".";
+                 }else{
+                     full_name = ev_inst.counter_info.name + std::string(":device=0");
+                     rocprofiler_record_dimension_info_t dim = ev_inst.dim_info[qual_i];
+@@ -1080,10 +1099,11 @@ evt_enum(unsigned int *event_code, int modifier){
+                 }
+ 
+                 // Insert the new event (base_event:SOME_QUALIFIER=0) into the data structures and get an event_code for it.
+-                evt_name_to_id(full_name, event_code);
++                papi_errno = evt_name_to_id(full_name, event_code);
++                if( PAPI_OK != papi_errno ){
++                    break;
++                }
+                 papi_id_to_event_instance[*event_code].counter_info.description = strdup(tmp_desc.c_str());
+-
+-                papi_errno = PAPI_OK;
+                 break;
+ 
+             }
+@@ -1207,7 +1227,20 @@ int setup() {
+ 
+ // DFTracer's build looks for this string to tell a patched PAPI from another.
+ extern "C" __attribute__((used, visibility("default")))
+-const char dftracer_papi_patches[] = "dftracer-papi-patches-0002";
++const char dftracer_papi_patches[] = "dftracer-papi-patches-0003";
++
++// Writes the node numbers of the GPUs that rocp_sdk counts, lowest first, for
++// the device= qualifier, and returns how many there are. Valid once a rocp_sdk
++// event name has been resolved, which initializes the component.
++extern "C" __attribute__((used, visibility("default"))) int
++dftracer_papi_rocp_sdk_devices(int *devices, int max_devices)
++{
++    std::vector<int> visible = papi_rocpsdk::visible_devices();
++    for(int i = 0; devices != NULL && i < (int)visible.size() && i < max_devices; ++i){
++        devices[i] = visible[i];
++    }
++    return (int)visible.size();
++}
+ 
+ extern "C" int
+ rocprofiler_sdk_init_pre(void)
+@@ -1412,17 +1445,11 @@ rocprofiler_sdk_evt_name_to_code(const char *event_name, unsigned int *event_cod
+ {
+     int papi_errno = PAPI_OK;
+ 
+-    // If "device" qualifier is not provived by the user, make it zero.
++    // If "device" qualifier is not provived by the user, count the lowest visible GPU.
+     if( NULL == strstr(event_name, "device=") ){
+-        char *amended_event_name;
+-        size_t len = strlen(event_name)+strlen(":device=0")+1; // +1 for '\0'
+-        if( len > 1024 ){
+-            return PAPI_EMISC;
+-        }
+-        amended_event_name = (char *)calloc(len, sizeof(char));
+-        int ret = snprintf(amended_event_name, len, "%s:device=0", event_name);
+-        if( ret >= len ){
+-            free(amended_event_name);
++        std::string amended_event_name = std::string(event_name) + ":device=" +
++                                         std::to_string(papi_rocpsdk::default_device());
++        if( amended_event_name.size() + 1 > 1024 ){
+             return PAPI_EMISC;
+         }
+ 
+diff --git a/src/components/rocp_sdk/sdk_class.h b/src/components/rocp_sdk/sdk_class.h
+index 45b2809..f6be236 100644
+--- a/src/components/rocp_sdk/sdk_class.h
++++ b/src/components/rocp_sdk/sdk_class.h
+@@ -23,5 +23,8 @@ extern int rocprofiler_sdk_evt_name_to_code(const char *name, unsigned int *even
+ 
+ extern int rocprofiler_sdk_err_get_last(const char **err_string);
+ 
++/* Node numbers of the GPUs rocp_sdk counts, for the device= qualifier. */
++extern int dftracer_papi_rocp_sdk_devices(int *devices, int max_devices);
++
+ 
+ #endif

@@ -25,7 +25,7 @@ set(DFTRACER_PAPI_COMMIT "a14a90f339d516aed1335ee8929b37a0c1da62e2"
 # to the commit bumps the marker there, here and in python/dftracer/compose.py,
 # or a build keeps the older PAPI. test/papi_rocp_sdk/run.sh tests the patches.
 set(DFTRACER_PAPI_PATCH_DIR "${CMAKE_CURRENT_LIST_DIR}/papi-patches")
-set(DFTRACER_PAPI_PATCH_MARKER "dftracer-papi-patches-0002")
+set(DFTRACER_PAPI_PATCH_MARKER "dftracer-papi-patches-0003")
 
 # TRUE when the PAPI library at `library` was built with the rocp_sdk
 # component. PAPI keeps each component's name as a plain string in the library,

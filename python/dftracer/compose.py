@@ -328,7 +328,7 @@ def papi_has_rocp_sdk(library: Path) -> bool:
 
 
 # Kept equal to DFTRACER_PAPI_PATCH_MARKER in DFTracerPapi.cmake.
-PAPI_PATCH_MARKER = b"dftracer-papi-patches-0002"
+PAPI_PATCH_MARKER = b"dftracer-papi-patches-0003"
 
 
 def papi_has_patches(library: Path) -> bool:
