@@ -366,11 +366,13 @@ def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
         return False
     dest = tree.parent / "papi"
     status = {module: state for module, _, state in records}
-    rocm = os.environ.get("ROCM_PATH", "") if status.get("hip", "absent") != "absent" else ""
+    # CMake can find HIP with ROCM_PATH unset, so the patch checks key on HIP.
+    hip = status.get("hip", "absent") != "absent"
+    rocm = os.environ.get("ROCM_PATH", "") if hip else ""
     built_before = any((dest / "share" / "dftracer").glob("papi-*.stamp"))
     if not build:
         # On ROCm a PAPI without the fixes is worse than the site's: keep that.
-        if rocm and built_before:
+        if hip and built_before:
             built = built_papi_library(dest)
             built_before = built is not None and papi_has_patches(built)
         if not built_before:
@@ -379,7 +381,7 @@ def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
         use_papi(dest, rocm)
         return True
     stale = False
-    if built_before and rocm:
+    if built_before and hip:
         built = built_papi_library(dest)
         stale = built is None or not papi_has_patches(built)
         built_before = not stale

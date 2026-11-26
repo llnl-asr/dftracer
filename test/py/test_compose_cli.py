@@ -312,12 +312,14 @@ class ProvidePapi(unittest.TestCase):
         (dest / "lib" / "libpapi.so").write_bytes(b"\x7fELF\0rocp_sdk\0")
         self.site_papi(rocp_sdk=True)
         records = [("papi", "papi-7.2", "linked"), ("hip", "rocprof-1.1", "linked")]
-        with mock.patch.object(compose, "run") as run, quiet():
+        site = {"PAPI_DIR": "/site/papi", "ROCM_PATH": ""}
+        with mock.patch.dict(os.environ, site), mock.patch.object(compose, "run") as run, \
+                quiet():
             built = compose.provide_papi("auto", self.tree, self.work, self.settings,
                                          records, build=False)
+            self.assertEqual(os.environ["PAPI_DIR"], "/site/papi")
         self.assertFalse(built)
         run.assert_not_called()
-        self.assertNotIn("PAPI_DIR", os.environ)
 
     def test_no_build_without_a_papi_built_before_does_nothing(self):
         self.site_papi(rocp_sdk=True, patched=False)
