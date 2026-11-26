@@ -831,6 +831,11 @@ GPU counters work in the ``rocp_sdk`` device sampling mode, which counts everyth
 They are never multiplexed.
 Before the application first uses the GPU, a read fails with ``PAPI_ECMP`` and that sample is skipped.
 
+``device=N`` is the GPU's number on the node, not its HIP device number in the process.
+A rank that ``flux run -g1`` or ``srun --gpus-per-task=1`` binds to the fourth GPU (``ROCR_VISIBLE_DEVICES=3``) counts with ``device=3``, and a counter for a GPU that the process cannot see reads 0.
+The PAPI that DFTracer builds carries a fix (``cmake/modules/papi-patches``) for this case: without it, one hidden GPU makes every ``rocp_sdk`` counter read 0.
+A PAPI that you build yourself needs the same patch.
+
 .. warning::
 
    When the GPU does not run rocprofiler-sdk's setup packet within 1 second, rocprofiler-sdk stops the application with ``Could not set agent to be profiled``.

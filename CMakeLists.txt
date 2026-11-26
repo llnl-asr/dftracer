@@ -1654,6 +1654,8 @@ set(DFTRACER_COMPONENT_LINK "@_dftracer_link@")
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/FindCUPTI.cmake
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/mpi_detect.c
                 COMPONENT dftracer_compose DESTINATION ${DFTRACER_COMPOSE_DIR})
+        install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/papi-patches
+                COMPONENT dftracer_compose DESTINATION ${DFTRACER_COMPOSE_DIR})
         # The sources, for building a module variant the tree lacks (or one
         # named in DFTRACER_BUILD_FROM_SOURCE) on the machine that composes it:
         # dftracer-compose builds it with tools/ci/build-module.sh from here.
