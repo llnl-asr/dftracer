@@ -21,7 +21,9 @@ set(DFTRACER_PAPI_COMMIT "a14a90f339d516aed1335ee8929b37a0c1da62e2"
 
 # Fixes applied on top of the commit, in name order. Each one is made against
 # DFTRACER_PAPI_COMMIT: check that they still apply when you move it. The last
-# patch puts DFTRACER_PAPI_PATCH_MARKER in the library; change both together.
+# patch puts DFTRACER_PAPI_PATCH_MARKER in the library. A change to a patch or
+# to the commit bumps the marker there, here and in python/dftracer/compose.py,
+# or a build keeps the older PAPI. test/papi_rocp_sdk/run.sh tests the patches.
 set(DFTRACER_PAPI_PATCH_DIR "${CMAKE_CURRENT_LIST_DIR}/papi-patches")
 set(DFTRACER_PAPI_PATCH_MARKER "dftracer-papi-patches-0002")
 

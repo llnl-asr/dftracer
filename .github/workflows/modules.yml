@@ -27,6 +27,7 @@ on:
       - 'include/**'
       - 'dependency/**'
       - 'tools/ci/**'
+      - 'test/papi_rocp_sdk/**'
       - '.github/workflows/modules.yml'
   workflow_dispatch:
   workflow_call:
@@ -123,6 +124,25 @@ jobs:
           name: part-${{ matrix.variant }}
           path: ${{ runner.temp }}/part/tree
           if-no-files-found: error
+
+  # The PAPI that DFTracer builds, with cmake/modules/papi-patches, against a
+  # mock rocprofiler-sdk: the runners have no GPU. ROCm 6.4 is the first whose
+  # rocprofiler-sdk says which GPUs a process can see.
+  papi-rocp-sdk:
+    name: PAPI rocp_sdk (mock GPU)
+    needs: plan
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.plan.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: test/papi_rocp_sdk/run.sh /opt/rocm-6.4.3 "$RUNNER_TEMP/papi-rocp-sdk"
+      - name: Keep the PAPI build logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-papi-rocp-sdk
+          path: ${{ runner.temp }}/papi-rocp-sdk/papi-logs
 
   assemble:
     name: Assemble and compose
