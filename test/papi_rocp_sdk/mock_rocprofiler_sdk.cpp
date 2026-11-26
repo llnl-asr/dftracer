@@ -23,6 +23,17 @@
 
 namespace {
 
+// rocprofiler-sdk 1.0 (ROCm 7) renamed the counting service callback types.
+#if ROCPROFILER_VERSION_MAJOR < 1
+using DeviceCountingCb = rocprofiler_device_counting_service_callback_t;
+using DispatchCountingCb = rocprofiler_dispatch_counting_service_callback_t;
+using DispatchRecordCb = rocprofiler_profile_counting_record_callback_t;
+#else
+using DeviceCountingCb = rocprofiler_device_counting_service_cb_t;
+using DispatchCountingCb = rocprofiler_dispatch_counting_service_cb_t;
+using DispatchRecordCb = rocprofiler_dispatch_counting_record_cb_t;
+#endif
+
 constexpr uint64_t kHiddenAgent = 100;
 constexpr uint64_t kVisibleAgent = 101;
 constexpr int kAgents = 3;
@@ -39,7 +50,7 @@ constexpr double kValueStep = 101.0;
 struct DeviceService {
   uint64_t context;
   rocprofiler_agent_id_t agent;
-  rocprofiler_device_counting_service_callback_t callback;
+  DeviceCountingCb callback;
   void* user_data;
   bool profiled;
 };
@@ -249,16 +260,15 @@ rocprofiler_status_t rocprofiler_flush_buffer(rocprofiler_buffer_id_t) {
 
 rocprofiler_status_t rocprofiler_configure_device_counting_service(
     rocprofiler_context_id_t context_id, rocprofiler_buffer_id_t,
-    rocprofiler_agent_id_t agent_id,
-    rocprofiler_device_counting_service_callback_t cb, void* user_data) {
+    rocprofiler_agent_id_t agent_id, DeviceCountingCb cb, void* user_data) {
   services->push_back(
       DeviceService{context_id.handle, agent_id, cb, user_data, false});
   return ROCPROFILER_STATUS_SUCCESS;
 }
 
 rocprofiler_status_t rocprofiler_configure_callback_dispatch_counting_service(
-    rocprofiler_context_id_t, rocprofiler_dispatch_counting_service_callback_t,
-    void*, rocprofiler_profile_counting_record_callback_t, void*) {
+    rocprofiler_context_id_t, DispatchCountingCb, void*, DispatchRecordCb,
+    void*) {
   return ROCPROFILER_STATUS_SUCCESS;
 }
 
@@ -301,17 +311,34 @@ rocprofiler_status_t rocprofiler_query_counter_instance_count(
   return ROCPROFILER_STATUS_SUCCESS;
 }
 
-rocprofiler_status_t rocprofiler_create_profile_config(
+// PAPI looks up the profile_config names first and then the counter_config
+// names. rocprofiler-sdk 1.0 (ROCm 7) exports only counter_config and makes
+// profile_config static inline wrappers in its headers.
+rocprofiler_status_t rocprofiler_create_counter_config(
     rocprofiler_agent_id_t agent_id, rocprofiler_counter_id_t*, size_t,
     rocprofiler_profile_config_id_t* config_id) {
   config_id->handle = kProfileBase + agent_id.handle;
   return ROCPROFILER_STATUS_SUCCESS;
 }
 
-rocprofiler_status_t rocprofiler_destroy_profile_config(
+rocprofiler_status_t rocprofiler_destroy_counter_config(
     rocprofiler_profile_config_id_t) {
   return ROCPROFILER_STATUS_SUCCESS;
 }
+
+#if ROCPROFILER_VERSION_MAJOR < 1
+rocprofiler_status_t rocprofiler_create_profile_config(
+    rocprofiler_agent_id_t agent_id, rocprofiler_counter_id_t* counters,
+    size_t count, rocprofiler_profile_config_id_t* config_id) {
+  return rocprofiler_create_counter_config(agent_id, counters, count,
+                                           config_id);
+}
+
+rocprofiler_status_t rocprofiler_destroy_profile_config(
+    rocprofiler_profile_config_id_t config_id) {
+  return rocprofiler_destroy_counter_config(config_id);
+}
+#endif
 
 // One record per agent with a profile, only while its context counts.
 rocprofiler_status_t rocprofiler_sample_device_counting_service(
