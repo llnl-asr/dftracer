@@ -283,6 +283,19 @@ class ProvidePapi(unittest.TestCase):
         self.assertTrue(built)
         run.assert_called_once()
 
+    def test_without_rocm_path_the_rebuild_takes_the_rocm_cmake_found(self):
+        dest = self.tree.parent / "papi"
+        (dest / "share" / "dftracer").mkdir(parents=True)
+        (dest / "share" / "dftracer" / "papi-abc-rocp_sdk.stamp").write_text("x")
+        (dest / "lib").mkdir()
+        (dest / "lib" / "libpapi.so").write_bytes(b"\x7fELF\0rocp_sdk\0")
+        (self.work / "compose-build" / "hip-library.txt").write_text(
+            "/opt/rocm-6.4.3/lib/librocprofiler-sdk.so;/usr/lib/libdl.so")
+        with mock.patch.dict(os.environ, {"ROCM_PATH": ""}):
+            built, run = self.provide("auto")
+        self.assertTrue(built)
+        self.assertIn("-DDFTRACER_PAPI_ROCM_ROOT=/opt/rocm-6.4.3", run.call_args.args[0])
+
     def test_marker_next_to_other_bytes_is_found(self):
         library = self.tmp / "libpapi.so"
         library.write_bytes(b"\x7fELF\0rocp_sdk\0abcd" + compose.PAPI_PATCH_MARKER + b"\0")

@@ -347,14 +347,26 @@ def built_papi_library(dest: Path) -> Path | None:
     return None
 
 
-def detected_papi_library(work: Path) -> Path | None:
-    listing = work / "compose-build" / "papi-library.txt"
+def detected_library(work: Path, module: str, name: str) -> Path | None:
+    listing = work / "compose-build" / f"{module}-library.txt"
     if not listing.exists():
         return None
     for item in listing.read_text().strip().split(";"):
-        if "libpapi" in Path(item).name:
+        if name in Path(item).name:
             return Path(item)
     return None
+
+
+def detected_papi_library(work: Path) -> Path | None:
+    return detected_library(work, "papi", "libpapi")
+
+
+def detected_rocm_root(work: Path) -> str:
+    """The ROCm root that CMake found rocprofiler-sdk in, or ""."""
+    library = detected_library(work, "hip", "librocprofiler-sdk")
+    if library is None or library.parent.name not in ("lib", "lib64"):
+        return ""
+    return str(library.parent.parent)
 
 
 def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
@@ -366,9 +378,10 @@ def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
         return False
     dest = tree.parent / "papi"
     status = {module: state for module, _, state in records}
-    # CMake can find HIP with ROCM_PATH unset, so the patch checks key on HIP.
+    # CMake can find HIP with ROCM_PATH unset, so the patch checks key on HIP
+    # and the ROCm root falls back to where CMake found rocprofiler-sdk.
     hip = status.get("hip", "absent") != "absent"
-    rocm = os.environ.get("ROCM_PATH", "") if hip else ""
+    rocm = (os.environ.get("ROCM_PATH") or detected_rocm_root(work)) if hip else ""
     built_before = any((dest / "share" / "dftracer").glob("papi-*.stamp"))
     if not build:
         # On ROCm a PAPI without the fixes is worse than the site's: keep that.
