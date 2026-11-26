@@ -334,7 +334,7 @@ PAPI_PATCH_MARKER = b"dftracer-papi-patches-0002"
 def papi_has_patches(library: Path) -> bool:
     """A PAPI built with cmake/modules/papi-patches carries their marker."""
     try:
-        return b"\0" + PAPI_PATCH_MARKER + b"\0" in library.read_bytes()
+        return PAPI_PATCH_MARKER in library.read_bytes()
     except OSError:
         return False
 
@@ -946,7 +946,8 @@ def _main(args: argparse.Namespace, prefix: Path, tree: Path, forced: set[str],
     step("settings: " + describe_settings(settings))
     cmake_args = settings_cmake_args(settings)
     records = compose(tree, prefix, work, install=False, cmake_args=cmake_args)
-    if not args.check and provide_papi(args.build_papi, tree, work, settings, records):
+    papi_mode = "never" if args.no_build else args.build_papi
+    if not args.check and provide_papi(papi_mode, tree, work, settings, records):
         records = compose(tree, prefix, work, install=False, cmake_args=cmake_args)
     variorum = provide_variorum("never" if args.no_build else args.build_variorum,
                                 tree, work, check=args.check)
