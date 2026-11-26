@@ -4,6 +4,7 @@
 #ifdef DFTRACER_PAPI_TRACING_ENABLE
 
 #include <dftracer/core/common/singleton.h>
+#include <dlfcn.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -52,6 +53,61 @@ std::vector<std::string> normalize_events(
     normalized.push_back(event);
   }
   return normalized;
+}
+
+// The same test as PAPI's rocp_sdk, which adds its default device only when
+// the name has no "device=" anywhere.
+bool has_device_qualifier(const std::string &name) {
+  return name.find("device=") != std::string::npos;
+}
+
+// Exported by the PAPI that cmake/modules/papi-patches builds.
+using RocpSdkDevicesFn = int (*)(int *devices, int max_devices);
+constexpr int kMaxRocpSdkDevices = 256;
+
+// One name per GPU that rocp_sdk counts in this process, for a counter named
+// without device=. PAPI alone would count GPU 0, which a rank that flux or
+// srun binds to another GPU cannot see.
+// Looked up in the libpapi that the PAPI calls go to, which need not be the
+// first one in the global scope.
+RocpSdkDevicesFn find_rocp_sdk_devices_fn() {
+  Dl_info info;
+  if (dladdr(reinterpret_cast<void *>(&PAPI_library_init), &info) == 0 ||
+      info.dli_fname == nullptr) {
+    return nullptr;
+  }
+  void *papi = dlopen(info.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
+  if (papi == nullptr) return nullptr;
+  auto devices_fn = reinterpret_cast<RocpSdkDevicesFn>(
+      dlsym(papi, "dftracer_papi_rocp_sdk_devices"));
+  dlclose(papi);
+  return devices_fn;
+}
+
+std::vector<std::string> rocp_sdk_device_names(const std::string &name) {
+  static RocpSdkDevicesFn devices_fn = find_rocp_sdk_devices_fn();
+  static bool warned = false;
+  int devices[kMaxRocpSdkDevices];
+  int count =
+      devices_fn != nullptr ? devices_fn(devices, kMaxRocpSdkDevices) : 0;
+  if (count <= 0) {
+    // ERROR, as for the other counters dropped here: a rank on another GPU
+    // then reads 0.
+    if (!warned) {
+      DFTRACER_LOG_ERROR(
+          "PAPI: %s, so rocp_sdk counters without :device=N count PAPI's "
+          "default GPU; add :device=N for another GPU",
+          devices_fn == nullptr ? "this PAPI lacks DFTracer's rocp_sdk patches"
+                                : "rocp_sdk lists no GPU for this process");
+      warned = true;
+    }
+    return {name};
+  }
+  std::vector<std::string> names;
+  for (int i = 0; i < count && i < kMaxRocpSdkDevices; ++i) {
+    names.push_back(name + ":device=" + std::to_string(devices[i]));
+  }
+  return names;
 }
 
 std::vector<std::string> split_event_list(const std::string &value) {
@@ -140,6 +196,7 @@ PAPICounterFunction::parse_groups(const std::string &value) {
 void PAPICounterFunction::split_by_component(
     std::vector<CounterGroup> &groups) {
   std::vector<CounterGroup> device_groups;
+  std::unordered_set<std::string> seen;
   for (auto &group : groups) {
     std::vector<std::string> cpu_events;
     for (const auto &name : group.events) {
@@ -148,8 +205,11 @@ void PAPICounterFunction::split_by_component(
           PAPI_OK) {
         // Kept, it would fail to fit the CPU set and force multiplexing.
         DFTRACER_LOG_ERROR(
-            "PAPI counter %s is not known to this PAPI build; dropping it",
-            name.c_str());
+            "PAPI counter %s is not known to this PAPI build%s; dropping it",
+            name.c_str(),
+            has_device_qualifier(name)
+                ? ", or its device=N names a GPU this process cannot see"
+                : "");
         continue;
       }
       const int component = PAPI_get_event_component(code);
@@ -171,7 +231,13 @@ void PAPICounterFunction::split_by_component(
         device_groups.push_back(std::move(device));
         found = device_groups.end() - 1;
       }
-      found->events.push_back(name);
+      std::vector<std::string> names{name};
+      if (found->category == "rocp_sdk" && !has_device_qualifier(name)) {
+        names = rocp_sdk_device_names(name);
+      }
+      for (auto &one : names) {
+        if (seen.insert(one).second) found->events.push_back(std::move(one));
+      }
     }
     group.events = std::move(cpu_events);
   }
@@ -180,7 +246,9 @@ void PAPICounterFunction::split_by_component(
                                 return group.events.empty();
                               }),
                groups.end());
-  for (auto &device : device_groups) groups.push_back(std::move(device));
+  for (auto &device : device_groups) {
+    if (!device.events.empty()) groups.push_back(std::move(device));
+  }
 }
 
 // A preset PAPI computes by SUBTRACTING one native event from another --
@@ -459,8 +527,8 @@ bool PAPICounterFunction::start_counters() {
     for (const auto &event_name : group.events) {
       retval = PAPI_add_named_event(group.event_set, event_name.c_str());
       if (retval != PAPI_OK) {
-        DFTRACER_LOG_WARN("PAPI counter %s cannot be counted here (%d, %s)",
-                          event_name.c_str(), retval, PAPI_strerror(retval));
+        DFTRACER_LOG_ERROR("PAPI counter %s cannot be counted here (%d, %s)",
+                           event_name.c_str(), retval, PAPI_strerror(retval));
         continue;
       }
       added.push_back(event_name);

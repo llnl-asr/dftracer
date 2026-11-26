@@ -818,7 +818,7 @@ Keep ``PAPI_ROCP_SDK_ROOT`` set at run time:
 .. code-block:: Bash
 
     export PAPI_ROCP_SDK_ROOT=$ROCM_PATH
-    export DFTRACER_PAPI_EVENTS="PAPI_TOT_INS,rocp_sdk:::SQ_WAVES:device=0,rocp_sdk:::GRBM_COUNT:device=0"
+    export DFTRACER_PAPI_EVENTS="PAPI_TOT_INS,rocp_sdk:::SQ_WAVES,rocp_sdk:::GRBM_COUNT"
 
 Each component gets its own family, named after the component, so a sample writes one record for the CPU counters and one for the GPU counters:
 
@@ -833,8 +833,12 @@ GPU counters work in the ``rocp_sdk`` device sampling mode, which counts everyth
 They are never multiplexed.
 Before the application first uses the GPU, a read fails with ``PAPI_ECMP`` and that sample is skipped.
 
-``device=N`` is the GPU's number on the node, not its HIP device number in the process.
-A rank that ``flux run -g1`` or ``srun --gpus-per-task=1`` binds to the fourth GPU (``ROCR_VISIBLE_DEVICES=3``) counts with ``device=3``, and a counter for a GPU that the process cannot see reads 0.
+PAPI counts each GPU on its own, and the ``device=N`` qualifier picks the GPU.
+N is the GPU's number on the node, not its HIP device number in the process.
+DFTracer adds ``device=N`` for you: a ``rocp_sdk`` counter named without it becomes one counter for each GPU that the process can see.
+A rank that ``flux run -g1`` or ``srun --gpus-per-task=1`` binds to the fourth GPU (``ROCR_VISIBLE_DEVICES=3``) records ``rocp_sdk:::SQ_WAVES:device=3``, and a rank that sees all four GPUs records four counters.
+A name with ``device=N`` is kept as written, and PAPI rejects it when the process cannot see GPU N.
+A PAPI without the patches in ``cmake/modules/papi-patches`` counts GPU 0 for a name without ``device=``, and a GPU that the process cannot see reads 0.
 Without the patches in ``cmake/modules/papi-patches``, one hidden GPU makes every ``rocp_sdk`` counter read 0, and a process that never starts the GPU can abort at exit with a corrupted heap.
 The hidden-GPU fix needs ROCm 6.4 or newer (rocprofiler-sdk 0.6): with an older ROCm, collect GPU counters with every GPU visible to the process.
 
