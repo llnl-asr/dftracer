@@ -289,12 +289,19 @@ class ProvidePapi(unittest.TestCase):
         (dest / "share" / "dftracer" / "papi-abc-rocp_sdk.stamp").write_text("x")
         (dest / "lib").mkdir()
         (dest / "lib" / "libpapi.so").write_bytes(b"\x7fELF\0rocp_sdk\0")
+        (self.work / "compose-build" / "rocm-root.txt").write_text("/opt/rocm-6.4.3")
         (self.work / "compose-build" / "hip-library.txt").write_text(
-            "/opt/rocm-6.4.3/lib/librocprofiler-sdk.so;/usr/lib/libdl.so")
-        with mock.patch.dict(os.environ, {"ROCM_PATH": ""}):
-            built, run = self.provide("auto")
+            "/opt/rocm-6.4.3/lib64/librocprofiler-sdk.so.1;/usr/lib/libdl.so")
+        with mock.patch.dict(os.environ, {"ROCM_PATH": ""}), \
+                mock.patch.object(compose, "run") as run, quiet() as out:
+            built = compose.provide_papi("auto", self.tree, self.work, self.settings,
+                                         [("papi", "papi-7.2", "linked"),
+                                          ("hip", "rocprof-1.1", "linked")])
         self.assertTrue(built)
         self.assertIn("-DDFTRACER_PAPI_ROCM_ROOT=/opt/rocm-6.4.3", run.call_args.args[0])
+        # PAPI_ROCP_SDK_ROOT would make PAPI look in lib, not lib64.
+        self.assertIn("PAPI_ROCP_SDK_LIB=/opt/rocm-6.4.3/lib64/librocprofiler-sdk.so.1",
+                      out.getvalue())
 
     def test_marker_next_to_other_bytes_is_found(self):
         library = self.tmp / "libpapi.so"
