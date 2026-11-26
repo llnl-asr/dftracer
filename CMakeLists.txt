@@ -836,9 +836,13 @@ else()
                         set(_dftracer_papi_reason "no PAPI was found")
                 elseif(_dftracer_papi_rocm_root)
                         dftracer_papi_has_rocp_sdk("${PAPI_LIBRARIES}" _dftracer_papi_rocp)
+                        dftracer_papi_has_patches("${PAPI_LIBRARIES}" _dftracer_papi_patched)
                         if(NOT _dftracer_papi_rocp)
                                 set(_dftracer_papi_reason
                                         "HIP tracing is on and ${PAPI_LIBRARIES} has no rocp_sdk component")
+                        elseif(NOT _dftracer_papi_patched)
+                                set(_dftracer_papi_reason
+                                        "HIP tracing is on and ${PAPI_LIBRARIES} lacks the rocp_sdk fixes in cmake/modules/papi-patches")
                         endif()
                 endif()
                 if(_dftracer_papi_reason)

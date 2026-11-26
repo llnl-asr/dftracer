@@ -235,9 +235,11 @@ class ProvidePapi(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(shutil.rmtree, self.tmp)
 
-    def site_papi(self, rocp_sdk: bool) -> None:
+    def site_papi(self, rocp_sdk: bool, patched: bool = True) -> None:
         library = self.tmp / "libpapi.so"
         names = b"\0perf_event\0" + (b"rocp_sdk\0" if rocp_sdk else b"rocm_7001\0")
+        if patched:
+            names += compose.PAPI_PATCH_MARKER + b"\0"
         library.write_bytes(b"\x7fELF" + names)
         (self.work / "compose-build" / "papi-library.txt").write_text(f"{library};/usr/lib/libm.so")
 
@@ -263,6 +265,23 @@ class ProvidePapi(unittest.TestCase):
         built, run = self.provide("auto")
         self.assertFalse(built)
         run.assert_not_called()
+
+    def test_site_papi_with_rocp_sdk_but_without_the_patches_builds(self):
+        self.site_papi(rocp_sdk=True, patched=False)
+        built, run = self.provide("auto")
+        self.assertTrue(built)
+        run.assert_called_once()
+
+    def test_a_papi_built_before_without_the_patches_is_rebuilt_on_rocm(self):
+        dest = self.tree.parent / "papi"
+        (dest / "share" / "dftracer").mkdir(parents=True)
+        (dest / "share" / "dftracer" / "papi-abc-rocp_sdk.stamp").write_text("x")
+        (dest / "lib").mkdir()
+        (dest / "lib" / "libpapi.so").write_bytes(b"\x7fELF\0rocp_sdk\0")
+        self.site_papi(rocp_sdk=True)
+        built, run = self.provide("auto")
+        self.assertTrue(built)
+        run.assert_called_once()
 
     def test_rocm_machine_without_papi_builds(self):
         built, _ = self.provide("auto", papi="absent")

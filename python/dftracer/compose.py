@@ -327,6 +327,26 @@ def papi_has_rocp_sdk(library: Path) -> bool:
         return False
 
 
+# Kept equal to DFTRACER_PAPI_PATCH_MARKER in DFTracerPapi.cmake.
+PAPI_PATCH_MARKER = b"dftracer-papi-patches-0002"
+
+
+def papi_has_patches(library: Path) -> bool:
+    """A PAPI built with cmake/modules/papi-patches carries their marker."""
+    try:
+        return b"\0" + PAPI_PATCH_MARKER + b"\0" in library.read_bytes()
+    except OSError:
+        return False
+
+
+def built_papi_library(dest: Path) -> Path | None:
+    for libdir in ("lib", "lib64"):
+        library = dest / libdir / "libpapi.so"
+        if library.exists():
+            return library
+    return None
+
+
 def detected_papi_library(work: Path) -> Path | None:
     listing = work / "compose-build" / "papi-library.txt"
     if not listing.exists():
@@ -347,9 +367,16 @@ def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
     status = {module: state for module, _, state in records}
     rocm = os.environ.get("ROCM_PATH", "") if status.get("hip", "absent") != "absent" else ""
     built_before = any((dest / "share" / "dftracer").glob("papi-*.stamp"))
+    stale = False
+    if built_before and rocm:
+        built = built_papi_library(dest)
+        stale = built is None or not papi_has_patches(built)
+        built_before = not stale
     reason = ""
     if mode == "always":
         reason = "--build-papi always"
+    elif stale:
+        reason = "the PAPI of an earlier compose lacks the rocp_sdk fixes in cmake/modules/papi-patches"
     elif built_before:
         reason = "built by an earlier compose"
     elif rocm:
@@ -358,6 +385,8 @@ def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
             reason = "this ROCm machine has no PAPI"
         elif not papi_has_rocp_sdk(library):
             reason = f"{library} has no rocp_sdk component for GPU counters"
+        elif not papi_has_patches(library):
+            reason = f"{library} lacks the rocp_sdk fixes in cmake/modules/papi-patches"
     if not reason:
         return False
     if built_before and mode != "always":
