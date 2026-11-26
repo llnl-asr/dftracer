@@ -283,6 +283,11 @@ class ProvidePapi(unittest.TestCase):
         self.assertTrue(built)
         run.assert_called_once()
 
+    def test_marker_next_to_other_bytes_is_found(self):
+        library = self.tmp / "libpapi.so"
+        library.write_bytes(b"\x7fELF\0rocp_sdk\0abcd" + compose.PAPI_PATCH_MARKER + b"\0")
+        self.assertTrue(compose.papi_has_patches(library))
+
     def test_rocm_machine_without_papi_builds(self):
         built, _ = self.provide("auto", papi="absent")
         self.assertTrue(built)

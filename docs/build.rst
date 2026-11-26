@@ -806,7 +806,7 @@ To build PAPI yourself instead:
 
     export PAPI_ROCP_SDK_ROOT=$ROCM_PATH
     git -C papi apply /path/to/dftracer/cmake/modules/papi-patches/*.patch   # made against DFTRACER_PAPI_COMMIT
-    cd papi/src && ./configure --prefix=$HOME/papi --with-components="rocp_sdk" && make install
+    (cd papi/src && ./configure --prefix=$HOME/papi --with-components="rocp_sdk" && make install)
     $HOME/papi/bin/papi_component_avail      # rocp_sdk must not be "Disabled"
     PAPI_DIR=$HOME/papi ./autobuild.sh --enable-papi --enable-hip --build-papi NEVER
 
@@ -836,6 +836,7 @@ Before the application first uses the GPU, a read fails with ``PAPI_ECMP`` and t
 ``device=N`` is the GPU's number on the node, not its HIP device number in the process.
 A rank that ``flux run -g1`` or ``srun --gpus-per-task=1`` binds to the fourth GPU (``ROCR_VISIBLE_DEVICES=3``) counts with ``device=3``, and a counter for a GPU that the process cannot see reads 0.
 Without the patches in ``cmake/modules/papi-patches``, one hidden GPU makes every ``rocp_sdk`` counter read 0, and a process that never starts the GPU can abort at exit with a corrupted heap.
+The hidden-GPU fix needs ROCm 6.4 or newer (rocprofiler-sdk 0.6): with an older ROCm, collect GPU counters with every GPU visible to the process.
 
 .. warning::
 
