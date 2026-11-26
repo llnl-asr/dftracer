@@ -364,7 +364,14 @@ def detected_papi_library(work: Path) -> Path | None:
 def detected_rocm_root(work: Path) -> str:
     """The ROCm root that CMake found rocprofiler-sdk in, or ""."""
     listing = work / "compose-build" / "rocm-root.txt"
-    return listing.read_text().strip() if listing.exists() else ""
+    root = listing.read_text().strip() if listing.exists() else ""
+    if root:
+        return root
+    # An older compose tree writes only the library list.
+    library = detected_library(work, "hip", "librocprofiler-sdk")
+    if library is None or library.parent.name not in ("lib", "lib64"):
+        return ""
+    return str(library.parent.parent)
 
 
 def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
@@ -441,9 +448,9 @@ def use_papi(dest: Path, rocm: str, work: Path) -> None:
     os.environ["PAPI_DIR"] = str(dest)
     if not rocm:
         return
-    # PAPI looks for the library only in <root>/lib.
+    # PAPI looks only for <root>/lib/librocprofiler-sdk.so.
     library = detected_library(work, "hip", "librocprofiler-sdk")
-    if library is not None and library.parent != Path(rocm) / "lib":
+    if library is not None and not (Path(rocm) / "lib" / "librocprofiler-sdk.so").exists():
         step(f"set PAPI_ROCP_SDK_LIB={library} when you trace, for GPU counters")
     else:
         step(f"set PAPI_ROCP_SDK_ROOT={rocm} when you trace, for GPU counters")
