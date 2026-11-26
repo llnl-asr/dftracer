@@ -450,6 +450,10 @@ def use_papi(dest: Path, rocm: str, work: Path) -> None:
         return
     # PAPI looks only for <root>/lib/librocprofiler-sdk.so.
     library = detected_library(work, "hip", "librocprofiler-sdk")
+    if library is None:
+        library = next((found for libdir in ("lib", "lib64")
+                        for found in sorted((Path(rocm) / libdir).glob("librocprofiler-sdk.so*"))),
+                       None)
     if library is not None and not (Path(rocm) / "lib" / "librocprofiler-sdk.so").exists():
         step(f"set PAPI_ROCP_SDK_LIB={library} when you trace, for GPU counters")
     else:
