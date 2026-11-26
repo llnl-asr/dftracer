@@ -19,6 +19,10 @@ set(DFTRACER_PAPI_REPOSITORY "https://github.com/icl-utk-edu/papi.git"
 set(DFTRACER_PAPI_COMMIT "a14a90f339d516aed1335ee8929b37a0c1da62e2"
   CACHE STRING "PAPI commit to build when it has to be built")
 
+# Fixes applied on top of the commit, in name order. Each one is made against
+# DFTRACER_PAPI_COMMIT: check that they still apply when you move it.
+set(DFTRACER_PAPI_PATCH_DIR "${CMAKE_CURRENT_LIST_DIR}/papi-patches")
+
 # TRUE when the PAPI library at `library` was built with the rocp_sdk
 # component. PAPI keeps each component's name as a plain string in the library,
 # so this needs no run of the library and works on a node without a GPU.
@@ -53,7 +57,18 @@ function(dftracer_provision_papi install_prefix rocm_root)
   if(rocm_root)
     set(_components "rocp_sdk")
   endif()
-  set(_stamp "${install_prefix}/share/dftracer/papi-${DFTRACER_PAPI_COMMIT}-${_components}.stamp")
+  file(GLOB _patches "${DFTRACER_PAPI_PATCH_DIR}/*.patch")
+  list(SORT _patches)
+  set(_patch_text "")
+  foreach(_patch IN LISTS _patches)
+    file(READ "${_patch}" _one)
+    string(APPEND _patch_text "${_one}")
+  endforeach()
+  string(SHA256 _patch_hash "${_patch_text}")
+  string(SUBSTRING "${_patch_hash}" 0 12 _patch_hash)
+  # The patch hash is in the name, so a PAPI built without the current patches
+  # is rebuilt, not reused.
+  set(_stamp "${install_prefix}/share/dftracer/papi-${DFTRACER_PAPI_COMMIT}-${_patch_hash}-${_components}.stamp")
   if(EXISTS "${_stamp}")
     message(STATUS "[DFTRACER] reusing PAPI ${DFTRACER_PAPI_COMMIT} in ${install_prefix}")
     set(DFTRACER_PAPI_PROVISIONED TRUE PARENT_SCOPE)
@@ -112,6 +127,17 @@ function(dftracer_provision_papi install_prefix rocm_root)
       OUTPUT_FILE "${_logs}/git-${_step}.log" ERROR_FILE "${_logs}/git-${_step}.log")
     if(NOT _rc EQUAL 0)
       message(WARNING "[DFTRACER] git ${_step} of PAPI failed (${_rc}); see ${_logs}/git-${_step}.log")
+      return()
+    endif()
+  endforeach()
+
+  foreach(_patch IN LISTS _patches)
+    get_filename_component(_name "${_patch}" NAME_WE)
+    execute_process(COMMAND ${GIT_EXECUTABLE} -C "${_src}" apply "${_patch}"
+      RESULT_VARIABLE _rc
+      OUTPUT_FILE "${_logs}/patch-${_name}.log" ERROR_FILE "${_logs}/patch-${_name}.log")
+    if(NOT _rc EQUAL 0)
+      message(WARNING "[DFTRACER] PAPI patch ${_name} does not apply (${_rc}); see ${_logs}/patch-${_name}.log")
       return()
     endif()
   endforeach()

@@ -1,0 +1,65 @@
+diff --git a/src/components/rocp_sdk/sdk_class.cpp b/src/components/rocp_sdk/sdk_class.cpp
+index 344df74..ae75471 100644
+--- a/src/components/rocp_sdk/sdk_class.cpp
++++ b/src/components/rocp_sdk/sdk_class.cpp
+@@ -495,9 +495,18 @@ get_GPU_agent_info() {
+         auto* agents_v = static_cast<agent_map_t*>(user_data);
+         for(size_t i = 0; i < num_agents; ++i) {
+             const auto* itr = static_cast<const rocprofiler_agent_v0_t*>(agents_arr[i]);
+-            if( ROCPROFILER_AGENT_TYPE_GPU == itr->type ){
+-                agents_v->emplace(itr->id.handle, itr);
++            if( ROCPROFILER_AGENT_TYPE_GPU != itr->type ){
++                continue;
++            }
++#if ROCPROFILER_VERSION >= 600
++            // A GPU hidden by ROCR_VISIBLE_DEVICES has no HSA agent, and one such
++            // agent in the device counting service fails rocprofiler_start_context
++            // for every other GPU too, so every counter would read zero.
++            if( 0 == itr->runtime_visibility.hsa ){
++                continue;
+             }
++#endif
++            agents_v->emplace(itr->id.handle, itr);
+         }
+         return ROCPROFILER_STATUS_SUCCESS;
+     };
+@@ -655,6 +664,10 @@ populate_event_list(void){
+     if( !base_events_by_name.empty() )
+         return;
+ 
++    // Every GPU is hidden from this process: there is no event to list.
++    if( gpu_agents.empty() )
++        return;
++
+     // Pick the first agent, because we currently do not support a mixture of heterogeneous GPUs, so all agents should be the same.
+     const rocprofiler_agent_v0_t *agent = gpu_agents.begin()->second;
+ 
+@@ -995,6 +1008,10 @@ evt_enum(unsigned int *event_code, int modifier){
+ 
+     switch(modifier) {
+         case PAPI_ENUM_FIRST:
++            if( 0 == _base_event_count ){
++                papi_errno = PAPI_ENOEVNT;
++                break;
++            }
+             papi_errno = PAPI_OK;
+             *event_code = 0;
+             break;
+@@ -1036,7 +1053,16 @@ evt_enum(unsigned int *event_code, int modifier){
+                 // Here we insert the "device" qualifier, which does not appear as a dimension in rocprofiler-sdk.
+                 }else if( qual_i == ev_inst.dim_info.size() ){
+                     full_name = ev_inst.counter_info.name + std::string(":device=0");
+-                    qual_ub = std::to_string(gpu_agents.size()-1);
++                    {
++                        // GPU numbers are the node's, so a hidden GPU leaves a gap.
++                        int32_t max_device = 0;
++                        for(const auto &a_it : gpu_agents){
++                            if( a_it.second->logical_node_type_id > max_device ){
++                                max_device = a_it.second->logical_node_type_id;
++                            }
++                        }
++                        qual_ub = std::to_string(max_device);
++                    }
+                     tmp_desc = "masks: Range: [0-" + qual_ub + "], default=0.";
+                 }else{
+                     full_name = ev_inst.counter_info.name + std::string(":device=0");
