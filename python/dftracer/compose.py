@@ -363,10 +363,8 @@ def detected_papi_library(work: Path) -> Path | None:
 
 def detected_rocm_root(work: Path) -> str:
     """The ROCm root that CMake found rocprofiler-sdk in, or ""."""
-    library = detected_library(work, "hip", "librocprofiler-sdk")
-    if library is None or library.parent.name not in ("lib", "lib64"):
-        return ""
-    return str(library.parent.parent)
+    listing = work / "compose-build" / "rocm-root.txt"
+    return listing.read_text().strip() if listing.exists() else ""
 
 
 def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
@@ -391,7 +389,7 @@ def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
         if not built_before:
             return False
         step(f"using the PAPI in {dest} (--no-build)")
-        use_papi(dest, rocm)
+        use_papi(dest, rocm, work)
         return True
     stale = False
     if built_before and hip:
@@ -431,17 +429,23 @@ def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
             # Not asked for by name: compose goes on with this machine's PAPI.
             step(f"warning: PAPI did not build, keeping this machine's PAPI: {error}")
             return False
-    use_papi(dest, rocm)
+    use_papi(dest, rocm, work)
     return True
 
 
-def use_papi(dest: Path, rocm: str) -> None:
+def use_papi(dest: Path, rocm: str, work: Path) -> None:
     # Before any prefix a site module put there, so detection, module builds
     # and the relink all take this PAPI.
     old = os.environ.get("CMAKE_PREFIX_PATH")
     os.environ["CMAKE_PREFIX_PATH"] = str(dest) + (os.pathsep + old if old else "")
     os.environ["PAPI_DIR"] = str(dest)
-    if rocm:
+    if not rocm:
+        return
+    # PAPI looks for the library only in <root>/lib.
+    library = detected_library(work, "hip", "librocprofiler-sdk")
+    if library is not None and library.parent != Path(rocm) / "lib":
+        step(f"set PAPI_ROCP_SDK_LIB={library} when you trace, for GPU counters")
+    else:
         step(f"set PAPI_ROCP_SDK_ROOT={rocm} when you trace, for GPU counters")
 
 

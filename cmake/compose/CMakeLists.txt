@@ -174,11 +174,6 @@ foreach(_module IN LISTS _selected)
       continue()
     endif()
     set(_use_recorded OFF)
-    # dftracer-compose checks the PAPI library for the rocp_sdk component and
-    # finds the ROCm root from the rocprofiler-sdk one.
-    if(_module STREQUAL "papi" OR _module STREQUAL "hip")
-      file(WRITE "${CMAKE_BINARY_DIR}/${_module}-library.txt" "${_system_libs}")
-    endif()
   else()
     list(LENGTH _variants _count)
     if(NOT _count EQUAL 1)
@@ -186,6 +181,15 @@ foreach(_module IN LISTS _selected)
                           "(${_variants}); choose one with -DDFTRACER_COMPOSE_${_upper}=")
     endif()
     list(GET _variants 0 _variant)
+  endif()
+
+  # dftracer-compose checks this machine's PAPI for the rocp_sdk component
+  # and builds PAPI against the ROCm that rocprofiler-sdk was found in.
+  if(NOT _use_recorded AND (_module STREQUAL "papi" OR _module STREQUAL "hip"))
+    file(WRITE "${CMAKE_BINARY_DIR}/${_module}-library.txt" "${_system_libs}")
+    if(_module STREQUAL "hip")
+      file(WRITE "${CMAKE_BINARY_DIR}/rocm-root.txt" "${DFTRACER_DETECTED_ROCM_ROOT}")
+    endif()
   endif()
 
   if(NOT _variant IN_LIST _variants)

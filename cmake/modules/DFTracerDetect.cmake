@@ -110,6 +110,11 @@ function(dftracer_detect_module _dftd_module _dftd_found_out _dftd_variant_out _
         set(DFTRACER_ROCPROFILER_VERSION_MINOR "${CMAKE_MATCH_2}")
       endif()
       dftracer_resolve_link_items(_libraries rocprofiler-sdk::rocprofiler-sdk)
+      # The headers, not the library, give the root: the library may sit in
+      # lib64 or lib/<arch>. The root CMakeLists.txt does the same for PAPI.
+      get_filename_component(_rocm_root "${rocprofiler-sdk_INCLUDE_DIR}" DIRECTORY)
+      set(DFTRACER_DETECTED_ROCM_ROOT "${_rocm_root}" CACHE INTERNAL
+          "ROCm root that rocprofiler-sdk was found in")
     endif()
   elseif(module STREQUAL "cuda")
     find_package(CUPTI QUIET)
