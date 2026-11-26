@@ -6,10 +6,17 @@
 //   * starting a context fails when its device counting service holds an
 //     agent that HSA does not know, so no agent counts at all;
 //   * the tools' finalize functions run from the library's exit destructors.
+//
+// PAPI turns rocp_sdk off when the amdgpu driver's topology directory is
+// missing, so its stat and opendir go to MOCK_KFD_NODES instead.
+#include <dirent.h>
+#include <dlfcn.h>
 #include <rocprofiler-sdk/registration.h>
 #include <rocprofiler-sdk/rocprofiler.h>
+#include <sys/stat.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -91,9 +98,50 @@ struct AtExit {
   }
 } at_exit;
 
+constexpr const char* kKfdNodes = "/sys/class/kfd/kfd/topology/nodes";
+
+const char* kfd_path(const char* path) {
+  const char* fake = std::getenv("MOCK_KFD_NODES");
+  if (path != nullptr && fake != nullptr && std::strcmp(path, kKfdNodes) == 0)
+    return fake;
+  return path;
+}
+
+template <typename F>
+F next(const char* name) {
+  return reinterpret_cast<F>(dlsym(RTLD_NEXT, name));
+}
+
 }  // namespace
 
 extern "C" {
+
+// glibc 2.33 and newer export stat. Older ones call __xstat from inline stat.
+int stat(const char* path, struct stat* buf) {
+  static auto real = next<int (*)(const char*, struct stat*)>("stat");
+  return real(kfd_path(path), buf);
+}
+
+int stat64(const char* path, struct stat64* buf) {
+  static auto real = next<int (*)(const char*, struct stat64*)>("stat64");
+  return real(kfd_path(path), buf);
+}
+
+int __xstat(int ver, const char* path, struct stat* buf) {
+  static auto real = next<int (*)(int, const char*, struct stat*)>("__xstat");
+  return real(ver, kfd_path(path), buf);
+}
+
+int __xstat64(int ver, const char* path, struct stat64* buf) {
+  static auto real =
+      next<int (*)(int, const char*, struct stat64*)>("__xstat64");
+  return real(ver, kfd_path(path), buf);
+}
+
+DIR* opendir(const char* path) {
+  static auto real = next<DIR* (*)(const char*)>("opendir");
+  return real(kfd_path(path));
+}
 
 rocprofiler_status_t rocprofiler_is_initialized(int* status) {
   *status = initialized ? 1 : 0;

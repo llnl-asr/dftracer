@@ -26,7 +26,7 @@ lib=$papi/lib
 [ -e "$lib/libpapi.so" ] || lib=$papi/lib64
 
 c++ -std=c++17 -shared -fPIC -D__HIP_PLATFORM_AMD__ -I"$rocm/include" "$here/mock_rocprofiler_sdk.cpp" \
-  -Wl,-soname,librocprofiler-sdk.so -o "$work/librocprofiler-sdk.so"
+  -Wl,-soname,librocprofiler-sdk.so -ldl -o "$work/librocprofiler-sdk.so"
 # libpapi before the mock, as libdftracer_core lists them: the mock's exit
 # destructors then run after libpapi's, as the real library's do.
 # --no-as-needed first, or a linker that drops unused libraries leaves the
@@ -41,6 +41,10 @@ case "$needed" in *libpapi*librocprofiler-sdk*) ;; *)
 # RPATH, not RUNPATH: a site PAPI on LD_LIBRARY_PATH must not stand in.
 ldd "$work/test_rocp_sdk" | grep -E "libpapi|librocprofiler-sdk"
 
+# A node without the amdgpu driver has no topology, and PAPI then turns
+# rocp_sdk off. The mock points PAPI at this one.
+mkdir -p "$work/kfd-nodes/0" "$work/kfd-nodes/1" "$work/kfd-nodes/2"
 # glibc aborts on the first free of memory that is not allocated.
-PAPI_ROCP_SDK_LIB=$work/librocprofiler-sdk.so MALLOC_CHECK_=3 "$work/test_rocp_sdk"
+MOCK_KFD_NODES=$work/kfd-nodes PAPI_ROCP_SDK_LIB=$work/librocprofiler-sdk.so MALLOC_CHECK_=3 \
+  "$work/test_rocp_sdk"
 echo "PAPI rocp_sdk mock test passed"
