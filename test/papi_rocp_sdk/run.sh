@@ -29,9 +29,15 @@ c++ -std=c++17 -shared -fPIC -D__HIP_PLATFORM_AMD__ -I"$rocm/include" "$here/moc
   -Wl,-soname,librocprofiler-sdk.so -o "$work/librocprofiler-sdk.so"
 # libpapi before the mock, as libdftracer_core lists them: the mock's exit
 # destructors then run after libpapi's, as the real library's do.
-cc "$here/test_rocp_sdk.c" -I"$papi/include" -L"$lib" -lpapi -L"$work" -lrocprofiler-sdk \
-  -Wl,--no-as-needed -Wl,--disable-new-dtags -Wl,-rpath,"$lib" -Wl,-rpath,"$work" \
+# --no-as-needed first, or a linker that drops unused libraries leaves the
+# mock to PAPI's dlopen, which runs its destructors before libpapi's.
+cc "$here/test_rocp_sdk.c" -I"$papi/include" -Wl,--no-as-needed -L"$lib" -lpapi \
+  -L"$work" -lrocprofiler-sdk -Wl,--disable-new-dtags -Wl,-rpath,"$lib" -Wl,-rpath,"$work" \
   -o "$work/test_rocp_sdk"
+needed=$(readelf -d "$work/test_rocp_sdk" | grep NEEDED)
+case "$needed" in *libpapi*librocprofiler-sdk*) ;; *)
+  echo "test_rocp_sdk must need libpapi and then librocprofiler-sdk:" >&2
+  echo "$needed" >&2; exit 1 ;; esac
 # RPATH, not RUNPATH: a site PAPI on LD_LIBRARY_PATH must not stand in.
 ldd "$work/test_rocp_sdk" | grep -E "libpapi|librocprofiler-sdk"
 

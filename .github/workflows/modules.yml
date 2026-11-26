@@ -28,6 +28,7 @@ on:
       - 'dependency/**'
       - 'tools/ci/**'
       - 'test/papi_rocp_sdk/**'
+      - 'infrastructure/ci/**'
       - '.github/workflows/modules.yml'
   workflow_dispatch:
   workflow_call:

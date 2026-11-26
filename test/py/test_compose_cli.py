@@ -288,6 +288,28 @@ class ProvidePapi(unittest.TestCase):
         library.write_bytes(b"\x7fELF\0rocp_sdk\0abcd" + compose.PAPI_PATCH_MARKER + b"\0")
         self.assertTrue(compose.papi_has_patches(library))
 
+    def test_no_build_uses_a_papi_built_before_and_builds_none(self):
+        dest = self.tree.parent / "papi"
+        (dest / "share" / "dftracer").mkdir(parents=True)
+        (dest / "share" / "dftracer" / "papi-abc-rocp_sdk.stamp").write_text("x")
+        self.site_papi(rocp_sdk=True, patched=False)
+        records = [("papi", "papi-7.2", "linked"), ("hip", "rocprof-1.1", "linked")]
+        with mock.patch.object(compose, "run") as run, quiet():
+            built = compose.provide_papi("auto", self.tree, self.work, self.settings,
+                                         records, build=False)
+        self.assertTrue(built)
+        run.assert_not_called()
+        self.assertEqual(os.environ["PAPI_DIR"], str(dest))
+
+    def test_no_build_without_a_papi_built_before_does_nothing(self):
+        self.site_papi(rocp_sdk=True, patched=False)
+        records = [("papi", "papi-7.2", "linked"), ("hip", "rocprof-1.1", "linked")]
+        with mock.patch.object(compose, "run") as run, quiet():
+            built = compose.provide_papi("auto", self.tree, self.work, self.settings,
+                                         records, build=False)
+        self.assertFalse(built)
+        run.assert_not_called()
+
     def test_rocm_machine_without_papi_builds(self):
         built, _ = self.provide("auto", papi="absent")
         self.assertTrue(built)

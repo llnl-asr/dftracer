@@ -358,15 +358,22 @@ def detected_papi_library(work: Path) -> Path | None:
 
 
 def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
-                 records: list[tuple[str, str, str]]) -> bool:
+                 records: list[tuple[str, str, str]], build: bool = True) -> bool:
     """Build PAPI into <libdir>/dftracer/papi when `mode` asks for it, and put
-    it first on CMAKE_PREFIX_PATH. True when detection must run again."""
+    it first on CMAKE_PREFIX_PATH. With `build` false, only a PAPI that an
+    earlier compose built is used. True when detection must run again."""
     if mode == "never" or "papi" in settings["disabled"]:
         return False
     dest = tree.parent / "papi"
     status = {module: state for module, _, state in records}
     rocm = os.environ.get("ROCM_PATH", "") if status.get("hip", "absent") != "absent" else ""
     built_before = any((dest / "share" / "dftracer").glob("papi-*.stamp"))
+    if not build:
+        if not built_before:
+            return False
+        step(f"using the PAPI in {dest} (--no-build)")
+        use_papi(dest, rocm)
+        return True
     stale = False
     if built_before and rocm:
         built = built_papi_library(dest)
@@ -405,6 +412,11 @@ def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
             # Not asked for by name: compose goes on with this machine's PAPI.
             step(f"warning: PAPI did not build, keeping this machine's PAPI: {error}")
             return False
+    use_papi(dest, rocm)
+    return True
+
+
+def use_papi(dest: Path, rocm: str) -> None:
     # Before any prefix a site module put there, so detection, module builds
     # and the relink all take this PAPI.
     old = os.environ.get("CMAKE_PREFIX_PATH")
@@ -412,7 +424,6 @@ def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
     os.environ["PAPI_DIR"] = str(dest)
     if rocm:
         step(f"set PAPI_ROCP_SDK_ROOT={rocm} when you trace, for GPU counters")
-    return True
 
 
 # --- Variorum for dftracer_service ---------------------------------------
@@ -946,8 +957,8 @@ def _main(args: argparse.Namespace, prefix: Path, tree: Path, forced: set[str],
     step("settings: " + describe_settings(settings))
     cmake_args = settings_cmake_args(settings)
     records = compose(tree, prefix, work, install=False, cmake_args=cmake_args)
-    papi_mode = "never" if args.no_build else args.build_papi
-    if not args.check and provide_papi(papi_mode, tree, work, settings, records):
+    if not args.check and provide_papi(args.build_papi, tree, work, settings, records,
+                                       build=not args.no_build):
         records = compose(tree, prefix, work, install=False, cmake_args=cmake_args)
     variorum = provide_variorum("never" if args.no_build else args.build_variorum,
                                 tree, work, check=args.check)

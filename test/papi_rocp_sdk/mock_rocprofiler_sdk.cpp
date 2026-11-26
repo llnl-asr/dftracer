@@ -18,7 +18,8 @@ namespace {
 constexpr uint64_t kHiddenAgent = 100;
 constexpr uint64_t kVisibleAgent = 101;
 constexpr uint64_t kCounter = 7;
-constexpr uint64_t kProfile = 55;
+// A profile's handle is this plus its agent's handle.
+constexpr uint64_t kProfileBase = 1000;
 // Value of kCounter on the visible GPU, as the test expects it.
 constexpr double kVisibleValue = 4242.0;
 
@@ -27,6 +28,7 @@ struct DeviceService {
   rocprofiler_agent_id_t agent;
   rocprofiler_device_counting_service_callback_t callback;
   void* user_data;
+  bool profiled;
 };
 
 struct Tool {
@@ -66,10 +68,17 @@ bool is_active(uint64_t context) {
   return false;
 }
 
-rocprofiler_status_t set_profile(rocprofiler_context_id_t,
+// As the real library: an agent counts only once the tool set its profile.
+rocprofiler_status_t set_profile(rocprofiler_context_id_t context_id,
                                  rocprofiler_profile_config_id_t config) {
-  return config.handle == kProfile ? ROCPROFILER_STATUS_SUCCESS
-                                   : ROCPROFILER_STATUS_ERROR_PROFILE_NOT_FOUND;
+  for (DeviceService& s : *services) {
+    if (s.context == context_id.handle &&
+        config.handle == kProfileBase + s.agent.handle) {
+      s.profiled = true;
+      return ROCPROFILER_STATUS_SUCCESS;
+    }
+  }
+  return ROCPROFILER_STATUS_ERROR_PROFILE_NOT_FOUND;
 }
 
 void client_finalize(rocprofiler_client_id_t) {}
@@ -152,9 +161,10 @@ rocprofiler_status_t rocprofiler_start_context(
     if (s.context != context_id.handle) continue;
     if (s.agent.handle == kHiddenAgent) return ROCPROFILER_STATUS_ERROR;
   }
-  for (const DeviceService& s : *services) {
-    if (s.context == context_id.handle)
-      s.callback(context_id, s.agent, set_profile, s.user_data);
+  for (DeviceService& s : *services) {
+    if (s.context != context_id.handle) continue;
+    s.profiled = false;
+    s.callback(context_id, s.agent, set_profile, s.user_data);
   }
   if (!is_active(context_id.handle)) active->push_back(context_id.handle);
   return ROCPROFILER_STATUS_SUCCESS;
@@ -188,7 +198,7 @@ rocprofiler_status_t rocprofiler_configure_device_counting_service(
     rocprofiler_agent_id_t agent_id,
     rocprofiler_device_counting_service_callback_t cb, void* user_data) {
   services->push_back(
-      DeviceService{context_id.handle, agent_id, cb, user_data});
+      DeviceService{context_id.handle, agent_id, cb, user_data, false});
   return ROCPROFILER_STATUS_SUCCESS;
 }
 
@@ -238,9 +248,9 @@ rocprofiler_status_t rocprofiler_query_counter_instance_count(
 }
 
 rocprofiler_status_t rocprofiler_create_profile_config(
-    rocprofiler_agent_id_t, rocprofiler_counter_id_t*, size_t,
+    rocprofiler_agent_id_t agent_id, rocprofiler_counter_id_t*, size_t,
     rocprofiler_profile_config_id_t* config_id) {
-  config_id->handle = kProfile;
+  config_id->handle = kProfileBase + agent_id.handle;
   return ROCPROFILER_STATUS_SUCCESS;
 }
 
@@ -249,7 +259,7 @@ rocprofiler_status_t rocprofiler_destroy_profile_config(
   return ROCPROFILER_STATUS_SUCCESS;
 }
 
-// One record per configured visible agent, only while its context counts.
+// One record per agent with a profile, only while its context counts.
 rocprofiler_status_t rocprofiler_sample_device_counting_service(
     rocprofiler_context_id_t context_id, rocprofiler_user_data_t,
     rocprofiler_counter_flag_t, rocprofiler_record_counter_t* output_records,
@@ -257,7 +267,8 @@ rocprofiler_status_t rocprofiler_sample_device_counting_service(
   size_t n = 0;
   if (is_active(context_id.handle)) {
     for (const DeviceService& s : *services) {
-      if (s.context != context_id.handle || n >= *rec_count) continue;
+      if (s.context != context_id.handle || !s.profiled || n >= *rec_count)
+        continue;
       rocprofiler_record_counter_t& r = output_records[n++];
       std::memset(&r, 0, sizeof(r));
       r.id = kCounter;
