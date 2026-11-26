@@ -369,6 +369,10 @@ def provide_papi(mode: str, tree: Path, work: Path, settings: dict,
     rocm = os.environ.get("ROCM_PATH", "") if status.get("hip", "absent") != "absent" else ""
     built_before = any((dest / "share" / "dftracer").glob("papi-*.stamp"))
     if not build:
+        # On ROCm a PAPI without the fixes is worse than the site's: keep that.
+        if rocm and built_before:
+            built = built_papi_library(dest)
+            built_before = built is not None and papi_has_patches(built)
         if not built_before:
             return False
         step(f"using the PAPI in {dest} (--no-build)")
